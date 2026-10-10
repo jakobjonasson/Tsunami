@@ -1,0 +1,66 @@
+[project]
+name = "tsunami"
+dynamic = ["version"]
+description = "Push templated network configuration to device fleets, with a GUI and a local MCP server."
+readme = "README.md"
+requires-python = ">=3.12,<3.13"
+dependencies = [
+    "jinja2>=3.1.6",
+    "keyring>=25.7.0",
+    "mcp>=2.3.0",
+    "netmiko>=4.8.0",
+    "pydantic>=2.14.0",
+    "pyserial>=3.5",
+    "pyside6>=6.12.0",
+    "ruamel-yaml>=0.19.1",
+]
+
+[project.scripts]
+tsunami-mcp = "tsunami.mcp_server.server:main"
+
+[project.gui-scripts]
+tsunami = "tsunami.gui.app:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.version]
+path = "src/tsunami/__init__.py"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/tsunami"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+src = ["src", "tests"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B", "T20"]
+
+[tool.ruff.lint.per-file-ignores]
+# Only the dev CLI and the --version/--selftest handler may print; stdout belongs
+# to the MCP protocol everywhere else (design.md, MCP interface).
+"src/tsunami/cli.py" = ["T20"]
+"src/tsunami/bootstrap.py" = ["T20"]
+"tests/**" = ["T20"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = "-ra --strict-markers --import-mode=importlib"
+markers = [
+    "cml: integration tests against a CML lab (run with TSUNAMI_CML=1)",
+    "serial: tests that need a real or virtual COM port (run with TSUNAMI_SERIAL=1)",
+    "gui: pytest-qt GUI tests",
+]
+
+[dependency-groups]
+build = [
+    "pyinstaller>=6.22.3",
+]
+dev = [
+    "pytest>=9.1.1",
+    "pytest-qt>=4.5.0",
+    "ruff>=0.17.0",
+]

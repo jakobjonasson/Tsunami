@@ -1,0 +1,13 @@
+* text=auto eol=lf
+
+# Windows-only scripts keep CRLF.
+*.ps1 text eol=crlf
+*.bat text eol=crlf
+*.iss text eol=crlf
+
+*.ico binary
+*.png binary
+
+# Device output fixtures are compared byte for byte; never normalize them.
+tests/fixtures/configs/** -text
+tests/fixtures/show/** -text

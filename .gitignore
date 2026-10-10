@@ -1,0 +1,26 @@
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.ruff_cache/
+
+# Build output (PyInstaller, Inno Setup)
+build/
+dist/
+packaging/Output/
+
+# Guard: device configs, logs and databases never belong in this repo.
+# Device-output test fixtures use .txt (see CLAUDE.md).
+*.cfg
+*.log
+*.db
+*.db-wal
+*.db-shm
+
+# Local tooling
+.vscode/
+.idea/
+.claude/settings.local.json
+.claude/worktrees/

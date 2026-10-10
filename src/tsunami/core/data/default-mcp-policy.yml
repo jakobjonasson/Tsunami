@@ -1,0 +1,22 @@
+# Tsunami MCP policy (design.md, MCP interface: Policy file).
+# Copied to %APPDATA%\Tsunami\mcp-policy.yml on first run. Edit it only through the GUI
+# Settings screen; the MCP server has no write path to it. Re-read on every tool call.
+enabled: false             # MCP stays off until you turn it on
+apply: lab_only            # never | lab_only
+lab_allow_drafts: true
+customers_blocked: []      # hidden from MCP entirely
+show_allowlist:
+  - show version
+  - show inventory
+  - show ip interface brief
+  - show interfaces status
+  - show interfaces
+  - show vlan brief
+  - show cdp neighbors
+  - show lldp neighbors
+  - show spanning-tree summary
+  - show running-config
+pipes: [include, exclude, section, begin]
+max_check_targets: 50
+rate_limit_per_minute: 30
+approval_expiry_minutes: 60
