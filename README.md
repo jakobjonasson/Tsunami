@@ -1,6 +1,6 @@
 # Tsunami
 
-Tsunami is a Windows desktop tool that pushes templated Cisco IOS and IOS-XE configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude. Claude can read inventory, draft plays, render and run read-only checks. It never sees credentials or secret values, and changes to customer devices need approval in the GUI.
+Tsunami is a Windows desktop tool that pushes templated Cisco IOS/IOS-XE and HPE Aruba AOS-CX/AOS-S configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude. Claude can read inventory, draft plays, render and run read-only checks. It never sees credentials or secret values, and changes to customer devices need approval in the GUI.
 
 **Status:** Phase 0 (skeleton). See [docs/implementation-plan.md](docs/implementation-plan.md) for build progress and [docs/design.md](docs/design.md) for the spec.
 

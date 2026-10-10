@@ -16,13 +16,24 @@ This file goes with [design.md](design.md), which is the spec. The spec says *wh
 | Real names | No real customer or employer names in anything committed. The spec and fixtures use placeholders (`acme`) and RFC 5737 addresses. A local `pre-commit` and `commit-msg` hook blocks the terms listed in `.git/info/denylist`. The hook and the list are deliberately not versioned. |
 | Spec fixes | Agreed and applied: per-customer host keys, no username in exact-value redaction, the `add_to_inventory` mapping, and job heartbeats with device leases. See design.md, Revision notes. |
 | Switch model dropdown | A hardware catalog of common Cisco and Aruba switch families (`core/data/hardware.yml`), chosen through a new `model` prompt type. See design.md, Hardware catalog. |
+| Platforms | Cisco IOS/IOS-XE, HPE Aruba AOS-CX, and HPE Aruba AOS-S (ProCurve syntax) are all v1 platforms. Comware is deferred. Vendor specifics live in platform drivers; see design.md, Platform drivers, and `docs/research/aruba-cli.md`. |
+| GUI layout | VS Code-style: activity bar, side bar, tabbed editor area, bottom panel, status bar, command palette. Qt `windows11` style, following the Windows light or dark setting. |
+| Phase 1 spec items | Approved: initial plays may set `site`, `role` and `platform` in play vars, and the day-0 prompt form asks in two stages. |
 
 ## Open questions
 
-1. **Aruba scope.** The catalog lists Aruba families (AOS-CX and AOS-S), but v1 has no driver for them, so they appear disabled.
-   - **Default:** the catalog only, with Aruba drivers as a later phase.
-   - **What a driver needs:** for each platform, secret sink and redactor patterns, error detection (AOS-CX errors do not start with `%`), rollback (AOS-CX has checkpoints and `checkpoint auto`), diff indentation rules, and day-0 dialogs.
-2. **Catalog verification.** Netmiko device types and the AOS-CX console baud were checked against sources. Platform assignments, lifecycle, end-of-sale years, example SKUs and `show_version_model` patterns have not been checked yet. That happens in work package 1.9.
+1. **Catalog verification.** Netmiko device types and the AOS-CX console baud were checked against sources. Platform assignments, lifecycle, end-of-sale years, example SKUs and `show_version_model` patterns have not been checked yet. That happens in work package 1.9.
+2. **Test hardware.** Still to confirm:
+   - that the CML lab is reachable
+   - who downloads the AOS-CX Switch Simulator (it needs an HPE support-portal login)
+   - a physical AOS-S switch for the bench
+   - which physical models get staged over console
+3. **Git workflow.** Commit straight to `main`, or a branch per phase merged after review?
+4. **Aruba facts still marked *verify* in the spec**, all to be confirmed on a device in 3.10:
+   - the AOS-CX auto-checkpoint behavior after a dropped session
+   - how AOS-CX's revert-now path interacts with a running auto-checkpoint timer
+   - the AOS-S first-login prompt text
+   - whether `cfg-restore` leaves flash-stored credentials alone
 
 ---
 
@@ -38,7 +49,8 @@ tsunami/
 ├─ CLAUDE.md                 rules for Claude sessions and subagents
 ├─ docs/
 │  ├─ design.md              the spec
-│  └─ implementation-plan.md this file
+│  ├─ implementation-plan.md this file
+│  └─ research/aruba-cli.md  sourced AOS-CX / AOS-S facts behind the Aruba drivers
 ├─ .github/workflows/ci.yml  windows-latest: uv sync --locked, ruff, pytest, selftest
 ├─ src/tsunami/
 │  ├─ __init__.py            __version__ (single source; frozen builds lose package metadata)
@@ -70,6 +82,7 @@ tsunami/
 │  │  ├─ redact.py           pattern layer + exact-value layer
 │  │  ├─ configtree.py, diff.py               running/rendered config tree, missing/extra
 │  │  ├─ facts.py, errordetect.py, checks.py
+│  │  ├─ platforms/          one driver per family: base.py (protocol), ios.py, aoscx.py, aoss.py
 │  │  ├─ transports/
 │  │  │  ├─ base.py          Session protocol                                          [done]
 │  │  │  ├─ ssh.py           Netmiko SSH, jump-host channel pool (≤10 per jump host)
@@ -121,17 +134,20 @@ Every module not marked done is a stub containing only a docstring. The docstrin
 - `render_changed` added to the device statuses.
 - The MCP package is `mcp_server`. Modules are named so they cannot shadow stdlib or dependency packages: `secret_refs.py`, `console.py`.
 - The architecture diagram is redrawn in Mermaid.
+- Initial plays may set `site`, `role` and `platform` in play vars, and the day-0 prompts are asked in two stages.
+- Aruba AOS-CX and AOS-S platform drivers, CLI families, per-family snippet folders, and a per-family MCP allowlist.
+- Secret-bearing lines are diffed by their non-secret prefix. This fixes permanent false drift on every platform, IOS hashes included.
+- Aruba day-0 sets the forced admin or manager password to the customer login credential's password, so the switch is reachable with the stored login straight after staging. **Confirm this is the behavior you want.**
+- The GUI is VS Code-style.
 
 ### Pending: decide before the phase that needs it
 
 | # | Issue | Proposed | Needed by |
 |---|---|---|---|
-| 1 | Built-in variables in initial plays. The day-0 example sets `role` in play `vars`, but the exception text covers only prompts. | For initial plays only, `site`, `role` and `platform` may come from play vars or prompts. | 1.2 |
-| 2 | Day-0 prompts depend on each other. Defaults such as `gateway` come from site and role variables, which are not known until those prompts are answered. | A two-stage prompt form: first `model`, `site` and `role`; then resolve the variables and pre-fill the rest. | 1.3, 4.2 |
-| 3 | Which device statuses count as failed for `max_fail_percent`? For example, `skipped_precheck`, `device_busy` or `unreachable`. | Count `failed`, `rolled_back`, `rollback_failed`, `unreachable`, `hostkey_mismatch`, `render_changed` and `interrupted`. Do not count `skipped_precheck` or `device_busy`, since nothing was changed. | 3.1 |
-| 4 | keyring has no list API, but the Credentials screen and the exact-value redactor both need to enumerate names. | Use `CredEnumerate` through pywin32-ctypes, filtered to the `tsunami` service (to be verified). Fallback: a names index in `%APPDATA%\Tsunami`. | 2.3 |
-| 5 | Facts that change over time (uptime) in a template would trip `render_changed` on every approved job. | A lint warning on templates that reference volatile facts. | 2.2 |
-| 6 | Python 3.12 now receives security fixes only. The spec allows 3.13. | Stay on 3.12; revisit in Phase 6. | 6.1 |
+| 1 | Which device statuses count as failed for `max_fail_percent`? For example, `skipped_precheck`, `device_busy` or `unreachable`. | Count `failed`, `rolled_back`, `rollback_failed`, `unreachable`, `hostkey_mismatch`, `render_changed` and `interrupted`. Do not count `skipped_precheck` or `device_busy`, since nothing was changed. | 3.1 |
+| 2 | keyring has no list API, but the Credentials screen and the exact-value redactor both need to enumerate names. | Use `CredEnumerate` through pywin32-ctypes, filtered to the `tsunami` service (to be verified). Fallback: a names index in `%APPDATA%\Tsunami`. | 2.3 |
+| 3 | Facts that change over time (uptime) in a template would trip `render_changed` on every approved job. | A lint warning on templates that reference volatile facts. | 2.2 |
+| 4 | Python 3.12 now receives security fixes only. The spec allows 3.13. | Stay on 3.12; revisit in Phase 6. | 6.1 |
 
 ---
 
@@ -184,10 +200,12 @@ Each phase ends with the acceptance criteria listed in design.md, Build plan.
 |---|---|---|---|
 | 2.1 | Sandboxed environment, lookup, filters + sandbox-escape tests | Sonnet | Phase 1 |
 | 2.2 | `secret()` sentinels, sink rule, renderer, settings model | Opus | 2.1 |
-| 2.3 | Keyring-backed `SecretStore`, including enumeration (pending issue 4) | Sonnet | — |
+| 2.3 | Keyring-backed `SecretStore`, including enumeration (pending issue 2) | Sonnet | — |
 | 2.4 | `redact.py`, both layers | Opus | — |
-| 2.5 | Redactor fixture configs + adversarial tests, written without seeing 2.4 | Sonnet (separate agent) | — |
+| 2.5 | Redactor fixture configs + adversarial tests for all three families, written without seeing 2.4 | Sonnet (separate agent) | — |
 | 2.6 | CLI `render` | Opus | 2.2 |
+| 2.7 | `PlatformDriver` protocol + IOS driver, rendering side: sink and redactor patterns, interface validation, config-tree rules, guarded commands | Opus | 2.2, 2.4 |
+| 2.8 | AOS-CX and AOS-S drivers, rendering side. Opus writes the sink and redactor patterns; Sonnet writes interface validation, config-tree rules (`exit` blocks, quoting) and the reboot-required lint | Opus + Sonnet | 2.7 |
 
 **Phase 3: Execution engine (headless)**
 
@@ -201,12 +219,15 @@ Each phase ends with the acceptance criteria listed in design.md, Build plan.
 | 3.6 | SSH transport, jump-host channel pool, per-customer host keys | Opus | 3.1 |
 | 3.7 | Console transport with configurable day-0 dialog patterns, fake-device tests | Sonnet | Session protocol |
 | 3.8 | CML integration suite + CLI `run` | Opus + you | everything above, plus the CML lab |
+| 3.9 | IOS driver, run side: facts, error patterns, flash backup, `configure replace`, revert timer, day-0 dialogs | Opus | 3.1 |
+| 3.10 | Aruba drivers, run side. Sonnet: facts parsers, error patterns, the serial session subclasses, day-0 dialogs. Opus: checkpoint, `cfg-restore` and job-based rollback, and the AOS-CX `check_config_mode` subclass | Sonnet + Opus | 3.1, 2.8 |
+| 3.11 | Aruba lab: get the AOS-CX simulator booting as a CML custom node; bench AOS-S tests; resolve every *verify* item in design.md, Platform drivers | Opus + you | 3.10, hardware |
 
 **Phase 4: GUI**
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 4.1 | Main window shell, `runner_thread`, masked text widget, approvals poller and tray | Opus | Phase 3 |
+| 4.1 | VS Code-style shell: activity bar, side bar, tabbed editor area, bottom panel, status bar, command palette and quick open, theme. Plus `runner_thread`, masked text widget, approvals poller and tray | Opus | Phase 3 |
 | 4.2 | The ten screens, 2–3 agents at a time in worktrees (see the grouping below) | Sonnet | 4.1 |
 | 4.3 | pytest-qt smoke tests | Sonnet | 4.2 |
 | 4.4 | Leak review of Credentials and the masked views; responsiveness check with 200 mock devices | Opus | 4.2 |
@@ -223,7 +244,7 @@ Screen groups for 4.2:
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
 | 5.1 | Enforcement wrapper, pathguard (symlinks, junctions), approval hashing, lab exception | Opus | Phase 4 |
-| 5.2 | Policy model and loader + show-allowlist matcher + tests | Sonnet | — |
+| 5.2 | Policy model and loader + per-family show-allowlist matcher + tests | Sonnet | — |
 | 5.3 | The MCP tools on top of `services`, tool descriptions | Sonnet | 5.1 |
 | 5.4 | Scripted secret-leak client suite, written without seeing 5.3 | Sonnet (separate agent) | 5.1 |
 | 5.5 | MCP Inspector pass; approval round trip with the GUI | Opus + you | 5.3 |

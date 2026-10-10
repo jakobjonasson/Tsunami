@@ -1,6 +1,6 @@
 # Tsunami
 
-`docs/design.md` is the source of truth. `docs/implementation-plan.md` says how the work is split up and what state each phase is in. If code has to deviate from the spec, update the spec in the same change and add a line to its Revision notes saying why.
+`docs/design.md` is the source of truth. `docs/implementation-plan.md` says how the work is split up and what state each phase is in. `docs/research/` holds sourced vendor facts behind the platform drivers. If code has to deviate from the spec, update the spec in the same change and add a line to its Revision notes saying why.
 
 ## Commands
 

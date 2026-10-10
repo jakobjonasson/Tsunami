@@ -5,18 +5,46 @@ enabled: false             # MCP stays off until you turn it on
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
 customers_blocked: []      # hidden from MCP entirely
-show_allowlist:
-  - show version
-  - show inventory
-  - show ip interface brief
-  - show interfaces status
-  - show interfaces
-  - show vlan brief
-  - show cdp neighbors
-  - show lldp neighbors
-  - show spanning-tree summary
-  - show running-config
-pipes: [include, exclude, section, begin]
+show_allowlist:            # per platform family
+  ios:
+    - show version
+    - show inventory
+    - show ip interface brief
+    - show interfaces status
+    - show interfaces
+    - show vlan brief
+    - show cdp neighbors
+    - show lldp neighbors
+    - show spanning-tree summary
+    - show running-config
+  aos-cx:
+    - show version
+    - show system
+    - show module
+    - show interface brief
+    - show interface
+    - show ip interface
+    - show vlan
+    - show cdp neighbor-info
+    - show lldp neighbor-info
+    - show spanning-tree
+    - show running-config
+  aos-s:
+    - show version
+    - show system information
+    - show modules
+    - show interfaces brief
+    - show interfaces
+    - show ip
+    - show vlans
+    - show cdp neighbors
+    - show lldp info remote-device
+    - show spanning-tree
+    - show running-config
+pipes:
+  ios: [include, exclude, section, begin]
+  aos-cx: [include, exclude, begin, count]
+  aos-s: [include, exclude, begin]
 max_check_targets: 50
 rate_limit_per_minute: 30
 approval_expiry_minutes: 60

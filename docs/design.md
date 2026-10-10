@@ -2,7 +2,7 @@
 
 ## Overview
 
-Tsunami is a Windows-native desktop tool that pushes templated Cisco IOS and IOS-XE configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude.
+Tsunami is a Windows-native desktop tool that pushes templated Cisco IOS/IOS-XE and HPE Aruba AOS-CX/AOS-S configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude.
 
 This document is the build spec. It is written to be handed to Claude Code as the source of truth; where it says "must", treat it as a requirement.
 
@@ -21,7 +21,7 @@ This document is the build spec. It is written to be handed to Claude Code as th
 - Installs per-user from a single installer with no admin rights.
 - Secret values live only in Windows Credential Manager. Never in YAML, git, logs, the job database, or MCP output.
 - Scale ceiling: 200 devices per run.
-- Platforms in v1: Cisco IOS and IOS-XE. The data model must not assume Cisco-only, so other platforms can be added later. The hardware catalog already lists common Aruba switch families so they can be offered once a driver exists (see Hardware catalog).
+- Platforms in v1: Cisco IOS and IOS-XE, HPE Aruba AOS-CX, and HPE Aruba AOS-S (ArubaOS-Switch, formerly ProCurve). Everything platform-specific lives in platform drivers (see Platform drivers), so more platforms can be added later.
 
 ### Non-goals for v1
 
@@ -124,9 +124,9 @@ The workspace is a plain folder, normally a git repo, that the app points at. Ev
 │        └─ sites/
 │           └─ <site>.yml
 ├─ snippets/
-│  ├─ common/
+│  ├─ common/<family>/
 │  ├─ platform/<platform>/
-│  └─ customers/<customer>/
+│  └─ customers/<customer>/<family>/
 ├─ plays/
 │  ├─ initial/
 │  ├─ push/
@@ -187,18 +187,18 @@ A list of devices. Each device has:
 - `port`: default 22.
 - `site`: must match a file in `sites/`.
 - `role`: must match a file in `inventory/roles/`.
-- `platform`: `ios` or `ios-xe` in v1.
+- `platform`: `ios`, `ios-xe`, `aos-cx`, or `aos-s`.
 - `model`: optional hardware catalog id. Written by `add_to_inventory`; used for the facts sanity check.
 - `vars`: device-level variables.
 
-Platform maps to Netmiko device types: `ios` to `cisco_ios`, `ios-xe` to `cisco_xe`, and either to `cisco_ios_serial` over console.
+Each platform belongs to a family that shares one CLI: `ios` and `ios-xe` are family `ios`, and `aos-cx` and `aos-s` are each their own family. Netmiko device types and console handling come from the platform driver (see Platform drivers).
 
 ### Hardware catalog
 
 The app ships a catalog of common Cisco and Aruba switch families in `core/data/hardware.yml`. It lives in code, not the workspace. The day-0 wizard uses it so people pick a switch model from a dropdown instead of typing a platform.
 
 - Each entry has `id` (slug), `vendor`, `family` (the dropdown label), `platform`, `netmiko_device_type`, `console_baud`, `lifecycle` (`current` or `end-of-sale`), `eos_year`, `show_version_model` (regex), and `examples` (representative SKUs).
-- An entry is selectable only if its platform has a driver. In v1 that is `ios` and `ios-xe`. Other entries appear disabled and labeled "not supported yet".
+- An entry is selectable only if its platform has a driver. Every catalog platform has one in v1; the rule covers platforms added to the catalog before their driver exists, which appear disabled and labeled "not supported yet".
 - The `model` prompt type picks an entry. In an initial play it sets the built-in `platform`, and the serial `baud` unless the play sets `connection.baud`.
 - When facts are gathered for a device with a `model`, a `show version` model number that does not match the entry's `show_version_model` is a warning, not a failure. The platform check in the device pipeline still applies.
 
@@ -218,7 +218,7 @@ The app ships a catalog of common Cisco and Aruba switch families in `core/data/
 - Dicts deep-merge. Lists and scalars replace. A customer `ntp_servers` list replaces the global one entirely; it does not append.
 - `null` is an ordinary value. There is no delete or unset syntax.
 - Variable names match `^[a-z][a-z0-9_]*$`.
-- Built-in variables are set by the engine and cannot be defined in any vars file: `inventory_name`, `customer`, `site`, `role`, `platform`, `host`, and `facts` (populated after fact gathering). Defining one is a validation error.
+- Built-in variables are set by the engine and cannot be defined in any vars file: `inventory_name`, `customer`, `site`, `role`, `platform`, `host`, and `facts` (populated after fact gathering). Defining one is a validation error. Initial plays are the one exception (see Cross-field validation).
 - Vars files never contain secret values. The linter warns on any key containing `password`, `secret`, `key`, `community`, or `psk` that has a literal string value.
 
 ### Provenance
@@ -320,6 +320,8 @@ Each prompt has:
 - `pattern`: regex, for `string`.
 - `min`, `max`: for `int`.
 
+Every prompt value, of any type, is rejected if it contains a line break or another control character. A value with a newline would inject extra config lines into the render, and prompt values can come from MCP.
+
 |   |   |   |
 |---|---|---|
 |Type|Accepts|Rendered as|
@@ -330,7 +332,7 @@ Each prompt has:
 |`hostname`|1 to 63 chars, letters, digits, hyphens; starts with a letter, ends with a letter or digit|As typed|
 |`vlan`|1 to 4094|Integer|
 |`vlan_list`|`10,20,30-35`|Sorted unique list of ints|
-|`interface`|Full IOS interface name, e.g. `GigabitEthernet1/0/1`|As typed|
+|`interface`|An interface name in the platform's running-config form, e.g. `GigabitEthernet1/0/1` or `1/1/1`|As typed|
 |`ipv4`|Host address|String|
 |`ipv4_interface`|`10.1.1.5/24`; rejects network and broadcast for prefixes /30 and shorter|String with prefix|
 |`ipv4_network`|Strict network, e.g. `10.1.1.0/24`|String with prefix|
@@ -338,7 +340,9 @@ Each prompt has:
 |`role`|A role slug|Slug|
 |`model`|A hardware catalog entry, chosen from a dropdown|Catalog id. Sets `platform` in initial plays|
 
-Interfaces must be full names because diffs compare against `show running-config`, which always uses full names.
+Interface values must be written the way the platform's `show running-config` prints them, because diffs compare against it: full names on IOS (`GigabitEthernet1/0/1`, never `Gi1/0/1`), `1/1/1` on AOS-CX, and `1`, `A1`, `1/1`, or `Trk1` on AOS-S. The platform driver validates them. An `interface` prompt that is not `per_device` requires all targets to share one family.
+
+In initial plays the prompt form is asked in two stages: first the `model`, `site`, and `role` prompts, then the remaining prompts, pre-filled from variables resolved with those first answers (for example `gateway` from the chosen site).
 
 ### steps
 
@@ -400,8 +404,10 @@ Optional on each check: `name`, `retries` (default 0), `delay` in seconds (defau
 - `method: serial` requires no targets, `batch_size` 1, and `rollback: none`.
 - `method: render` forbids checks, backup, and save.
 - `add_to_inventory` requires `hostname`, `mgmt_ip`, `site`, `role`, and `platform` to resolve (`platform` normally comes from a `model` prompt). The new `devices.yml` entry gets `name` set to the hostname in lowercase, plus `vars.hostname` with the typed value if that differs; `host` set to `mgmt_ip | ip`; and `site`, `role`, `platform`, and `model` if one was chosen. The name must not already exist for the customer. It is written with ruamel.yaml so comments survive.
-- Prompt names cannot collide with built-in variables. The one exception is initial plays: the device is not in inventory yet, so they must supply site, role, and platform through play vars or prompts. A `model` prompt supplies `platform`.
-- Every snippet must resolve for every target's customer and platform.
+- Prompt names and play `vars` cannot set built-in variables. The one exception is initial plays: the device is not in inventory yet, so they must supply `site`, `role`, and `platform` through play `vars` or prompts. A `model` prompt supplies `platform`.
+- Every snippet must resolve for every target's customer, platform, and family.
+- A play with any `config` step, `exec` step, or `exec` check must target a single platform family, because those lines are written in one CLI. Plays made only of snippet steps may span families, since snippets resolve per family.
+- The rollback mode must be supported by every target's platform driver (see Platform drivers).
 - Every template must render for every target with `StrictUndefined`. Validation substitutes type-appropriate placeholder values for prompts and treats any `when` that references `facts` as true, so all branches are checked.
 - `secret()` is never allowed in `exec` steps or checks.
 
@@ -419,11 +425,13 @@ Snippets are Jinja2 templates resolved per device by customer, then platform, th
 
 ### Lookup order
 
-For `snippet: aaa` on a device of customer `C` and platform `P`, the first file found wins:
+For `snippet: aaa` on a device of customer `C`, platform `P`, and family `F`, the first file found wins:
 
-1. `snippets/customers/C/aaa.j2`
+1. `snippets/customers/C/F/aaa.j2`
 2. `snippets/platform/P/aaa.j2`
-3. `snippets/common/aaa.j2`
+3. `snippets/common/F/aaa.j2`
+
+Customer and common snippets are written per family, so one play can push an `ntp` snippet to Cisco and Aruba devices alike, each getting its own CLI. A platform snippet overrides the family version, for example an IOS-XE-only variant.
 
 When the play being run is a draft, the same three paths under `drafts/snippets/` are checked first. Approved plays never see drafts.
 
@@ -436,7 +444,7 @@ When the play being run is a draft, the same three paths under `drafts/snippets/
 
 ### Authoring conventions
 
-- Write lines exactly as `show running-config` prints them: full command words, full interface names, sub-mode lines indented one space. Diff and compliance compare against running config line by line, so abbreviations show up as false drift.
+- Write lines exactly as `show running-config` prints them: full command words, full interface names, and sub-mode lines indented exactly as the platform prints them (one space on IOS; see Platform drivers). Diff and compliance compare against running config line by line, so abbreviations show up as false drift.
 - Lines starting with `!` are dropped before sending. Blank lines and trailing whitespace are stripped.
 
 ### Filters
@@ -462,7 +470,7 @@ All IP filters use Python's `ipaddress` module and raise on invalid input.
 - Every rendered line containing a sentinel must match a sink pattern. Otherwise rendering fails with the line number. This stops a template from putting a secret into a description, banner, or exec command where it could be read back.
 - In apply mode, sentinels are then replaced with real values in memory just before sending. In every other mode and in every displayed or stored copy, they become `********`.
 
-Default sink patterns (IOS, anchored at line start, leading spaces allowed):
+Each platform driver has its own default sink patterns (see Platform drivers). The IOS defaults, anchored at line start with leading spaces allowed:
 
 - `enable (secret|password)`
 - `username \S+ .*(secret|password)`
@@ -509,6 +517,8 @@ Every device goes through the same pipeline. Batching, canary, and max-fail wrap
 
 ### Device level (apply mode)
 
+The commands below are the IOS driver's. Each platform driver supplies its own equivalents (see Platform drivers). A step a platform cannot perform is rejected when the play is validated, never skipped at run time.
+
 1. **Connect.** SSH (through the jump host if set) or serial. Verify the host key (see Local data). Enter enable mode if the prompt requires it.
 2. **Facts.** If `gather_facts`, run `show version` and regex-parse model, software version, serial, and uptime into `facts`. If the detected platform contradicts inventory, fail the device.
 3. **Final render.** Render again with real facts. This is the config that gets sent and the one stored, masked, in the job record.
@@ -525,7 +535,7 @@ Device statuses: `pending`, `connecting`, `running`, `success`, `failed`, `rolle
 
 ### Error detection
 
-IOS returns no exit codes, so errors come from output text.
+Network CLIs return no exit codes, so errors come from output text. Each platform driver defines its own patterns (see Platform drivers). The IOS rules:
 
 - In config mode, any output line starting with `%` is an error unless it matches the benign list in settings. The default benign list is empty. Add entries only after seeing real informational messages in testing.
 - Always treat `% Invalid input detected`, `% Incomplete command`, `% Ambiguous command`, and `% Unknown command` as errors.
@@ -535,7 +545,7 @@ IOS returns no exit codes, so errors come from output text.
 ### Transports
 
 - **ssh:** Netmiko `ConnectHandler` with the device type from the platform map. The login comes from Credential Manager. Host keys are verified before any credential is sent (see known_hosts). Jump hosts use one paramiko transport per run, with a `direct-tcpip` channel per device passed as Netmiko's `sock`. Keep at most 10 channels per jump host at once, because OpenSSH's `MaxSessions` defaults to 10.
-- **serial:** `cisco_ios_serial` with `serial_settings` (port, baud). Handle factory-default dialogs: answer `no` to the initial configuration dialog and `yes` to terminating autoinstall, then wait for the user-mode prompt. Prompts vary by model and release; test each model you stage.
+- **serial:** `cisco_ios_serial` with `serial_settings` (port, baud). Handle factory-default dialogs: answer `no` to the initial configuration dialog and `yes` to terminating autoinstall, then wait for the user-mode prompt. Prompts vary by model and release; test each model you stage. Aruba console sessions and dialogs are covered under Platform drivers.
 - **render:** no connection. The GUI shows rendered config per device with a copy button. MCP returns it masked.
 
 ### Run modes
@@ -552,6 +562,7 @@ IOS returns no exit codes, so errors come from output text.
 - **Missing:** rendered lines whose full path (`interface Vlan10 > ip address 10.1.1.5 255.255.255.0`) is not in running config. These are what apply would add.
 - **Extra:** for each step with `owns`, top-level running-config lines that start with an owned prefix but are not in the render. Example: the baseline owns `ntp server` and renders two servers. A third, stale `ntp server` line on the switch is reported as extra.
 - Both sides are redacted before the diff is displayed or stored.
+- Lines that carry a secret (those matching a sink or redactor pattern for the platform) are compared only by the part before the secret, on both sides. Diff cannot tell whether a secret value is current: IOS hashes, AOS-CX ciphertext, and credentials that AOS-S hides from the running config never match the template's value.
 - v1 reports extras only. Generating `no` commands to remove them is deferred.
 
 ### Timeouts and limits
@@ -559,6 +570,99 @@ IOS returns no exit codes, so errors come from output text.
 - Connect timeout 15 s and command timeout 60 s by default. Serial commands get twice the command timeout.
 - At most 50 concurrent sessions per run, whatever `batch_size` says.
 - Cancel sets an event. Each worker checks it between steps, never mid-`send_config_set`.
+
+## Platform drivers
+
+Everything that differs between platforms lives in one driver per platform family under `core/platforms/`. The engine, renderer, redactor, diff, and MCP allowlist ask the driver; nothing else tests for a vendor. The Aruba details below come from vendor documentation and the Netmiko 4.8.0 source. They are collected with sources in `docs/research/aruba-cli.md`. Anything marked *verify* must be confirmed on a device (AOS-CX simulator or a physical AOS-S switch) before the driver relies on it.
+
+### Families and sessions
+
+|   |   |   |   |
+|---|---|---|---|
+|Platform|Family|SSH (Netmiko)|Console|
+|`ios`|`ios`|`cisco_ios`|`cisco_ios_serial`, 9600 8N1|
+|`ios-xe`|`ios`|`cisco_xe`|`cisco_ios_serial`, 9600 8N1|
+|`aos-cx`|`aos-cx`|`aruba_aoscx` (subclassed, see below)|`ArubaCxSSH` over serial, 115200 8N1, no flow control|
+|`aos-s`|`aos-s`|`hp_procurve`|`HPProcurveSSH` over serial, 9600 at boot then speed-sensing, XON/XOFF by default|
+
+- Netmiko 4.8 registers no serial device type for either Aruba platform. Netmiko picks the serial protocol from a `_serial` substring in `device_type`, so the Aruba drivers instantiate the Aruba classes directly with `device_type="aruba_aoscx_serial"` or `"hp_procurve_serial"` and `serial_settings`. `ConnectHandler` cannot be used for these.
+- **AOS-CX:** Netmiko's `ArubaCxSSH.check_config_mode` matches only the literal `(config)#`, so it misses sub-contexts such as `(config-if)#` and then skips the closing `end`. The driver uses a subclass that matches `(config`, and ends every config push with `end` before checking the prompt. Commands are always sent with full words, because AOS-CX auto-completes on space. Logins must belong to the `administrators` group, which lands at `#`. A `>` prompt fails the device with a clear message.
+- **AOS-S:** operator logins land at `>`, and the driver runs `enable` with the credential's `enable` value as the manager password. Netmiko handles the "Press any key to continue" banner, `enable`, and `no page`.
+
+### Running config and authoring
+
+- **IOS:** sub-mode lines indented one space; names unquoted.
+- **AOS-CX:** context lines indented four spaces, no `exit` lines, `!` comments, names with spaces unquoted (*verify* on current releases). Interfaces are `1/1/1`, `lag 1`, `vlan 10`, `loopback 0`, `mgmt`. Trailing spaces on context lines are trimmed before diffing.
+- **AOS-S:** context lines indented three spaces, every context closed with `exit`, names double-quoted (`name "Users"`), header comment lines starting with `;`. Ports are `1`, `A1`, `1/1`, and trunks `Trk1`. Snippets indent context lines and omit `exit`; the driver closes contexts when sending, and the parser treats `exit` as the end of a block.
+- Parsers build the tree from block structure each driver defines, not from a fixed indent width.
+
+### Errors
+
+Each driver supplies an `error_pattern` for Netmiko's `send_config_set` (anchored with `^`, matched with `re.M`), plus the benign list from settings.
+
+- **IOS:** see Error detection.
+- **AOS-CX:** `% ` lines, `Invalid input:`, `Error:`, `Cannot execute command`, and `doesn't exist`. Not every error starts with `%`.
+- **AOS-S:** `Invalid input:`, `Incomplete input:`, and `Module not present for port or invalid port:`. None start with `%`.
+- Some AOS-S config commands stop for a `(y/n)` answer (`include-credentials`, `encrypt-credentials`, `cfg-restore`). They are guarded config lines (see below), and the driver answers only the prompts of commands it issues itself.
+
+### Facts
+
+- **IOS:** `show version`.
+- **AOS-CX:** `show system` for product (part number and description), serial, version, and uptime; `show version` confirms the platform (`AOS-CX`).
+- **AOS-S:** `show system information` for version, serial, and uptime (two-column layout); `show modules` for the model (`Chassis:` line); `show version` for the running image. Stacks print one block per member.
+
+### Backup and rollback
+
+|   |   |   |   |
+|---|---|---|---|
+|Step|IOS / IOS-XE|AOS-CX|AOS-S|
+|Text backup to machine data|`show running-config`|`show running-config`|`show running-config` (credentials absent by default; see Secrets)|
+|`on_failure` snapshot|`copy running-config flash:tsunami-<id>.cfg`|`copy running-config checkpoint tsunami-<id>`|`cfg-backup running-config config tsunami-<id>`|
+|`on_failure` restore|`configure replace flash:tsunami-<id>.cfg force`|`checkpoint rollback tsunami-<id>`|`cfg-restore flash tsunami-<id>`, then `show cfg-restore status` must report `Success`|
+|`revert_timer` start|`configure terminal revert timer <m>`|`checkpoint auto <m>` (1 to 60 minutes)|snapshot as above, then `alias` + `job <name> delay <m> <alias> count 1` that runs the restore|
+|`revert_timer` confirm|`configure confirm`|`checkpoint auto confirm`|`no job <name>`, `no alias <name>`|
+|`revert_timer` revert now|`configure revert now`|`checkpoint rollback` to a snapshot taken before `checkpoint auto` (*verify* how this interacts with the running timer)|run the restore directly, then remove the job|
+|Clean up on success|delete the flash file|`erase checkpoint tsunami-<id>`|`erase config tsunami-<id>`|
+|Save|`write memory`|`write memory`|`write memory`|
+
+`<id>` is the first 12 hex characters of the job id: AOS-CX checkpoint names are limited to 32 characters and must not start with `CPC`.
+
+Platform rules, enforced at validation or as pre-checks:
+
+- **AOS-CX:** `revert_minutes` must be 60 or less. Whether the auto-checkpoint timer still reverts after the SSH session drops is reported inconsistently for older releases, so the CML suite tests it on the target release before `revert_timer` is trusted.
+- **AOS-S:** both rollback modes need software 16.05 or later (checked from facts) and a free config-file slot (at most five, including startup; checked with `show config files`), or the device fails before any change.
+- **AOS-S:** `cfg-restore` refuses a restore that needs a reboot, and the scheduled job then silently restores nothing. A play whose rendered config for an AOS-S target contains a reboot-required command (`secure-mode`, `max-vlans`, `qinq`, `allow-v2-modules`, `vsf member` or `vsf remove`, `console` settings, `qos queue-config`, `access-list grouping`, module or stack provisioning) fails validation unless `rollback: none`.
+- **AOS-S:** `reload after` is the only rollback that always works, but it reboots the switch. Tsunami never schedules it automatically.
+
+### Secrets
+
+Each driver supplies sink patterns, where `secret()` may appear, and redactor patterns. Both lists below are a starting set, to be confirmed against device output in work packages 2.8 and 3.10.
+
+- **AOS-CX** stores secrets as ciphertext that only a switch with the same export password can produce, and accepts `plaintext` on input. Templates therefore always use the `plaintext` form, for example `radius-server host 192.0.2.20 key plaintext {{ secret('acme/radius') }}`. Tsunami never generates or copies ciphertext. `plaintext` values stay visible in the switch's own command history, which Tsunami cannot prevent.
+  - Sinks: `user \S+ group \S+ password plaintext`, `(radius|tacacs)-server (host \S+ )?.*key plaintext`, `snmp-server community`, `snmpv3 user .*(auth-pass|priv-pass) plaintext`, `ntp authentication-key \d+ \S+`, `ip ospf (authentication-key|message-digest-key|sha-key) .*plaintext`, `key-string plaintext`, `neighbor \S+ password plaintext`, `aaa authentication port-access mac-auth password plaintext`.
+  - Redactor: the token after any `ciphertext` or `plaintext` keyword; `snmp-server community <name>`; the `auth-pass` and `priv-pass` values of `snmpv3 user`.
+- **AOS-S** keeps credentials out of the running config by default (`include-credentials` off). Its text backups and diffs therefore never contain them, and `cfg-backup` / `cfg-restore` leave credentials stored in flash alone (*verify*).
+  - Sinks: `password (manager|operator) .*plaintext`, `snmp-server community`, `snmpv3 user`, `(radius|tacacs)-server (host \S+ )?.*key`, `(s)?ntp authentication .*key-value`, `aaa authentication local-user .* password`.
+  - Redactor: quoted or bare values after `key`, `encrypted-key`, `key-value`, `sha1`, `sha256`, and `plaintext`; `snmp-server community "<name>"`; `snmpv3 user` auth and priv values; the `; encrypt-cred` header line.
+- `include-credentials`, `encrypt-credentials`, and their `no` forms change how AOS-S stores every credential. They can make a switch boot to factory defaults if mishandled, so they are guarded config lines.
+
+### Guarded commands
+
+Exec commands, and on Aruba some config lines, that need `allow_destructive: true` on their step:
+
+- **IOS (exec):** `reload`, `erase`, `format`, `delete`, `write erase`.
+- **AOS-CX (exec):** `boot`, `erase`, `copy`, `checkpoint rollback`. **AOS-CX (config):** `console baud-rate`, `service export-password`, `no ssh server`, `no https-server`.
+- **AOS-S (exec):** `reload`, `boot`, `erase`, `copy`, `cfg-restore`. **AOS-S (config):** `include-credentials`, `encrypt-credentials`, `console`, plus the reboot-required commands listed under Backup and rollback.
+
+The driver's own rollback commands are not play steps and are not subject to this rule.
+
+### Day-0 console
+
+Dialog patterns for every platform are configurable in settings, because prompts vary by model and release.
+
+- **IOS:** see Transports.
+- **AOS-CX:** log in as `admin` with an empty password. The switch then forces `Please configure the 'admin' user account password.` Netmiko's login cannot answer that, so the driver handles it before handing the port to Netmiko. It sets the admin password to the password of the customer's login credential, so the switch is reachable with the stored login straight after staging.
+- **AOS-S:** boot output arrives at 9600 baud; the console then speed-senses. Clear "Press any key to continue". Factory-default switches have no password and land at manager level. From 16.10.0009, the switch asks for a manager password at first login (prompt text *verify*); the driver answers with the customer credential's password, as for AOS-CX.
 
 ## Secrets and credentials
 
@@ -593,7 +697,7 @@ All entries use keyring service `tsunami`:
 
 One module, `redact.py`, is applied to every outbound path: MCP results, the GUI's default views, `history.db`, log files, and exception text. It has two layers.
 
-**Pattern layer.** Replaces the secret token on known IOS secret-bearing lines with `<redacted>` and keeps the rest of the line, so diffs still line up:
+**Pattern layer.** Replaces the secret token on each platform's known secret-bearing lines with `<redacted>` and keeps the rest of the line, so diffs still line up. The IOS list is below; the Aruba lists are under Platform drivers:
 
 - `enable secret` and `enable password`
 - `username ... secret|password`
@@ -679,18 +783,46 @@ enabled: true
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
 customers_blocked: []      # hidden from MCP entirely
-show_allowlist:
-  - show version
-  - show inventory
-  - show ip interface brief
-  - show interfaces status
-  - show interfaces
-  - show vlan brief
-  - show cdp neighbors
-  - show lldp neighbors
-  - show spanning-tree summary
-  - show running-config
-pipes: [include, exclude, section, begin]
+show_allowlist:           # per platform family
+  ios:
+    - show version
+    - show inventory
+    - show ip interface brief
+    - show interfaces status
+    - show interfaces
+    - show vlan brief
+    - show cdp neighbors
+    - show lldp neighbors
+    - show spanning-tree summary
+    - show running-config
+  aos-cx:
+    - show version
+    - show system
+    - show module
+    - show interface brief
+    - show interface
+    - show ip interface
+    - show vlan
+    - show cdp neighbor-info
+    - show lldp neighbor-info
+    - show spanning-tree
+    - show running-config
+  aos-s:
+    - show version
+    - show system information
+    - show modules
+    - show interfaces brief
+    - show interfaces
+    - show ip
+    - show vlans
+    - show cdp neighbors
+    - show lldp info remote-device
+    - show spanning-tree
+    - show running-config
+pipes:
+  ios: [include, exclude, section, begin]
+  aos-cx: [include, exclude, begin, count]
+  aos-s: [include, exclude, begin]
 max_check_targets: 50
 rate_limit_per_minute: 30
 approval_expiry_minutes: 60
@@ -699,8 +831,8 @@ approval_expiry_minutes: 60
 ### show allowlist matching
 
 - Normalize whitespace. Abbreviations are not expanded, so `sh run` is rejected.
-- The command must start with an allowlisted entry, token by token. Extra arguments are allowed, such as `show interfaces GigabitEthernet1/0/1`.
-- At most one pipe. The modifier after it must be in `pipes`. This blocks `redirect`, `tee`, and `append`, which can write output to files or remote URLs.
+- The command must start with an entry from the allowlist for the device's platform family, token by token. Extra arguments are allowed, such as `show interfaces GigabitEthernet1/0/1`.
+- At most one pipe. The modifier after it must be in the family's `pipes` list. This blocks `redirect` (IOS and AOS-CX), `tee`, and `append`, which can write output to files or remote URLs.
 - Reject `;`, newlines, carriage returns, and control characters.
 
 ### Enforcement order for every tool call
@@ -732,29 +864,43 @@ The MCP server runs as your Windows user, so another process you run could read 
 
 ## GUI
 
-The GUI is one PySide6 window with a sidebar of ten screens. It is the only place a change to a customer device gets approved and run. VS Code stays the editor for YAML and templates; the GUI views, validates, runs, and approves.
+The GUI is one PySide6 window laid out like VS Code. It is the only place a change to a customer device gets approved and run. VS Code stays the editor for YAML and templates; the GUI views, validates, runs, and approves.
+
+### Layout
+
+- **Activity bar:** a vertical icon strip on the left that switches the side bar between Workspace, Inventory, Plays, Drafts, History, Approvals (with a pending-count badge), and Credentials. Settings sits at the bottom of the strip.
+- **Side bar:** the tree or list for the selected activity, with a filter box.
+- **Editor area:** tabbed documents. Device views, play views, run wizards, job views, draft diffs, approval cards, and Settings open as tabs, so several jobs and devices can be open at once. The area can split side by side.
+- **Bottom panel:** Problems (every validation and lint issue with file and line; double-click opens the file at that line in VS Code), Output (the redacted app log), and the live log of the focused job. It can be collapsed.
+- **Status bar:** workspace name and schema version, error and warning counts, MCP state (off, lab only, or never apply) with pending approvals, active job progress, and the Windows user who will be recorded on approvals.
+- **Command palette** (Ctrl+Shift+P) lists every action, such as Run play, Init workspace, Reload, and Register with Claude Desktop. **Quick open** (Ctrl+P) finds devices, plays, and jobs by name.
+- **Look:** the Qt `windows11` widget style, following the Windows light or dark setting with an override in Settings; a calm, low-contrast palette with one accent color; VS Code's Codicons icons (CC BY 4.0, credited in the About box). The native title bar is kept so Windows snap layouts keep working.
+
+### Views
 
 |   |   |
 |---|---|
-|Screen|Purpose|
+|View|Purpose|
 |Workspace|Open or init a workspace. Shows schema version, a lint summary of every file, and reload.|
 |Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Read-only in v1.|
 |Plays|Plays grouped by type and customer, with validation status, a read-only YAML view, and a Run button.|
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary.|
-|Approvals|Pending MCP requests as cards. Approve or Deny. Badge count in the sidebar and a tray notification.|
+|Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete.|
 |History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
 |Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed.|
-|Settings|Workspace path, MCP policy editor, Register with Claude Desktop, extra secret sink patterns, benign `%` message list, backup retention, log level.|
+|Settings|Workspace path, MCP policy editor, Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
 
 ### Behavior rules
 
 - Never block the UI thread. All device work runs in the runner's `QThread`.
-- Prompt widgets match prompt types: spin box for `vlan`, dropdown for `choice`, `site`, `role`, and `model` (grouped by vendor, unsupported entries disabled), and validated line edits for IP types.
+- Prompt widgets match prompt types: spin box for `vlan`, dropdown for `choice`, `site`, `role`, and `model` (grouped by vendor), and validated line edits for IP and interface types.
 - The serial port picker is filled from `serial.tools.list_ports` and refreshes when opened.
 - Masked views use `********` for secret values and `<redacted>` for redacted running-config tokens. Raw values appear only in the backup viewer's reveal toggle.
-- A job with any `rollback_failed` or `interrupted` device shows a red banner that is only dismissed by explicit acknowledgment.
+- A job with any `rollback_failed` or `interrupted` device shows a red banner that is only dismissed by explicit acknowledgment, and a red status bar item until then.
+- Every action is reachable from the command palette, with VS Code's shortcut where an equivalent exists.
+- Open tabs, panel sizes, and the window layout are restored on restart. Job tabs reopen from `history.db`.
 
 ## Local data and audit
 
@@ -884,6 +1030,8 @@ Core logic is unit-tested with no devices. Transports, rollback, and batching ar
 
 Create a lab customer `cml` with `lab: true`. Use IOSv or IOSvL2 nodes for IOS, a Catalyst 8000v or Catalyst 9000v for IOS-XE, and a Linux node as the jump host.
 
+For AOS-CX, use HPE's AOS-CX Switch Simulator (an OVA from the HPE Networking Support Portal), converted to qcow2 and added to CML as a custom node definition. There is no official CML definition, so getting it to boot is the first task (*verify*). Its link state, VSF, and firmware upgrade are not simulated. No virtual AOS-S image exists, so AOS-S integration tests run against a physical switch on the bench.
+
 - Connect, facts, check, and apply on each platform.
 - A post-check forced to fail leads to `configure replace` and the device is back at its pre-job config.
 - Revert timer: drop the session mid-change and confirm IOS reverts on its own; then `configure revert now` on a forced failure.
@@ -892,6 +1040,9 @@ Create a lab customer `cml` with `lab: true`. Use IOSv or IOSvL2 nodes for IOS, 
 - Jump host path with more than 10 devices, respecting the per-jump-host channel cap.
 - Host key mismatch after rebuilding a node.
 - Error detection on a deliberate typo line, reporting the failed line.
+- AOS-CX: checkpoint rollback after a forced post-check failure; auto-checkpoint revert after a dropped session.
+- AOS-S (physical): `cfg-restore` rollback after a forced post-check failure; job-based revert after a dropped session; a play with a reboot-required command is refused when rollback is on.
+- Secret-bearing lines show no false drift on any platform.
 
 ### Scale
 
@@ -953,7 +1104,7 @@ Sandboxed Jinja environment, lookup order, filters, `secret()` with sentinels an
 
 SSH transport with jump host and known_hosts, facts, checks, backup, both rollback modes, batching, max-fail, canary hook, error detection, `history.db`, all four run modes, and `tsunami run` in the dev CLI.
 
-- Against CML: apply succeeds
+- Against CML (IOS, IOS-XE, AOS-CX simulator) and a physical AOS-S switch: apply succeeds
 - A forced post-check failure rolls back with `configure replace`
 - Revert timer reverts after a dropped session
 - Max-fail halts scheduling
@@ -985,7 +1136,7 @@ PyInstaller spec with two exes, explicit keyring backend, `--selftest`, Inno Set
 - A clean Windows VM with no Python installs without admin rights
 - The GUI runs and the self-test passes on the frozen build
 - Claude Desktop shows tsunami tools after registration and a tray restart
-- Serial day-0 completes on at least one physical switch model
+- Serial day-0 completes on at least one physical switch per platform family that will be staged
 - Uninstall removes binaries and keeps data by default
 
 ## Risks and deferred decisions
@@ -1006,12 +1157,16 @@ The biggest technical risks are day-0 console behavior and diff accuracy. The bi
 |Prompt injection through device output (descriptions, banners, CDP and LLDP names)|Claude is steered into requesting a harmful change|Approval gate for non-lab customers. Output labeled untrusted. No auto-approve setting for customers.|
 |Customer configs and topology in Claude conversations|Contract or policy exposure|Redaction removes secrets but not topology. Confirm company policy and client agreements before enabling MCP for a customer. Use `customers_blocked`.|
 |Unsigned build|SmartScreen blocks, EDR quarantine|Code signing plus EDR allowlisting before wider use.|
+|AOS-CX auto-checkpoint may not revert after a dropped session on some releases|`revert_timer` silently leaves a bad change in place|Lab test on each target release before trusting it. Prefer `on_failure` until verified.|
+|AOS-S `cfg-restore` refuses reboot-required changes, and its job-based revert then does nothing|No rollback on a failed change|Validation refuses reboot-required commands when rollback is on. `rollback_failed` is surfaced loudly.|
+|AOS-S hides credentials from the running config by default|Backups cannot restore credentials; diffs cannot see them|Rollback uses on-device `cfg-backup`, not text backups. Diffs compare secret-bearing lines by prefix only.|
+|No virtual AOS-S image|Rollback and day-0 untested until hardware is on the bench|Physical AOS-S switch for integration tests.|
 
 ### Deferred
 
 - Remediation mode that generates `no` commands for compliance extras.
 - Encrypting backups at rest with DPAPI.
-- More platforms: NX-OS, and Ruckus ICX through Netmiko's `ruckus_fastiron` device type. The `platform` field and snippet lookup already allow this.
+- More platforms: NX-OS, HPE Comware (FlexNetwork), and Ruckus ICX through Netmiko's `ruckus_fastiron` device type. Each needs a platform driver.
 - Inventory editing in the GUI beyond add to inventory.
 - Git operations inside the app.
 - Auto-update.
@@ -1090,7 +1245,7 @@ gateway: 203.0.113.1
     mgmt_ip: 203.0.113.12/24
 ```
 
-### snippets/common/ntp.j2
+### snippets/common/ios/ntp.j2
 
 ```jinja
 {% for s in ntp_servers %}
@@ -1098,7 +1253,7 @@ ntp server {{ s }}
 {% endfor %}
 ```
 
-### snippets/common/archive.j2
+### snippets/common/ios/archive.j2
 
 ```jinja
 archive
@@ -1106,7 +1261,7 @@ archive
  maximum 5
 ```
 
-### snippets/customers/acme/aaa.j2
+### snippets/customers/acme/ios/aaa.j2
 
 ```jinja
 aaa new-model
@@ -1160,7 +1315,7 @@ steps:
 
 This baseline uses the default `rollback: on_failure`. Switch a baseline to `revert_timer` only after every target already has the archive snippet applied, because the revert-timer pre-check fails on devices with no archive path.
 
-The day-0 play is the example in the Play schema section, saved as `plays/initial/acme-access-day0.yml`. It also references `base` and `access-ports` snippets. Write minimal versions of both in `snippets/common/` during Phase 1 so the whole sample workspace validates clean.
+The day-0 play is the example in the Play schema section, saved as `plays/initial/acme-access-day0.yml`. It also references `base` and `access-ports` snippets. Write minimal versions of both in `snippets/common/ios/` during Phase 1 so the whole sample workspace validates clean.
 
 ## Revision notes
 
@@ -1175,3 +1330,11 @@ Changes since the original draft, with reasons:
 - Added `render_changed` to the device statuses; the approval flow already used it.
 - The MCP package is `mcp_server`, so it cannot shadow the MCP SDK.
 - The architecture diagram, lost in an export, is redrawn in Mermaid.
+- Added HPE Aruba AOS-CX and AOS-S as v1 platforms, with a Platform drivers section holding everything vendor-specific: sessions, running-config format, errors, facts, rollback, secrets, guarded commands, and day-0. Comware is deferred.
+- Platforms are grouped into families that share a CLI. Customer and common snippets live in per-family folders, so one play can span Cisco and Aruba devices. Plays with inline config must target one family.
+- Interface prompt values follow each platform's running-config form.
+- Secret-bearing lines are diffed by their non-secret prefix, since no platform stores a secret in the form the template wrote it.
+- The MCP show allowlist and pipe list are per family.
+- Initial plays may set `site`, `role`, and `platform` in play vars, and their prompts are asked in two stages.
+- Prompt values may not contain line breaks or control characters, which would inject config lines.
+- The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.

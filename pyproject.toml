@@ -35,6 +35,8 @@ packages = ["src/tsunami"]
 line-length = 100
 target-version = "py312"
 src = ["src", "tests"]
+# docs/ quotes third-party source verbatim; never reformat it.
+extend-exclude = ["docs"]
 
 [tool.ruff.lint]
 select = ["E", "F", "W", "I", "UP", "B", "T20"]

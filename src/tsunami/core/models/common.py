@@ -32,18 +32,37 @@ def require_slug(value: str) -> str:
 class Platform(StrEnum):
     IOS = "ios"
     IOS_XE = "ios-xe"
-    AOS_CX = "aos-cx"  # hardware catalog only; no driver yet
-    AOS_S = "aos-s"  # hardware catalog only; no driver yet
+    AOS_CX = "aos-cx"
+    AOS_S = "aos-s"
 
+
+class PlatformFamily(StrEnum):
+    """Platforms that share one CLI. Customer and common snippets are written per family."""
+
+    IOS = "ios"
+    AOS_CX = "aos-cx"
+    AOS_S = "aos-s"
+
+
+PLATFORM_FAMILY = {
+    Platform.IOS: PlatformFamily.IOS,
+    Platform.IOS_XE: PlatformFamily.IOS,
+    Platform.AOS_CX: PlatformFamily.AOS_CX,
+    Platform.AOS_S: PlatformFamily.AOS_S,
+}
 
 # Platforms with a driver. Devices and plays may use only these. Catalog entries for
 # other platforms are shown disabled (design.md, Hardware catalog).
-SUPPORTED_PLATFORMS = frozenset({Platform.IOS, Platform.IOS_XE})
+SUPPORTED_PLATFORMS = frozenset(Platform)
 
 NETMIKO_SSH_DEVICE_TYPE = {
     Platform.IOS: "cisco_ios",
     Platform.IOS_XE: "cisco_xe",
+    Platform.AOS_CX: "aruba_aoscx",
+    Platform.AOS_S: "hp_procurve",
 }
+# Netmiko 4.8 registers no serial device type for the Aruba platforms; their drivers
+# run the Aruba classes over pyserial (design.md, Platform drivers).
 NETMIKO_SERIAL_DEVICE_TYPE = {
     Platform.IOS: "cisco_ios_serial",
     Platform.IOS_XE: "cisco_ios_serial",

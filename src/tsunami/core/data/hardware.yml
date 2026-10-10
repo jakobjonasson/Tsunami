@@ -7,8 +7,7 @@
 # examples and show_version_model. Verify before relying on them (work package 1.9).
 #
 # AOS-S entries use hp_procurve; aruba_procurve and aruba_osswitch are aliases for the
-# same Netmiko class. Only entries whose platform has a driver are selectable (ios and
-# ios-xe in v1); the rest are shown disabled.
+# same Netmiko class. Every platform in this file has a driver in v1.
 
 - id: cisco-c9300
   vendor: cisco
