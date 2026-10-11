@@ -66,19 +66,20 @@ def register_claude_desktop_flag() -> int:
     The windowed tsunami.exe has no console, so the result also goes to a message box there.
     """
     from tsunami.core.issues import TsunamiError
-    from tsunami.core.registration import register_claude_desktop
+    from tsunami.core.registration import register_claude_desktop_all
 
     exe = Path(sys.executable).parent / "tsunami-mcp.exe"
     try:
         if not exe.is_file():
             raise TsunamiError(f"tsunami-mcp.exe not found next to {Path(sys.executable).name}")
-        register_claude_desktop(exe)
-    except TsunamiError as exc:
+        written = register_claude_desktop_all(exe)
+    except (TsunamiError, OSError) as exc:
         _report(f"Could not register with Claude Desktop: {exc}", error=True)
         return 1
+    files = "\n".join(str(p) for p in written)
     _report(
-        "Registered with Claude Desktop. Quit Claude Desktop from the system tray and "
-        "reopen it to load the Tsunami tools."
+        f"Registered with Claude Desktop in:\n{files}\n\nQuit Claude Desktop from the "
+        "system tray and reopen it to load the Tsunami tools."
     )
     return 0
 

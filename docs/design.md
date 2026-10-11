@@ -991,7 +991,7 @@ Sign both exes and the installer with `signtool` and a code-signing certificate.
 
 ### Register with Claude Desktop
 
-Local MCP servers are configured in `%APPDATA%\Claude\claude_desktop_config.json`. The same file opens from Claude Desktop under Settings, Developer, Edit Config.
+Local MCP servers are configured in `%APPDATA%\Claude\claude_desktop_config.json`. The same file opens from Claude Desktop under Settings, Developer, Edit Config. The Microsoft Store build of Claude Desktop reads a virtualized copy instead, `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude_desktop_config.json`, and ignores the `%APPDATA%` file once that copy exists. Registration writes every config file the installed app may read.
 
 The Settings button and installer option must:
 

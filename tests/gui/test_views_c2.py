@@ -250,7 +250,7 @@ def test_register_claude_desktop(main_window, tmp_path, monkeypatch, notes):
     config.write_text(json.dumps({"mcpServers": {"other": {"command": "x"}}}), encoding="utf-8")
     exe = tmp_path / "tsunami-mcp.exe"
     exe.write_text("", encoding="utf-8")
-    monkeypatch.setattr(settings.registration, "claude_desktop_config_path", lambda: config)
+    monkeypatch.setattr(settings.registration, "claude_desktop_config_paths", lambda: [config])
     monkeypatch.setattr(settings, "find_mcp_exe", lambda: exe)
     tab = _tab(main_window)
     tab.refresh_claude()

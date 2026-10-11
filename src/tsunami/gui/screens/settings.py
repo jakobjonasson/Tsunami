@@ -367,13 +367,14 @@ class SettingsTab(QScrollArea):
             self.shell.notify("tsunami-mcp.exe was not found next to the app.", "error")
             return False
         try:
-            backup = registration.register_claude_desktop(exe)
+            written = registration.register_claude_desktop_all(exe)
         except (TsunamiError, OSError) as exc:
             self.shell.notify(f"Registration failed: {exc}", "error")
             return False
         self.claude_notice.setText(
-            f"Registered. Backup: {backup}. Quit Claude Desktop from the system tray "
-            "and reopen it; closing the window does not reload the config."
+            "Registered in " + ", ".join(str(p) for p in written) + " (a .bak copy is "
+            "next to each). Quit Claude Desktop from the system tray and reopen it; closing "
+            "the window does not reload the config."
         )
         self.shell.notify("Registered with Claude Desktop. Quit it from the tray and reopen it.")
         return True
