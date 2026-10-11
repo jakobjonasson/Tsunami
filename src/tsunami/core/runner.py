@@ -137,7 +137,8 @@ class Runner:
         except TsunamiError as exc:
             return self._fail_job(job_id, str(exc))
         self.history.set_job_status(job_id, JobStatus.RUNNING, started_at=_now())
-        self.history.add_devices(job_id, [t.label for t in targets])
+        existing = {d.device for d in self.history.devices(job_id)}  # approved jobs have rows
+        self.history.add_devices(job_id, [t.label for t in targets if t.label not in existing])
         self.on_event(
             JobStarted(
                 job_id=job_id, devices=tuple(t.label for t in targets), mode=str(request.mode)

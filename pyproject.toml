@@ -46,6 +46,7 @@ select = ["E", "F", "W", "I", "UP", "B", "T20"]
 # to the MCP protocol everywhere else (design.md, MCP interface).
 "src/tsunami/cli.py" = ["T20"]
 "src/tsunami/bootstrap.py" = ["T20"]
+"src/tsunami/gui/theme.py" = ["E501"]  # the Qt style sheet is data
 "tests/**" = ["T20"]
 
 [tool.pytest.ini_options]
