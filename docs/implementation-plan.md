@@ -260,7 +260,7 @@ Screen groups for 4.2:
 | 5.2 ✅ | Policy model and loader + per-family show-allowlist matcher + tests | Sonnet | — |
 | 5.3 ✅ | The MCP tools on top of `services`, tool descriptions | Sonnet | 5.1 |
 | 5.4 | Scripted secret-leak client suite, written without seeing 5.3 | Sonnet (separate agent) | 5.1 |
-| 5.5 | MCP Inspector pass; approval round trip with the GUI | Opus + you | 5.3 |
+| 5.5 | MCP Inspector pass (open); approval round trip with the GUI ✅ (`tests/gui/test_mcp_round_trip.py`) | Opus + you | 5.3 |
 
 **Phase 6: Packaging and day-0**
 
