@@ -1,6 +1,267 @@
 """Approvals screen: pending MCP requests as cards, Approve or Deny.
 
 See design.md, GUI; MCP interface: Approval flow.
-
-Not implemented yet: Phase 4, work package 4.2.
 """
+
+from __future__ import annotations
+
+from datetime import datetime
+from pathlib import Path
+
+from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor, QTextCursor
+from PySide6.QtWidgets import (
+    QAbstractItemView,
+    QFrame,
+    QHBoxLayout,
+    QLabel,
+    QListWidget,
+    QListWidgetItem,
+    QMessageBox,
+    QPushButton,
+    QTableWidget,
+    QTableWidgetItem,
+    QTabWidget,
+    QTextEdit,
+    QVBoxLayout,
+    QWidget,
+)
+
+from tsunami.core import approvals
+from tsunami.core.issues import TsunamiError
+from tsunami.core.models.jobs import JobStatus
+from tsunami.gui import theme
+from tsunami.gui.context import AppContext
+from tsunami.gui.shell import ActivityItem, Shell
+from tsunami.gui.widgets.masked_text import MaskedTextView
+
+NOTE = "Claude requested this change. Review the diff for each device before approving."
+
+
+def _local(value: datetime | None) -> str:
+    if value is None:
+        return "-"
+    return value.astimezone().strftime("%Y-%m-%d %H:%M")
+
+
+def _play_name(path: str) -> str:
+    return Path(path).stem
+
+
+def _text(value: object) -> str:
+    return str(getattr(value, "value", value))
+
+
+def _confirm(parent: QWidget | None, title: str, text: str) -> bool:
+    answer = QMessageBox.question(parent, title, text)
+    return answer == QMessageBox.StandardButton.Yes
+
+
+class DiffText(MaskedTextView):
+    """A diff_redacted text: added lines green, removed lines red."""
+
+    def __init__(self, text: str) -> None:
+        super().__init__(text)
+        p = theme.current()
+        selections = []
+        block = self.document().firstBlock()
+        while block.isValid():
+            line = block.text()
+            color = p.success if line.startswith("+ ") else p.error if line.startswith("- ") else ""
+            if color:
+                sel = QTextEdit.ExtraSelection()
+                sel.cursor = QTextCursor(block)
+                sel.cursor.select(QTextCursor.SelectionType.LineUnderCursor)
+                fmt = sel.format
+                fmt.setForeground(QColor(color))
+                sel.format = fmt
+                selections.append(sel)
+            block = block.next()
+        self.setExtraSelections(selections)
+
+
+class ApprovalCard(QWidget):
+    """One request in full: details, per-device render and diff, Approve and Deny."""
+
+    def __init__(self, ctx: AppContext, shell: Shell, job_id: str) -> None:
+        super().__init__()
+        self.ctx = ctx
+        self.shell = shell
+        self.job_id = job_id
+        job = ctx.history.get_job(job_id)
+        devices = ctx.history.devices(job_id)
+        self.job = job
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        title = QLabel(f"Approve: {_play_name(job.play_path)}")
+        title.setObjectName("Title")
+        root.addWidget(title)
+        note = QLabel(NOTE)
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        details = QFrame()
+        details.setObjectName("Card")
+        grid = QVBoxLayout(details)
+        tags = ", ".join(job.tags) if job.tags else "(none)"
+        for label, value in (
+            ("Play", job.play_path),
+            ("Customer", job.customer),
+            ("Requested by", _text(job.actor)),
+            ("Requested", _local(job.created_at)),
+            ("Tag filter", tags),
+            ("Target devices", ", ".join(d.device for d in devices) or "(none)"),
+        ):
+            grid.addWidget(QLabel(f"{label}: {value}"))
+        root.addWidget(details)
+
+        self.prompts = QTableWidget(len(job.prompts), 2)
+        self.prompts.setHorizontalHeaderLabels(["Prompt", "Value"])
+        self.prompts.verticalHeader().setVisible(False)
+        self.prompts.horizontalHeader().setStretchLastSection(True)
+        self.prompts.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        self.prompts.setMaximumHeight(140)
+        for row, (key, value) in enumerate(job.prompts.items()):
+            self.prompts.setItem(row, 0, QTableWidgetItem(str(key)))
+            self.prompts.setItem(row, 1, QTableWidgetItem(str(value)))
+        root.addWidget(self.prompts)
+
+        self.device_tabs = QTabWidget()
+        for record in devices:
+            page = QTabWidget()
+            page.addTab(MaskedTextView(record.render_masked or ""), "Render")
+            page.addTab(DiffText(record.diff_redacted or ""), "Diff")
+            self.device_tabs.addTab(page, record.device)
+        root.addWidget(self.device_tabs, 1)
+
+        buttons = QHBoxLayout()
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("Muted")
+        buttons.addWidget(self.status_label, 1)
+        self.deny_button = QPushButton("Deny")
+        self.deny_button.setProperty("danger", "true")
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.setProperty("primary", "true")
+        buttons.addWidget(self.deny_button)
+        buttons.addWidget(self.approve_button)
+        root.addLayout(buttons)
+        self.approve_button.clicked.connect(self.approve)
+        self.deny_button.clicked.connect(self.deny)
+
+        if job.status != JobStatus.AWAITING_APPROVAL:
+            self.status_label.setText(f"This request is {_text(job.status)}.")
+            self.approve_button.setEnabled(False)
+            self.deny_button.setEnabled(False)
+
+    def _key(self) -> str:
+        return f"approval:{self.job_id}"
+
+    def approve(self) -> None:
+        job = self.job
+        count = len(self.ctx.history.devices(self.job_id))
+        if not _confirm(
+            self,
+            "Approve change",
+            f"Apply {_play_name(job.play_path)} to {count} device(s) of customer "
+            f"{job.customer}?\n\nThe change will be pushed to the devices now.",
+        ):
+            return
+        try:
+            request = approvals.approve(
+                self.ctx.history,
+                self.ctx.workspace,
+                self.job_id,
+                approved_by=self.ctx.windows_user(),
+            )
+        except TsunamiError as exc:
+            self.shell.notify(str(exc), "error")
+            return
+        self.shell.start_run(request, f"Run: {_play_name(job.play_path)}")
+        self.shell.close_tab(self._key())
+        self.ctx.jobs_changed.emit()
+
+    def deny(self) -> None:
+        job = self.job
+        if not _confirm(
+            self,
+            "Deny change",
+            f"Deny the request to run {_play_name(job.play_path)} for customer {job.customer}?",
+        ):
+            return
+        try:
+            approvals.deny(self.ctx.history, self.job_id, denied_by=self.ctx.windows_user())
+        except TsunamiError as exc:
+            self.shell.notify(str(exc), "error")
+            return
+        self.shell.close_tab(self._key())
+        self.ctx.jobs_changed.emit()
+
+
+class ApprovalsView(QWidget):
+    def __init__(self, ctx: AppContext, shell: Shell) -> None:
+        super().__init__()
+        self.ctx = ctx
+        self.shell = shell
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 4, 8, 8)
+        top = QHBoxLayout()
+        self.count_label = QLabel("")
+        self.count_label.setObjectName("Muted")
+        top.addWidget(self.count_label, 1)
+        self.refresh_button = QPushButton("Refresh")
+        top.addWidget(self.refresh_button)
+        layout.addLayout(top)
+        self.list = QListWidget()
+        self.list.setSpacing(2)
+        layout.addWidget(self.list, 1)
+        self.empty = QLabel("Nothing is waiting for approval.")
+        self.empty.setObjectName("Muted")
+        self.empty.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.empty.setWordWrap(True)
+        layout.addWidget(self.empty)
+
+        self.refresh_button.clicked.connect(self.refresh)
+        self.list.itemClicked.connect(self._open)
+        self.list.itemActivated.connect(self._open)
+        ctx.approvals_changed.connect(lambda _n: self.refresh())
+        ctx.jobs_changed.connect(self.refresh)
+        self.refresh()
+
+    def refresh(self) -> None:
+        jobs = self.ctx.history.list_jobs(status=JobStatus.AWAITING_APPROVAL)
+        self.list.clear()
+        for job in jobs:
+            count = len(self.ctx.history.devices(job.id))
+            text = (
+                f"{_play_name(job.play_path)}\n"
+                f"{job.customer} - {count} device(s)\n"
+                f"Requested {_local(job.created_at)}"
+            )
+            item = QListWidgetItem(text)
+            item.setData(Qt.ItemDataRole.UserRole, job.id)
+            item.setToolTip(job.play_path)
+            self.list.addItem(item)
+        self.count_label.setText(f"{len(jobs)} pending")
+        self.empty.setVisible(not jobs)
+        self.list.setVisible(bool(jobs))
+
+    def _open(self, item: QListWidgetItem) -> None:
+        self.open_request(item.data(Qt.ItemDataRole.UserRole))
+
+    def open_request(self, job_id: str) -> QWidget:
+        job = self.ctx.history.get_job(job_id)
+        return self.shell.open_tab(
+            f"approval:{job_id}",
+            f"Approve: {_play_name(job.play_path)}",
+            lambda: ApprovalCard(self.ctx, self.shell, job_id),
+            "inbox",
+        )
+
+
+def _factory(ctx: AppContext, shell: Shell) -> QWidget:
+    return ApprovalsView(ctx, shell)
+
+
+VIEW = ActivityItem("approvals", "Approvals", "inbox", _factory, order=50)
