@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is done. Phase 5 (MCP server) is done except the MCP Inspector pass in 5.5. Phase 6 packaging is built (6.1); the installer compile, signing and CI run are unverified.
+**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is done. Phase 5 (MCP server) is done except the MCP Inspector pass in 5.5. Phase 6: the frozen build and installer are produced and tested in CI (6.1, 6.2, 6.4); signing needs a certificate, and 6.3 and 6.5 need hands-on checks.
 
 ---
 
@@ -267,9 +267,9 @@ Screen groups for 4.2:
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
 | 6.1 ✅ | PyInstaller spec (two EXEs, one COLLECT, data files), version resource, `--selftest` on the frozen build | Sonnet; Opus debugs failures that appear only in the frozen build | Phase 5 |
-| 6.2 | Inno Setup script, `sign.ps1` hook | Sonnet | 6.1 |
+| 6.2 ✅ | Inno Setup script (compiles in CI), `sign.ps1` hook (untested without a certificate) | Sonnet | 6.1 |
 | 6.3 | Claude Desktop registration (GUI button + installer page); `claude mcp add` instructions | Sonnet | 6.1 |
-| 6.4 | CI frozen-build job | Sonnet | 6.1 |
+| 6.4 ✅ | CI frozen-build job: build, both self-tests, MCP smoke test, installer, artifacts | Sonnet | 6.1 |
 | 6.5 | Clean-VM install, serial day-0 on a physical switch, EDR coordination | You, with Opus | 6.1–6.4 |
 
 ---
