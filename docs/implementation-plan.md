@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) and Phase 5 (MCP server) are in progress.
+**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is done. Phase 5 (MCP server) is done except the leak suite (5.4) and the Inspector and GUI round trip (5.5).
 
 ---
 
@@ -240,10 +240,10 @@ To verify on hardware in 3.11, in addition to the *verify* items in design.md:
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 4.1 | VS Code-style shell: activity bar, side bar, tabbed editor area, bottom panel, status bar, command palette and quick open, theme. Plus `runner_thread`, masked text widget, approvals poller and tray | Opus | Phase 3 |
-| 4.2 | The ten screens, 2–3 agents at a time in worktrees (see the grouping below) | Sonnet | 4.1 |
-| 4.3 | pytest-qt smoke tests | Sonnet | 4.2 |
-| 4.4 | Leak review of Credentials and the masked views; responsiveness check with 200 mock devices | Opus | 4.2 |
+| 4.1 ✅ | VS Code-style shell: activity bar, side bar, tabbed editor area, bottom panel, status bar, command palette and quick open, theme. Plus `runner_thread`, masked text widget, approvals poller and tray | Opus | Phase 3 |
+| 4.2 ✅ | The ten screens, 2–3 agents at a time in worktrees (see the grouping below) | Sonnet | 4.1 |
+| 4.3 ✅ | pytest-qt smoke tests | Sonnet | 4.2 |
+| 4.4 ✅ | Leak review of Credentials and the masked views; responsiveness check with 200 mock devices | Opus | 4.2 |
 
 Screen groups for 4.2:
 - Workspace, Inventory, Plays, History
