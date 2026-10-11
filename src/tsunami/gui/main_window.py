@@ -179,6 +179,9 @@ class MainWindow(QMainWindow):
         self.tray = QSystemTrayIcon(icons.icon("pulse", theme.current().accent), self)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
+        if ctx.workspace is not None or ctx.last_error:
+            self._on_workspace_changed()  # the context may have loaded before the window
+        self._refresh_alarms()
 
     # -- layout --------------------------------------------------------------------
 

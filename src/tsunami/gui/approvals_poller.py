@@ -52,9 +52,11 @@ class ApprovalsPoller(QObject):
             if job.id not in self._seen:
                 self._seen.add(job.id)
                 self.new_request.emit(job.id)
+                self.ctx.approvals_changed.emit(len(pending))
         if changed:
             self.ctx.jobs_changed.emit()
             self.ctx.alarms_changed.emit()
         if len(pending) != self._count:
             self._count = len(pending)
             self.pending_changed.emit(self._count)
+            self.ctx.approvals_changed.emit(self._count)

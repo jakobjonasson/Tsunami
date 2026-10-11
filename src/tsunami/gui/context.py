@@ -47,6 +47,7 @@ class AppContext(QObject):
     settings_changed = Signal()
     jobs_changed = Signal()
     alarms_changed = Signal()
+    approvals_changed = Signal(int)  # pending request count, from the poller
 
     def __init__(
         self,
