@@ -1,0 +1,18 @@
+
+ Status and Counters - General System Information
+
+  System Name        : acme-s01
+  System Contact     :
+  System Location    :
+
+  MAC Age Time (sec) : 300
+
+  Time Zone          : 0
+  Daylight Time Rule : None
+
+  Software revision  : WC.16.11.0001         Base MAC Addr      : 7446a0-41a56f
+  ROM Version        : WC.17.02.0008         Serial Number      : SG0000F5FF
+  Allow V1 Modules   : Yes
+
+  Up Time            : 15 days               Memory   - Total   : 128,380,928
+  CPU Util (%)       : 22                              Free    : 61,999,280

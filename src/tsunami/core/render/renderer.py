@@ -470,7 +470,7 @@ def _validation_targets(workspace: Any, entry: Any) -> Iterator[tuple[str | None
                 customer=play.customer,
                 platform=platform,
                 draft=entry.draft,
-            )  # fmt: skip
+            )
             for s in play.steps
             if s.snippet
         ):

@@ -214,10 +214,16 @@ def test_aos_cx_revert_timer_is_capped_at_60_minutes(ws_root):
 
 
 def test_aruba_secrets_use_their_own_sinks(ws_root):
-    write(ws_root, "snippets/common/aos-cx/r.j2",
-          "radius-server host 192.0.2.20 key plaintext {{ secret('acme/radius') }}\n")  # fmt: skip
-    write(ws_root, "snippets/common/aos-s/r.j2",
-          'radius-server host 192.0.2.20 key "{{ secret(\'acme/radius\') }}"\n')  # fmt: skip
+    write(
+        ws_root,
+        "snippets/common/aos-cx/r.j2",
+        "radius-server host 192.0.2.20 key plaintext {{ secret('acme/radius') }}\n",
+    )
+    write(
+        ws_root,
+        "snippets/common/aos-s/r.j2",
+        "radius-server host 192.0.2.20 key \"{{ secret('acme/radius') }}\"\n",
+    )
     cx = push_play(ws_root, "cx", "steps:\n  - snippet: r\n", targets="devices: [sa-cx01]")
     assert render(ws_root, cx, device="sa-cx01").masked_lines() == [
         "radius-server host 192.0.2.20 key plaintext ********"

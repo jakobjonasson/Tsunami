@@ -1,0 +1,5 @@
+Image stamp:    /ws/swbuildm/rel_xxx/code/build/lakers(swbuildm_rel_xxx)
+                Mar 12 2021 10:20:32
+                WC.16.11.0001
+                1234
+Boot Image:     Primary

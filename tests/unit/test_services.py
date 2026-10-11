@@ -76,8 +76,20 @@ def test_render_play_end_to_end(ws):
 
 
 def test_cli_render(capsys):
-    code = cli.main(["render", ADD_VLAN, "-w", str(FIXTURE), "-d", "sa-as01",
-                     "--set", "vlan_id=30", "--set", "vlan_name=Cameras"])  # fmt: skip
+    code = cli.main(
+        [
+            "render",
+            ADD_VLAN,
+            "-w",
+            str(FIXTURE),
+            "-d",
+            "sa-as01",
+            "--set",
+            "vlan_id=30",
+            "--set",
+            "vlan_name=Cameras",
+        ]
+    )
     assert code == 0
     out = capsys.readouterr().out
     assert "vlan 30\n name Cameras\n" in out

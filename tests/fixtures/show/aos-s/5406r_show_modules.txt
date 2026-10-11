@@ -1,0 +1,9 @@
+
+ Status and Counters - Module Information
+
+  Chassis: 5406Rzl2 J9850A          Serial Number: SG4BG491BL   Allow V2 Modules: No
+
+  Slot  Module Description                        Serial Number    Status
+  ----- ----------------------------------------- ---------------- --------
+  1/MM1 J9827A Management Module 5400Rzl2         SG4BG4C0C0       Active
+  A     HP J9987A 24p Gig-T v3 zl2 Module         SG0000G6GG       Up

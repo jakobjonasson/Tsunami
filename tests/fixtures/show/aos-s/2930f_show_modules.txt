@@ -1,0 +1,8 @@
+
+ Status and Counters - Module Information
+
+  Chassis: 2930F-24G-PoE+-4SFP JL261A          Serial Number: SG0000F5FF
+
+  Slot  Module Description                        Serial Number    Status
+  ----- ----------------------------------------- ---------------- --------
+  1     HP J9729A 2930F-24G-PoE+-4SFP Switch      SG0000F5FF       Up

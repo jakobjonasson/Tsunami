@@ -1,0 +1,21 @@
+Cisco IOS XE Software, Version 17.06.04
+Cisco IOS Software [Bengaluru], Catalyst L3 Switch Software (CAT9K_IOSXE), Version 17.6.4, RELEASE SOFTWARE (fc1)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2022 by Cisco Systems, Inc.
+
+ROM: IOS-XE ROMMON
+BOOTLDR: System Bootstrap, Version 17.3.5r[FC2], RELEASE SOFTWARE (P)
+
+acme-sw03 uptime is 2 weeks, 6 days, 22 hours, 5 minutes
+System image file is "flash:cat9k_iosxe.17.06.04.SPA.bin"
+
+cisco C9300-48P (X86) processor with 1392947K/6147K bytes of memory.
+Processor board ID FOC0000C2CC
+48 Gigabit Ethernet interfaces
+
+Switch Ports Model              SW Version        SW Image              Mode
+------ ----- -----              ----------        ----------            ----
+*    1 56    C9300-48P          17.06.04          CAT9K_IOSXE           INSTALL
+
+Model Number                    : C9300-48P
+System Serial Number            : FOC0000C2CC

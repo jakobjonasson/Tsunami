@@ -168,20 +168,26 @@ def test_clean_plays_have_no_findings():
         ({"targets": {"exclude": ["sa-as01"]}}, "play.targets_empty"),
         ({"connection": {"method": "serial"}}, "play.serial_targets"),
         ({"connection": {"port": "COM3"}}, "play.serial_only"),
-        ({"execution": {"rollback": "revert_timer"}, "connection": {"method": "render"}},
-         "play.render_device"),
-        ({"connection": {"method": "render"}, "checks": {"post": [{"reachable": True}]}},
-         "play.render_checks"),
+        (
+            {"execution": {"rollback": "revert_timer"}, "connection": {"method": "render"}},
+            "play.render_device",
+        ),
+        (
+            {"connection": {"method": "render"}, "checks": {"post": [{"reachable": True}]}},
+            "play.render_checks",
+        ),
         ({"connection": {"method": "render"}, "execution": {"backup": True}}, "play.render_device"),
         ({"vars": {"site": "site-a"}}, "play.builtin_var"),
         ({"prompts": {"host": {"type": "string"}}}, "play.builtin_var"),
         ({"on_success": {"add_to_inventory": True}}, "play.add_to_inventory"),
         ({"steps": [{"exec": "show run | include {{ secret('acme/x') }}"}]}, "play.secret_in_exec"),
-        ({"checks": {"pre": [{"exec": "show clock", "expect": "{{ secret('acme/x') }}"}]}},
-         "play.secret_in_check"),
+        (
+            {"checks": {"pre": [{"exec": "show clock", "expect": "{{ secret('acme/x') }}"}]}},
+            "play.secret_in_check",
+        ),
         ({"execution": {"revert_minutes": 10}}, "play.revert_minutes_unused"),
     ],
-)  # fmt: skip
+)
 def test_push_play_findings(overrides, code):
     assert code in codes(play(**overrides))
 

@@ -1,0 +1,16 @@
+Cisco IOS Software [Fuji], Catalyst L3 Switch Software (CAT3K_CAA-UNIVERSALK9-M), Version 16.9.4, RELEASE SOFTWARE (fc2)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2019 by Cisco Systems, Inc.
+
+ROM: IOS-XE ROMMON
+BOOTLDR: CAT3K_CAA Boot Loader (CAT3K_CAA-HBOOT-M) Version 4.78, RELEASE SOFTWARE (P)
+
+acme-sw04 uptime is 41 weeks, 3 days, 1 hour, 9 minutes
+System image file is "flash:packages.conf"
+
+Cisco IOS XE Software, Version 16.09.04
+cisco WS-C3850-48P (MIPS) processor with 4194304K bytes of memory.
+Processor board ID FOC0000D3DD
+
+Model Number                   : WS-C3850-48P
+System Serial Number           : FOC0000D3DD

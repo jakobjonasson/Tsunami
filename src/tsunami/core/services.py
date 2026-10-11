@@ -67,8 +67,14 @@ def collect_prompts(
         elif "platform" in play.vars:
             platform = Platform(play.vars["platform"])
         else:
-            model = next((values[n] for n, p in play.prompts.items()
-                          if p.type == PromptType.MODEL and n in values), None)  # fmt: skip
+            model = next(
+                (
+                    values[n]
+                    for n, p in play.prompts.items()
+                    if p.type == PromptType.MODEL and n in values
+                ),
+                None,
+            )
             platform = catalog.get(model).platform if model else None
         family = PLATFORM_FAMILY[platform] if platform else None
         return PromptContext(

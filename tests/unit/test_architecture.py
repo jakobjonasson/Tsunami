@@ -17,8 +17,16 @@ FORBIDDEN_IN_CORE = ("PySide6", "mcp", "tsunami.gui", "tsunami.mcp_server")
 # Top-level packages of dependencies. A module of ours with one of these names (or a
 # stdlib name) can shadow the real package when run as a script or frozen.
 DEPENDENCY_PACKAGES = {
-    "PySide6", "netmiko", "paramiko", "serial", "jinja2", "pydantic", "ruamel", "keyring", "mcp",
-}  # fmt: skip
+    "PySide6",
+    "netmiko",
+    "paramiko",
+    "serial",
+    "jinja2",
+    "pydantic",
+    "ruamel",
+    "keyring",
+    "mcp",
+}
 
 
 def _absolute_imports(path: Path):

@@ -1,0 +1,15 @@
+Cisco IOS Software, C1000 Software (C1000-UNIVERSALK9-M), Version 15.2(7)E4, RELEASE SOFTWARE (fc2)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2021 by Cisco Systems, Inc.
+
+ROM: Bootstrap program is C1000 boot loader
+acme-sw02 uptime is 5 days, 1 hour, 30 minutes
+System image file is "flash:c1000-universalk9-mz.152-7.E4.bin"
+
+cisco C1000-24P-4G-L (PowerPC) processor (revision A0) with 439314K bytes of memory.
+Processor board ID FOC0000B1BB
+24 Gigabit Ethernet interfaces
+
+Model Number                       : C1000-24P-4G-L
+System Serial Number               : FOC0000B1BB
+Configuration register is 0xF
