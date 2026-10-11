@@ -17,7 +17,7 @@ import threading
 from pathlib import Path
 from typing import Any
 
-from tsunami.core.issues import Issue, Severity
+from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
@@ -146,7 +146,10 @@ class Tools:
             listing = []
             for f in files:
                 rel = f.relative_to(ws.root)
-                if rel.parts[1] == "customers" and rel.parts[2] in policy.customers_blocked:
+                if rel.parts[1] == "customers" and (
+                    rel.parts[2] in policy.customers_blocked
+                    or (customer and rel.parts[2] != customer)
+                ):
                     continue
                 listing.append({"name": f.stem, "path": rel.as_posix(), "level": _level(rel)})
             return {"snippets": listing}
@@ -311,21 +314,18 @@ class Tools:
         return self.app.call("show", 1, args, run, customer=customer)
 
     def get_job(self, job_id: str):
-        job = self._job_or_refuse(job_id)
-
         def run(policy):
-            if job.customer in policy.customers_blocked:
-                raise ToolRefused(f"unknown job {job_id!r}")
+            job = self._visible_job(policy, job_id)
             return {
                 "job_id": job.id,
                 "play": job.play_path,
                 "customer": job.customer,
                 "mode": job.mode,
-                "status": str(self.app.history.get_job(job_id).status),
+                "status": str(job.status),
                 "actor": str(job.actor),
                 "created_at": job.created_at.isoformat(),
                 "approved_by": job.approved_by,
-                "summary": self.app.history.get_job(job_id).summary,
+                "summary": job.summary,
                 "devices": [
                     {
                         "device": d.device,
@@ -343,7 +343,8 @@ class Tools:
                 ],
             }
 
-        return self.app.call("get_job", 1, {"job_id": job_id}, run, customer=job.customer)
+        args = {"job_id": job_id}
+        return self.app.call("get_job", 1, args, run, redact_for=self._job_customer(job_id))
 
     def list_jobs(self, customer: str | None = None, limit: int = 20):
         def run(policy):
@@ -436,10 +437,8 @@ class Tools:
         return self.app.call("request_run", 2, args, run, customer=self._customer_of(path))
 
     def cancel_job(self, job_id: str):
-        job = self._job_or_refuse(job_id)
-
         def run(policy):
-            current = self.app.history.get_job(job_id)
+            current = self._visible_job(policy, job_id)
             if current.actor != Actor.MCP:
                 raise ToolRefused("only jobs requested over MCP can be cancelled here")
             if current.status not in (JobStatus.PENDING, JobStatus.AWAITING_APPROVAL):
@@ -452,7 +451,8 @@ class Tools:
             self.app.history.set_job_status(job_id, JobStatus.CANCELLED)
             return {"job_id": job_id, "status": "cancelled"}
 
-        return self.app.call("cancel_job", 2, {"job_id": job_id}, run, customer=job.customer)
+        args = {"job_id": job_id}
+        return self.app.call("cancel_job", 2, args, run, redact_for=self._job_customer(job_id))
 
     # == helpers ===========================================================================
 
@@ -555,11 +555,22 @@ class Tools:
             return None
         return JumpTarget(jh.host, jh.port, self.app.secrets.get_login(jh.credential))
 
-    def _job_or_refuse(self, job_id: str):
+    def _visible_job(self, policy, job_id: str):
+        """The job, or ToolRefused if unknown or its customer is blocked (indistinguishable)."""
         try:
-            return self.app.history.get_job(job_id)
-        except Exception:  # noqa: BLE001
-            raise ToolRefused(f"unknown job {job_id!r}") from None
+            job = self.app.history.get_job(job_id)
+        except TsunamiError:
+            job = None
+        if job is None or job.customer in policy.customers_blocked:
+            raise ToolRefused(f"unknown job {job_id!r}")
+        return job
+
+    def _job_customer(self, job_id: str) -> str | None:
+        """The job's customer for exact-value redaction; None if there is no such job."""
+        try:
+            return self.app.history.get_job(job_id).customer
+        except TsunamiError:
+            return None
 
     def _check_play_customer(self, policy, ws, text: str) -> None:
         customer = _yaml_customer(text)

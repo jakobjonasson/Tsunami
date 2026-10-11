@@ -397,3 +397,30 @@ def test_server_registers_tools_and_calls_them(env):
 
     result = asyncio.run(server.call_tool("list_customers", {}))
     assert "acme" in str(result)
+
+
+def test_job_tools_respect_the_policy_before_looking_up_jobs(env):
+    job_id = env.history.create_job(
+        actor=Actor.MCP, play_path=PLAY, play_hash="x", customer="acme", mode="check"
+    )
+    save_policy(McpPolicy(enabled=False), env.paths.policy_file)
+    with pytest.raises(ToolRefused, match="turned off"):
+        env.tools.get_job("no-such-job")
+    with pytest.raises(ToolRefused, match="turned off"):
+        env.tools.cancel_job(job_id)
+    assert [r["tool"] for r in env.audit()] == ["get_job", "cancel_job"]
+
+    env.policy(customers_blocked=["acme"])
+    for call in (env.tools.get_job, env.tools.cancel_job):
+        with pytest.raises(ToolRefused) as info:
+            call(job_id)
+        assert str(info.value) == f"unknown job {job_id!r}"  # never names the customer
+
+
+def test_list_snippets_for_one_customer_hides_other_customers(env):
+    other = env.root / "snippets/customers/lab/ios"
+    other.mkdir(parents=True)
+    (other / "aaa.j2").write_text("aaa new-model\n", encoding="utf-8")
+    paths = {s["path"] for s in env.tools.list_snippets(customer="acme")["snippets"]}
+    assert "snippets/customers/acme/ios/aaa.j2" in paths
+    assert "snippets/customers/lab/ios/aaa.j2" not in paths

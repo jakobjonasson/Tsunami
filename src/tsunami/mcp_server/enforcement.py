@@ -99,11 +99,15 @@ class McpApp:
         fn: Callable[[McpPolicy], dict[str, Any]],
         *,
         customer: str | None = None,
+        redact_for: str | None = None,
     ) -> dict[str, Any]:
+        """Run fn under the policy. customer is checked against the block list and drives
+        exact-value redaction; redact_for adds redaction only, for tools that must report a
+        blocked customer's object as unknown rather than name the customer (get_job)."""
         start = self.clock()
         status = "ok"
         result: dict[str, Any] = {}
-        redactor = self._redactor(customer)
+        redactor = self._redactor(customer or redact_for)
         try:
             policy = self.policy()
             if not policy.enabled:

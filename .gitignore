@@ -24,3 +24,4 @@ packaging/Output/
 .idea/
 .claude/settings.local.json
 .claude/worktrees/
+.scratch/
