@@ -717,7 +717,9 @@ Every encryption type (0, 5, 7, 8, 9) is redacted. Type 7 is reversible, so it c
 
 Every platform family's rules apply to all text, so output from a mislabelled device is still covered and both sides of a diff are treated alike. Keywords match regardless of case. A rule can depend on its top-level parent line: under `key chain` (IOS) or `keychain` (AOS-CX), ` key 1` is a key id, not a secret.
 
-**Exact-value layer.** At job start, load every secret value in the customer's namespace plus the login credential's password and enable values into an in-memory set. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear.
+**Exact-value layer.** At job start, load every secret value in the customer's namespace plus the login credential's password and enable values into an in-memory set. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear. A multi-line value also matches output with CRLF line ends.
+
+MCP results use every stored secret and login password of every customer, not just the call's customer, and a call fails if the store cannot be read. One exception: a value Claude supplied in the same call (an argument, or a word of one; for `get_job`, an MCP job's prompt values) is not exact-redacted where it is echoed back. Redacting the echo of a correct guess would confirm the guess, so a prompt value or argument set to a candidate secret would work as an oracle. The pattern layer still applies, so sink lines stay masked. MCP jobs apply the same exception to their prompt values when the runner stores diffs and output. Audit rows always get the full redaction.
 
 ### Backups
 
@@ -840,6 +842,7 @@ approval_expiry_minutes: 60
 - Normalize whitespace. Abbreviations are not expanded, so `sh run` is rejected.
 - The command must start with an entry from the allowlist for the device's platform family, token by token. Extra arguments are allowed, such as `show interfaces GigabitEthernet1/0/1`.
 - At most one pipe. The modifier after it must be in the family's `pipes` list. This blocks `redirect` (IOS and AOS-CX), `tee`, and `append`, which can write output to files or remote URLs.
+- The pipe never reaches the device. Tsunami runs the base command, redacts the whole output, and applies `include`, `exclude`, `begin`, `section` or `count` itself. A device-side filter sees secrets before redaction, and whether a line comes back reveals them: `| include ^snmp-server community a`, then `ab`, recovers a community string one character at a time. Patterns are regular expressions without groups or `{n,m}` repetition and with at most four `*`, `+` or `?`, so matching time stays bounded.
 - Reject `;`, newlines, carriage returns, and control characters.
 
 ### Enforcement order for every tool call
@@ -860,7 +863,9 @@ approval_expiry_minutes: 60
 |Leak path|Mitigation|
 |Credentials|Tools take names only. No tool reads Credential Manager.|
 |Running config and show output|Redactor, both layers, on every result.|
-|Claude-written templates|`secret()` sink rule. Drafts never reach customer devices without promotion. Promotion highlights every `secret()` call.|
+|Claude-written templates|`secret()` sink rule. A `secret()` value changed by a filter or expression (`reverse`, slicing, `tojson`, `list`) is a render error. Drafts never reach customer devices without promotion. Promotion highlights every `secret()` call.|
+|Output filters|Pipes run locally on redacted output, never on the device.|
+|Redaction as an oracle|Values Claude supplied are not exact-redacted in their echo, so a guess is answered the same whether it is right or wrong. Refusal messages never name a blocked customer.|
 |Exception messages|Redacted before they are returned.|
 |Backups and session logs|No tool exposes them.|
 |Filesystem|No generic read. Workspace paths only. Writes in `drafts/` only.|
@@ -1354,3 +1359,4 @@ Changes since the original draft, with reasons:
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.
 - The MCP SDK 2.x renamed FastMCP to `MCPServer`. MCP device connections never accept a new host key, and a change request is `pending` while its check-mode diff runs.
+- From the blind leak review: show pipes run locally on redacted output (a device-side `include` recovered a secret character by character); MCP exact-value redaction covers every customer's secrets but not Claude's own echoed input (redacting it made a guessing oracle); audit rows are fully redacted; altered `secret()` output is a render error; refusal reasons reach the client as MCP tool errors.

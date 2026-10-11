@@ -1091,3 +1091,9 @@ def test_default_redactor_has_no_exact_layer() -> None:
 
 def test_redacted_constant() -> None:
     assert REDACTED == "<redacted>"
+
+
+def test_multiline_exact_value_matches_crlf_output():
+    value = "line-one-secret\nline-two-secret"
+    output = "banner start\r\nline-one-secret\r\nline-two-secret\r\nbanner end\r\n"
+    assert "line-two-secret" not in Redactor([value]).text(output)

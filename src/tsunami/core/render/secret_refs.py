@@ -33,6 +33,7 @@ class SecretCollector:
         self.customer = customer
         self.refs: list[str] = []
         nonce = secrets.token_hex(8)
+        self._nonce = nonce
         self._prefix = f"\x00SECRET:{nonce}:"
         self._sentinel = re.compile(rf"\x00SECRET:{nonce}:(\d+)\x00")
 
@@ -52,10 +53,25 @@ class SecretCollector:
         return f"{self._prefix}{self.refs.index(ref)}\x00"
 
     def contains(self, text: str) -> bool:
-        return self._prefix in text
+        """True if text holds a sentinel, whole or altered (any NUL counts)."""
+        return self._prefix in text or self.altered(text)
+
+    def altered(self, text: str) -> bool:
+        """A sentinel was changed by a filter or expression (reverse, slicing, tojson...).
+
+        It could never be materialized, and its fragments would be sent to the device.
+        """
+        rest = self._sentinel.sub("", text)
+        # A NUL, or its repr from | list or string(): no config line contains either.
+        return any(mark in rest for mark in ("\x00", "\\x00", self._nonce, "SECRET:"))
 
     def check_sink(self, line: str, driver: PlatformDriver, parent: str | None = None) -> None:
-        """Every sentinel on the line must lie inside one of the driver's sink spans."""
+        """Every sentinel on the line must be whole and lie inside a driver sink span."""
+        if self.altered(line):
+            raise SecretRefError(
+                "secret() output was changed by a filter or expression; "
+                "use {{ secret('customer/name') }} as a whole value"
+            )
         sinks = driver.sink_spans(line, parent)
         for match in self._sentinel.finditer(line):
             start, end = match.span()

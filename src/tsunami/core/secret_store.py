@@ -209,6 +209,24 @@ class KeyringSecretStore:
                 continue  # removed between listing and reading
         return values
 
+    def all_secret_values(self) -> list[str]:
+        """Every stored secret and login password or enable, across all customers.
+
+        For redaction that cannot be tied to one customer: MCP results and audit rows.
+        Login usernames are left out, as everywhere (design.md, Redaction).
+        """
+        values: list[str] = []
+        for key in self._usernames():
+            try:
+                if key.startswith(_CRED_PREFIX):
+                    login = self.get_login(key[len(_CRED_PREFIX) :])
+                    values += [v for v in (login.password, login.enable) if v]
+                elif key.startswith(_SECRET_PREFIX):
+                    values.append(self._get(key, "secret"))
+            except TsunamiError:
+                continue  # removed between listing and reading, or malformed
+        return values
+
     # ---- internals ----
 
     @staticmethod

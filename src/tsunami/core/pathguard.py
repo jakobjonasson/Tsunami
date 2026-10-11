@@ -29,10 +29,13 @@ class PathError(TsunamiError):
     """A path from an MCP client was refused."""
 
 
+_WINDOWS_INVALID = frozenset(':<>"|?*')  # ":" also blocks NTFS alternate data streams
+
+
 def _clean_relative(relative: str) -> PureWindowsPath:
     if not isinstance(relative, str) or not relative.strip():
         raise PathError("a workspace-relative path is required")
-    if _CONTROL_RE.search(relative) or ":" in relative:
+    if _CONTROL_RE.search(relative) or any(c in relative for c in _WINDOWS_INVALID):
         raise PathError("the path contains a forbidden character")
     pure = PureWindowsPath(relative.replace("/", "\\"))
     if pure.is_absolute() or pure.drive or pure.root or relative.startswith(("\\", "/")):

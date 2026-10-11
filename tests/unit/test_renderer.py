@@ -139,11 +139,29 @@ def test_secret_from_another_customer_is_refused(ws_root):
 def test_sentinels_cannot_be_forged():
     first, second = SecretCollector("acme"), SecretCollector("acme")
     token = first("acme/tacacs")
-    assert first.contains(token)
-    assert not second.contains(token)
+    assert first.contains(token) and not first.altered(token)
     assert second.mask(token) == token  # not recognized, so never materialized either
+    assert second.altered(token)  # and a stray NUL in output is an error at the sink check
     with pytest.raises(SecretRefError):
         first("acme/../x")
+
+
+@pytest.mark.parametrize(
+    "expression",
+    [
+        "secret('acme/tacacs') | reverse",
+        "secret('acme/tacacs') | list",
+        "secret('acme/tacacs') | tojson",
+        "secret('acme/tacacs') | truncate(9)",
+        "secret('acme/tacacs')[1:12]",
+        "secret('acme/tacacs') | replace(secret('acme/tacacs')[0], '')",
+    ],
+)
+def test_altered_sentinel_is_an_error(ws_root, expression):
+    write(ws_root, "snippets/common/ios/s.j2", f" key {{{{ {expression} }}}}\n")
+    play = push_play(ws_root, "s", "steps:\n  - snippet: s\n")
+    with pytest.raises(RenderError, match="changed by a filter"):
+        render(ws_root, play)
 
 
 def test_settings_can_add_a_sink(ws_root):

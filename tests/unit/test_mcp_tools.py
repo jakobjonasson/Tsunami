@@ -424,3 +424,58 @@ def test_list_snippets_for_one_customer_hides_other_customers(env):
     paths = {s["path"] for s in env.tools.list_snippets(customer="acme")["snippets"]}
     assert "snippets/customers/acme/ios/aaa.j2" in paths
     assert "snippets/customers/lab/ios/aaa.j2" not in paths
+
+
+# -- leak fixes (5.4 findings) ----------------------------------------------------------
+
+
+def test_refusal_reason_reaches_the_client(env):
+    from tsunami.mcp_server.server import build_server
+
+    server = build_server(env.app)
+    with pytest.raises(Exception, match="unknown customer 'nobody'"):
+        asyncio.run(server.call_tool("list_devices", {"customer": "nobody"}))
+
+
+def test_show_pipe_runs_locally_on_redacted_output(env):
+    secret_line = f"snmp-server community {TACACS} RO"
+    env.mock.device("sa-as01").exec_responses["show running-config"] = (
+        f"hostname sa-as01\n{secret_line}\n"
+    )
+    hit = env.tools.show("acme", "sa-as01", "show running-config | include ^snmp-server")
+    assert hit["untrusted_device_output"] == "snmp-server community <redacted> RO\n"
+    assert "command" not in hit
+    # A guess at the secret's first characters finds nothing: the filter never sees it.
+    guess = env.tools.show("acme", "sa-as01", f"show running-config | include {TACACS[:3]}")
+    assert guess["untrusted_device_output"] == ""
+    assert ("exec", "show running-config") in env.mock.device("sa-as01").sent
+    assert not any("|" in text for _, text in env.mock.device("sa-as01").sent)
+
+
+def test_show_refuses_unsafe_pipe_patterns(env):
+    with pytest.raises(ToolRefused, match="groups"):
+        env.tools.show("acme", "sa-as01", "show running-config | include (a+)+$")
+    assert env.recorder.targets == []
+
+
+def test_guess_at_a_secret_is_answered_like_any_other_value(env):
+    """Redacting the echo of a correct guess would confirm it."""
+
+    def rendered(value):
+        result = env.tools.render(PLAY, device="sa-as01", prompts={**PROMPTS, "vlan_name": value})
+        return result["text"].replace(value, "VALUE")
+
+    assert rendered(TACACS) == rendered("Xyz-Plain-12345")
+
+
+def test_other_customers_secrets_are_redacted_too(env):
+    env.app.secrets.set_secret("lab", "radius", "Lab-Radius-4433")
+    env.mock.device("sa-as01").exec_responses["show version"] = "uptime Lab-Radius-4433\n"
+    output = env.tools.show("acme", "sa-as01", "show version")["untrusted_device_output"]
+    assert "Lab-Radius-4433" not in output
+
+
+def test_audit_rows_redact_secrets_the_caller_supplied(env):
+    env.tools.render(PLAY, device="sa-as01", prompts={**PROMPTS, "vlan_name": TACACS})
+    row = env.audit()[-1]
+    assert row["tool"] == "render" and TACACS not in row["args_redacted_json"]

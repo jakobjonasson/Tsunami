@@ -27,6 +27,7 @@ from tsunami.core.render.environment import TemplateError, compile_template, mak
 from tsunami.core.render.lookup import find_snippet
 from tsunami.core.runner import Runner, RunRequest, play_hash
 from tsunami.core.services import play_entry, render_play
+from tsunami.core.showfilter import FilterError, apply_filter, compile_pattern, split_command
 from tsunami.core.targets import resolve_targets
 from tsunami.core.transports.base import ConnectTarget, JumpTarget
 from tsunami.core.workspace import validate_play_text
@@ -286,7 +287,10 @@ class Tools:
                 raise ToolRefused(f"unknown device {device!r}")
             try:
                 normalized = check_show_command(policy, PLATFORM_FAMILY[dev.platform], command)
-            except PolicyError as exc:
+                parts = split_command(normalized)
+                if parts.pattern is not None:
+                    compile_pattern(parts.pattern)  # refuse a bad pattern before connecting
+            except (PolicyError, FilterError) as exc:
                 raise ToolRefused(str(exc)) from None
             target = ConnectTarget(
                 customer=customer,
@@ -302,13 +306,17 @@ class Tools:
             transport = self.app.transport()
             session = transport.open(target)
             try:
-                output = session.send_exec(normalized).output
+                output = session.send_exec(parts.base).output
             finally:
                 session.close()
                 close = getattr(transport, "close", None)
                 if callable(close):
                     close()
-            return {"device": dev.name, "command": normalized, "untrusted_device_output": output}
+            # The pipe runs here, on fully redacted text. On the device it would see the
+            # secrets, and which lines came back would reveal them (showfilter.py). The
+            # command is not echoed back: Claude knows what it sent.
+            output = apply_filter(self.app.full_redactor().text(output), parts)
+            return {"device": dev.name, "untrusted_device_output": output}
 
         args = {"customer": customer, "device": device, "command": command}
         return self.app.call("show", 1, args, run, customer=customer)
@@ -344,7 +352,7 @@ class Tools:
             }
 
         args = {"job_id": job_id}
-        return self.app.call("get_job", 1, args, run, redact_for=self._job_customer(job_id))
+        return self.app.call("get_job", 1, args, run, known=self._job_prompts(job_id))
 
     def list_jobs(self, customer: str | None = None, limit: int = 20):
         def run(policy):
@@ -452,7 +460,7 @@ class Tools:
             return {"job_id": job_id, "status": "cancelled"}
 
         args = {"job_id": job_id}
-        return self.app.call("cancel_job", 2, args, run, redact_for=self._job_customer(job_id))
+        return self.app.call("cancel_job", 2, args, run, known=self._job_prompts(job_id))
 
     # == helpers ===========================================================================
 
@@ -565,12 +573,15 @@ class Tools:
             raise ToolRefused(f"unknown job {job_id!r}")
         return job
 
-    def _job_customer(self, job_id: str) -> str | None:
-        """The job's customer for exact-value redaction; None if there is no such job."""
+    def _job_prompts(self, job_id: str) -> list[str]:
+        """An MCP job's prompt values: Claude supplied them, so their echo is not redacted."""
         try:
-            return self.app.history.get_job(job_id).customer
+            job = self.app.history.get_job(job_id)
         except TsunamiError:
-            return None
+            return []
+        if job.actor != Actor.MCP:
+            return []  # a person typed these; Claude never saw them
+        return [str(v) for v in job.prompts.values()]
 
     def _check_play_customer(self, policy, ws, text: str) -> None:
         customer = _yaml_customer(text)

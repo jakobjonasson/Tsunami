@@ -30,9 +30,11 @@ class Redactor:
         drivers = all_drivers()
         self._rules = (*(r for d in drivers for r in d.secret_rules), *extra_rules)
         self._blocks = tuple(b for d in drivers for b in d.secret_blocks)
+        values = {v for v in exact_values if isinstance(v, str) and len(v) >= MIN_EXACT_LENGTH}
+        values |= {v.replace("\n", "\r\n") for v in values if "\n" in v}  # CRLF device output
         # Longest first, so a value containing a shorter one is replaced whole.
         self._exact = sorted(
-            {v for v in exact_values if isinstance(v, str) and len(v) >= MIN_EXACT_LENGTH},
+            values,
             key=len,
             reverse=True,
         )

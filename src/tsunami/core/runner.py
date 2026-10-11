@@ -258,6 +258,13 @@ class Runner:
         for cred in (credential, jump.credential if jump else None):
             if cred is not None:
                 exact += [v for v in (cred.password, cred.enable) if v]
+        if request.actor == Actor.MCP:
+            # Prompt values came from Claude. Redacting their echo in a diff would tell it
+            # that a guess equals a stored secret; sink lines stay masked by the pattern layer.
+            supplied = {str(v).strip() for v in request.prompts.values()}
+            for answers in request.device_prompts.values():
+                supplied |= {str(v).strip() for v in answers.values()}
+            exact = [v for v in exact if v not in supplied]
         return JobContext(
             job_id=job_id,
             workspace=self.workspace,

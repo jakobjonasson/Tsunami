@@ -76,6 +76,13 @@ def test_secret_values_only_for_customer(store):
     assert sorted(store.secret_values("acme")) == ["va", "vb"]
 
 
+def test_all_secret_values_spans_customers_and_logins_but_not_usernames(store):
+    store.set_secret("acme", "a", "va")
+    store.set_secret("other", "c", "vc")
+    store.set_login("lab", LoginCredential("netadmin", "pw", "en"))
+    assert sorted(store.all_secret_values()) == ["en", "pw", "va", "vc"]
+
+
 @pytest.mark.parametrize("bad", ["../x", "Acme", "a/b", "", "a b"])
 def test_slug_validation(store, bad):
     with pytest.raises(TsunamiError):

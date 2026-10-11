@@ -45,6 +45,11 @@ def test_reads_inside_plays_and_snippets(root):
         "plays/push/add-vlan.yml:hidden",  # NTFS alternate data stream
         "plays/push/add-vlan.yml\x00.txt",
         "plays/push/add\nvlan.yml",
+        'plays/push/a"b.yml',  # characters Windows rejects in file names
+        "plays/push/a?b.yml",
+        "plays/push/*.yml",
+        "plays/push/a<b>.yml",
+        "plays/push/a|b.yml",
         "",
         "plays",
     ],
