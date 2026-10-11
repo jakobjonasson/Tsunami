@@ -510,5 +510,10 @@ def _placeholders(prompts: Mapping[str, Prompt], context: PromptContext) -> dict
             else:
                 values[name] = placeholder(prompt.type, context=context, **kwargs)
         except PromptValueError:
-            values[name] = placeholder(prompt.type, context=context, **kwargs)
+            try:
+                values[name] = placeholder(prompt.type, context=context, **kwargs)
+            except PromptValueError:
+                # Nothing to offer, such as a site prompt for a customer with no sites yet.
+                # A template that uses the value reports it as undefined, as a play issue.
+                continue
     return values

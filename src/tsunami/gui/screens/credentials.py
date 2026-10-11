@@ -84,6 +84,31 @@ class _ValueDialog(QDialog):
             edit.clear()
 
 
+def prompt_new_login(ctx: AppContext, parent: QWidget | None) -> str | None:
+    """Ask for a new login (name, username, password, optional enable), save it to the
+    store and return its name; None if cancelled or it could not be saved. Values are
+    write-only: they go straight to set_login and the dialog fields are cleared."""
+    dialog = _ValueDialog("New login", login=True, name=None, parent=parent)
+    try:
+        if dialog.exec() != QDialog.DialogCode.Accepted:
+            return None
+        name = dialog.name_edit.text().strip()
+        username, password = dialog.username_edit.text(), dialog.value_edit.text()
+        if not name or not username or not password:
+            QMessageBox.warning(parent, "New login", "A login needs a name, username and password.")
+            return None
+        try:
+            ctx.secrets.set_login(
+                name, LoginCredential(username, password, dialog.enable_edit.text() or None)
+            )
+        except TsunamiError as exc:
+            QMessageBox.warning(parent, "New login", str(exc))
+            return None
+        return name
+    finally:
+        dialog.clear_values()
+
+
 class _TestSignals(QObject):
     done = Signal(str, bool, str)  # credential name, ok, message
 

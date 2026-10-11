@@ -284,3 +284,11 @@ def test_site_credentials_must_name_a_site(workspace):
     edit(workspace, CUSTOMER, "lab: false\n", "lab: false\nsite_credentials:\n  site-z: x-login\n")
     issues = [i for i in load_workspace(workspace).errors if i.code == "inventory.unknown_site"]
     assert issues and "site-z" in issues[0].message
+
+
+def test_customer_with_no_sites_still_loads(workspace):
+    """The day-0 play asks for a site; with none left, loading must not crash."""
+    (workspace / DEVICES).unlink()
+    (workspace / "inventory/customers/acme/sites/site-a.yml").unlink()
+    ws = load_workspace(workspace)
+    assert "acme" in ws.customers and ws.customers["acme"].sites == {}

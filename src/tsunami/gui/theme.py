@@ -194,6 +194,9 @@ QHeaderView::section {{ background: {p.sidebar}; color: {p.muted}; border: none;
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit[editable="true"] {{
     background: {p.input}; border: 1px solid {p.border}; border-radius: 4px; padding: 4px 6px; }}
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid {p.accent}; }}
+/* A styled spin box loses Fusion's arrows (they draw as empty boxes); numbers are typed,
+   and the arrow keys and mouse wheel still step them. */
+QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 0; border: none; }}
 QLineEdit[invalid="true"] {{ border: 1px solid {p.error}; }}
 
 QPushButton {{ background: {p.hover}; border: 1px solid {p.border}; border-radius: 4px;
