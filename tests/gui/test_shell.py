@@ -31,3 +31,10 @@ def test_start_run_completes_in_the_background(main_window, gui_ctx, qtbot, monk
 def test_command_palette_lists_commands(main_window):
     assert "workspace.reload" in main_window._commands
     assert "palette.show" in main_window._commands
+
+
+def test_app_icon_has_every_size(qapp):
+    from tsunami.gui import icons
+
+    sizes = sorted(s.width() for s in icons.app_icon().availableSizes())
+    assert sizes == [16, 24, 32, 48, 64, 256]

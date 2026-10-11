@@ -1,4 +1,4 @@
-"""Generate assets/tsunami.ico: a wave on a rounded square, in sizes 16 to 256.
+"""Generate src/tsunami/gui/assets/tsunami.ico: a wave on a rounded square, in sizes 16 to 256.
 
 Run: uv run python packaging/make_icon.py
 Needs PySide6 only. The ICO container (PNG entries) is written here, so Pillow is not needed.
@@ -25,7 +25,7 @@ from PySide6.QtGui import (  # noqa: E402
 )
 
 SIZES = (16, 24, 32, 48, 64, 256)
-OUT = Path(__file__).parent / "assets" / "tsunami.ico"
+OUT = Path(__file__).parents[1] / "src" / "tsunami" / "gui" / "assets" / "tsunami.ico"
 
 
 def _wave(left: float, right: float, base: float, amp: float, phase: float) -> QPainterPath:

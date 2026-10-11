@@ -7,7 +7,7 @@ Phase 6 (design.md, Packaging and installation). One PyInstaller onedir build wi
 | `tsunami.spec` | PyInstaller spec: `tsunami.exe` (windowed) and `tsunami-mcp.exe` (console) share one COLLECT. Collects `core/data`, `core/migrations` and `gui/assets`, adds hidden imports, excludes unused Qt modules (and Qt entirely from the MCP exe). |
 | `launch_gui.py`, `launch_mcp.py` | Entry scripts for the two exes. |
 | `make_version_info.py` | Writes `version_info.txt` from `tsunami.__version__`. The spec runs it; never edit `version_info.txt` by hand. |
-| `make_icon.py` | Draws `assets/tsunami.ico` (16 to 256 px) with PySide6. The generated icon is committed; rerun only to change the design. |
+| `make_icon.py` | Draws `src/tsunami/gui/assets/tsunami.ico` (the exe, installer, window and tray icon) (16 to 256 px) with PySide6. The generated icon is committed; rerun only to change the design. |
 | `installer.iss` | Inno Setup 6 script. `PrivilegesRequired=lowest`, installs to `%LOCALAPPDATA%\Programs\Tsunami`. **Never change `AppId`.** |
 | `sign.ps1` | signtool hook (SHA-256, RFC 3161 timestamp, `verify /pa`). |
 | `build.ps1` | Whole local build. |

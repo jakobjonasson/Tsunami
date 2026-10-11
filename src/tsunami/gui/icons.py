@@ -7,6 +7,7 @@ from __future__ import annotations
 
 import csv
 import io
+import struct
 from functools import cache
 from importlib.resources import files
 
@@ -31,6 +32,23 @@ def _codepoints() -> dict[str, int]:
 
 def glyph(name: str) -> str:
     return chr(_codepoints().get(name, _codepoints()["symbol-misc"]))
+
+
+@cache
+def app_icon() -> QIcon:
+    """Tsunami's own icon in every size, for windows and the tray (packaging/make_icon.py).
+
+    The ICO holds PNG images; they are read here so no Qt image plugin is needed.
+    """
+    data = _ASSETS.joinpath("tsunami.ico").read_bytes()
+    result = QIcon()
+    _reserved, _kind, count = struct.unpack_from("<HHH", data, 0)
+    for i in range(count):
+        size, offset = struct.unpack_from("<II", data, 6 + 16 * i + 8)
+        pixmap = QPixmap()
+        if pixmap.loadFromData(data[offset : offset + size], "PNG"):
+            result.addPixmap(pixmap)
+    return result
 
 
 @cache

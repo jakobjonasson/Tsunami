@@ -17,7 +17,7 @@ import make_version_info  # noqa: E402
 
 make_version_info.write()
 VERSION_FILE = str(HERE / "version_info.txt")
-ICON = str(HERE / "assets" / "tsunami.ico")
+ICON = str(SRC / "tsunami" / "gui" / "assets" / "tsunami.ico")  # also the window icon
 
 # Package data read through importlib.resources.files(...): core/data, core/migrations and
 # gui/assets. Same relative layout as in the source tree.
@@ -28,6 +28,7 @@ for pattern, dest in (
     ("gui/assets/*.ttf", "tsunami/gui/assets"),
     ("gui/assets/*.csv", "tsunami/gui/assets"),
     ("gui/assets/*.txt", "tsunami/gui/assets"),
+    ("gui/assets/*.ico", "tsunami/gui/assets"),
 ):
     for f in sorted((SRC / "tsunami").glob(pattern)):
         datas.append((str(f), dest))

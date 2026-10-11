@@ -199,7 +199,7 @@ class MainWindow(QMainWindow):
         self.poller = ApprovalsPoller(ctx)
         self.poller.pending_changed.connect(self._on_pending)
         self.poller.new_request.connect(self._on_new_request)
-        self.tray = QSystemTrayIcon(icons.icon("pulse", theme.current().accent), self)
+        self.tray = QSystemTrayIcon(icons.app_icon(), self)
         if QSystemTrayIcon.isSystemTrayAvailable():
             self.tray.show()
         if ctx.workspace is not None or ctx.last_error:
