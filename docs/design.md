@@ -93,7 +93,7 @@ Python 3.12 with pure-Python or Windows-wheel dependencies covers everything, so
 |pydantic v2|Models, validation, JSON Schema export|Single source of truth for every file format.|
 |ruamel.yaml|YAML load and dump|Preserves comments and key order when the app writes YAML (add to inventory, draft promotion).|
 |keyring|Credential Manager|Set the `WinVaultKeyring` backend explicitly (see Packaging).|
-|mcp|MCP server|Official Python SDK, FastMCP API, stdio transport.|
+|mcp|MCP server|Official Python SDK 2.x (`MCPServer`, formerly FastMCP), stdio transport.|
 |pyinstaller|Build|Onedir, two executables.|
 |Inno Setup|Installer|Build-time only.|
 |pytest, pytest-qt|Tests|Plus the MCP Inspector for manual MCP testing.|
@@ -735,7 +735,8 @@ Every platform family's rules apply to all text, so output from a mislabelled de
 - stdio only, launched as a child process by Claude Desktop or Claude Code. No HTTP listener and no remote endpoint.
 - A separate console-subsystem exe in the same install. Do not route MCP through the windowed GUI exe; it is not a reliable stdio process.
 - Stdout belongs to the protocol. Configure logging to `logs\mcp.log` before importing anything that logs. Send Netmiko session logs to files. No `print()` anywhere reachable from the MCP entry point.
-- Built on the official MCP Python SDK (FastMCP). Tools return structured JSON.
+- Built on the official MCP Python SDK 2.x, `mcp.server.mcpserver.MCPServer` (FastMCP in 1.x). Tools return structured JSON.
+- Every device connection the MCP process makes, for `show`, checks and lab runs, refuses an unknown or changed host key. Trusting a new key is a GUI action.
 - The process may start with an undefined working directory. Find all paths through `%APPDATA%` and `%LOCALAPPDATA%`, never relative paths.
 - The policy file is re-read on every tool call, so changes made in the GUI apply without a restart.
 
@@ -770,7 +771,7 @@ Mark tier 0 and tier 1 read tools with `readOnlyHint`. Treat annotations as hint
 ### Approval flow
 
 1. Claude calls `request_run` with an approved play (not a draft), targets, prompt values, and an optional tag filter.
-2. The server validates the play, renders all targets, and runs a check-mode diff. It stores the job as `awaiting_approval` with the play hash, a hash of each device's rendered config, and the masked render and diff.
+2. The server validates the play and creates the job as `pending` with the play hash. It renders all targets and runs a check-mode diff in the background, storing each device's masked render, render hash and diff. When the check completes the job becomes `awaiting_approval`. If any device fails the check, the job ends `failed` and is never offered for approval.
 3. The GUI polls the database every 2 seconds, shows a badge and tray notification, and opens an approval card: play, customer, targets, prompts, and per-device masked render and diff.
 4. The person approves or denies. Approval records the Windows username and time.
 5. The GUI runs the job through the normal pipeline, including canary, backups, and rollback.
@@ -1352,3 +1353,4 @@ Changes since the original draft, with reasons:
 - An initial play's model dropdown is limited to models whose platform has every snippet the play uses, so a Cisco-only day-0 play never offers Aruba models.
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.
+- The MCP SDK 2.x renamed FastMCP to `MCPServer`. MCP device connections never accept a new host key, and a change request is `pending` while its check-mode diff runs.

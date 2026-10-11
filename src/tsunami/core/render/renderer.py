@@ -427,18 +427,30 @@ def validation_render_issues(workspace: Any) -> list[Issue]:
             i.severity == Severity.ERROR for i in workspace.issues_for(path)
         ):
             continue
-        for device, answers, who in _validation_targets(workspace, entry):
-            try:
-                renderer.render(entry, device=device, prompt_values=answers, validation=True)
-            except RenderError as exc:
-                file = exc.file or path
-                line = exc.line
-                if exc.loc and file == path and path in workspace.play_docs:
-                    line = workspace.play_docs[path].line_for(exc.loc)
-                key = (file, line, str(exc))
-                if key not in issues:
-                    message = f"{exc} (rendering {path.as_posix()} for {who})"
-                    issues[key] = Issue(Severity.ERROR, "render.failed", message, file, line)
+        for issue in entry_render_issues(workspace, entry, workspace.play_docs.get(path), renderer):
+            issues.setdefault((issue.file, issue.line, issue.message), issue)
+    return list(issues.values())
+
+
+def entry_render_issues(
+    workspace: Any, entry: Any, doc: Any = None, renderer: Renderer | None = None
+) -> list[Issue]:
+    """Validation-render one play for each of its targets; doc maps play locations to lines."""
+    renderer = renderer or Renderer(workspace)
+    path = entry.path
+    issues: dict[tuple, Issue] = {}
+    for device, answers, who in _validation_targets(workspace, entry):
+        try:
+            renderer.render(entry, device=device, prompt_values=answers, validation=True)
+        except RenderError as exc:
+            file = exc.file or path
+            line = exc.line
+            if exc.loc and file == path and doc is not None:
+                line = doc.line_for(exc.loc)
+            key = (file, line, str(exc))
+            if key not in issues:
+                message = f"{exc} (rendering {path.as_posix()} for {who})"
+                issues[key] = Issue(Severity.ERROR, "render.failed", message, file, line)
     return list(issues.values())
 
 

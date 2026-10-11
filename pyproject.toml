@@ -47,6 +47,7 @@ select = ["E", "F", "W", "I", "UP", "B", "T20"]
 "src/tsunami/cli.py" = ["T20"]
 "src/tsunami/bootstrap.py" = ["T20"]
 "src/tsunami/gui/theme.py" = ["E501"]  # the Qt style sheet is data
+"src/tsunami/mcp_server/server.py" = ["E501"]  # tool descriptions are prose
 "tests/**" = ["T20"]
 
 [tool.pytest.ini_options]

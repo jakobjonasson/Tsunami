@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is next.
+**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) and Phase 5 (MCP server) are in progress.
 
 ---
 
@@ -28,7 +28,7 @@ This file goes with [design.md](design.md), which is the spec. The spec says *wh
    - who downloads the AOS-CX Switch Simulator (it needs an HPE support-portal login)
    - a physical AOS-S switch for the bench
    - which physical models get staged over console
-3. **Git workflow.** Commit straight to `main`, or a branch per phase merged after review?
+3. **Git workflow.** Decided: commit straight to `main`.
 4. **Aruba facts still marked *verify* in the spec**, all to be confirmed on a device in 3.10:
    - the AOS-CX auto-checkpoint behavior after a dropped session
    - how AOS-CX's revert-now path interacts with a running auto-checkpoint timer
@@ -256,9 +256,9 @@ Screen groups for 4.2:
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 5.1 | Enforcement wrapper, pathguard (symlinks, junctions), approval hashing, lab exception | Opus | Phase 4 |
-| 5.2 | Policy model and loader + per-family show-allowlist matcher + tests | Sonnet | — |
-| 5.3 | The MCP tools on top of `services`, tool descriptions | Sonnet | 5.1 |
+| 5.1 ✅ | Enforcement wrapper, pathguard (symlinks, junctions), approval hashing, lab exception | Opus | Phase 4 |
+| 5.2 ✅ | Policy model and loader + per-family show-allowlist matcher + tests | Sonnet | — |
+| 5.3 ✅ | The MCP tools on top of `services`, tool descriptions | Sonnet | 5.1 |
 | 5.4 | Scripted secret-leak client suite, written without seeing 5.3 | Sonnet (separate agent) | 5.1 |
 | 5.5 | MCP Inspector pass; approval round trip with the GUI | Opus + you | 5.3 |
 

@@ -164,6 +164,32 @@ def load_workspace(root: Path, *, render: bool = True) -> Workspace:
     return workspace
 
 
+def validate_play_text(workspace: Workspace, text: str, path: Path | str) -> list[Issue]:
+    """Validate play YAML that may not be on disk (the MCP validate and write_draft tools).
+
+    Checks run against the loaded workspace's inventory, exactly as the loader would check a
+    file at `path`; a path under drafts/ resolves draft snippets first.
+    """
+    from tsunami.core.render.renderer import entry_render_issues
+    from tsunami.core.yamlio import load_yaml_text
+
+    rel = Path(path)
+    loader = _Loader(workspace.root)
+    try:
+        doc = load_yaml_text(text, rel)
+    except YamlLoadError as exc:
+        return [exc.issue]
+    play = loader.model(Play, doc, doc.data, "play")
+    if play is None:
+        return loader.issues
+    loader.findings(doc, play_findings(play))
+    entry = PlayEntry(path=rel, draft=rel.parts[:1] == ("drafts",), play=play)
+    loader.check_play_against_workspace(entry, doc, workspace)
+    if not any(i.severity == Severity.ERROR for i in loader.issues):
+        loader.issues.extend(entry_render_issues(workspace, entry, doc))
+    return sorted(loader.issues, key=lambda i: (str(i.file), i.line or 0))
+
+
 class _Loader:
     def __init__(self, root: Path) -> None:
         self.root = root
