@@ -26,6 +26,7 @@ from pathlib import Path
 import paramiko
 
 from tsunami.core.transports.base import HostKeyMismatchError, UnreachableError
+from tsunami.core.transports.legacy_ssh import offered_key_types, transport_class
 
 _locks: dict[Path, threading.Lock] = {}
 _locks_guard = threading.Lock()
@@ -138,19 +139,19 @@ def probe_host_key(
     *,
     timeout: float,
     key_types: list[str] | None = None,
+    legacy: bool = True,
 ) -> paramiko.PKey:
-    """The server's host key, read without authenticating."""
+    """The server's host key, read without authenticating. legacy offers SHA-1 last."""
     try:
         sock = open_socket()
     except OSError as exc:
         raise UnreachableError(f"cannot connect: {type(exc).__name__}") from None
-    transport = paramiko.Transport(sock)
+    transport = transport_class(legacy)(sock)
     try:
         if key_types:
-            options = transport.get_security_options()
-            preferred = [t for t in options.key_types if t in key_types]
+            preferred = offered_key_types(transport, key_types)
             if preferred:
-                options.key_types = preferred
+                transport.get_security_options().key_types = preferred
         transport.start_client(timeout=timeout)
         return transport.get_remote_server_key()
     except (paramiko.SSHException, OSError, EOFError) as exc:

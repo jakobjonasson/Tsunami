@@ -54,6 +54,8 @@ class AppSettings(StrictModel):
     backup_retention: int = Field(30, ge=1, le=1000)
     log_level: Literal["DEBUG", "INFO", "WARNING", "ERROR"] = "INFO"
     theme: Literal["system", "light", "dark"] = "system"
+    # Offer SHA-1 SSH algorithms after every modern one, for devices with nothing newer.
+    ssh_legacy_algorithms: bool = True
 
     def extra_rules(self, family: PlatformFamily | None = None) -> tuple[LineRule, ...]:
         """Extra sink patterns as LineRules, for one family or all of them."""

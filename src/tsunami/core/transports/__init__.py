@@ -27,7 +27,11 @@ class DeviceTransport:
             if self._ssh is None:
                 from tsunami.core.transports.ssh import SshTransport
 
-                self._ssh = SshTransport(self.paths, benign=self.settings.benign_messages)
+                self._ssh = SshTransport(
+                    self.paths,
+                    benign=self.settings.benign_messages,
+                    legacy=self.settings.ssh_legacy_algorithms,
+                )
             return self._ssh.open(target)
         if target.method == ConnectionMethod.SERIAL:
             if self._console is None:

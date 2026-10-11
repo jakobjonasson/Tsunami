@@ -12,6 +12,7 @@ Platform drivers: Families and sessions.
 
 from __future__ import annotations
 
+import logging
 import os
 import socket
 import tempfile
@@ -33,9 +34,21 @@ from tsunami.core.transports.base import (
     UnreachableError,
 )
 from tsunami.core.transports.hostkeys import HostKeyStore, probe_host_key
-from tsunami.core.transports.netmiko_session import NetmikoSession, aoscx_class
+from tsunami.core.transports.legacy_ssh import transport_class, uses_sha1
+from tsunami.core.transports.netmiko_session import NetmikoSession, connection_class
 
 MAX_JUMP_CHANNELS = 10
+log = logging.getLogger(__name__)
+
+
+def _note_legacy(conn: Any, device: str) -> None:
+    """Log when a device could only be reached with SHA-1 algorithms."""
+    try:
+        transport = conn.remote_conn.get_transport()
+    except AttributeError:
+        return
+    if transport is not None and uses_sha1(transport):
+        log.info("%s: SSH uses SHA-1 algorithms (the device offers nothing newer)", device)
 
 
 class JumpConnection:
@@ -48,6 +61,7 @@ class JumpConnection:
         *,
         max_channels: int = MAX_JUMP_CHANNELS,
         probe: Callable[..., paramiko.PKey] = probe_host_key,
+        legacy: bool = True,
     ) -> None:
         jump = target.jump
         assert jump is not None
@@ -55,6 +69,7 @@ class JumpConnection:
             lambda: socket.create_connection((jump.host, jump.port), target.connect_timeout),
             timeout=target.connect_timeout,
             key_types=store.known_types(jump.host, jump.port) or None,
+            legacy=legacy,
         )
         store.check(jump.host, jump.port, key, allow_new=target.allow_new_host_key)
         client = paramiko.SSHClient()
@@ -69,6 +84,7 @@ class JumpConnection:
                 timeout=target.connect_timeout,
                 allow_agent=False,
                 look_for_keys=False,
+                transport_factory=transport_class(legacy),
             )
         except paramiko.BadHostKeyException:
             raise HostKeyMismatchError(f"jump host {jump.host}: host key changed") from None
@@ -113,15 +129,17 @@ class SshTransport:
         connect_handler: Callable[..., Any] | None = None,
         probe: Callable[..., paramiko.PKey] = probe_host_key,
         jump_factory: Callable[[ConnectTarget, HostKeyStore], Any] | None = None,
+        legacy: bool = True,
     ) -> None:
         self.paths = paths
         self.benign = benign or {}
         self.max_jump_channels = max_jump_channels
+        self.legacy = legacy  # offer SHA-1 algorithms last (legacy_ssh.py)
         self._connect_handler = connect_handler
         self._probe = probe
         self._jump_factory = jump_factory or (
             lambda target, store: JumpConnection(
-                target, store, max_channels=max_jump_channels, probe=probe
+                target, store, max_channels=max_jump_channels, probe=probe, legacy=legacy
             )
         )
         self._jumps: dict[tuple[str, str, int], Any] = {}
@@ -146,6 +164,7 @@ class SshTransport:
                 opener,
                 timeout=target.connect_timeout,
                 key_types=store.known_types(target.host, target.port) or None,
+                legacy=self.legacy,
             )
             store.check(target.host, target.port, key, allow_new=target.allow_new_host_key)
             conn = self._login(target, family, store, opener() if jump is not None else None)
@@ -186,7 +205,6 @@ class SshTransport:
     def _login(
         self, target: ConnectTarget, family: PlatformFamily, store: HostKeyStore, sock: Any
     ) -> Any:
-        from netmiko import ConnectHandler
         from netmiko.exceptions import NetmikoAuthenticationException, NetmikoTimeoutException
 
         credential = target.credential
@@ -214,9 +232,15 @@ class SshTransport:
             kwargs["sock"] = sock
         handler = self._connect_handler
         if handler is None:
-            handler = aoscx_class() if family == PlatformFamily.AOS_CX else ConnectHandler
+            handler = connection_class(
+                kwargs["device_type"],
+                aoscx=family == PlatformFamily.AOS_CX,
+                transport_factory=transport_class(self.legacy),
+            )
         try:
-            return handler(**kwargs)
+            conn = handler(**kwargs)
+            _note_legacy(conn, target.device)
+            return conn
         except NetmikoAuthenticationException:
             raise AuthenticationError(f"{target.device}: login failed") from None
         except NetmikoTimeoutException:

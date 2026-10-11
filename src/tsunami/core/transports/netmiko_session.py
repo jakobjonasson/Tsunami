@@ -139,6 +139,22 @@ def _indent(line: str) -> int:
     return len(line) - len(line.lstrip())
 
 
+def connection_class(device_type: str, *, aoscx: bool, transport_factory: Any) -> type:
+    """The Netmiko class for device_type, connecting through transport_factory (so the
+    SHA-1 fallback in legacy_ssh.py reaches Netmiko's Paramiko client)."""
+    from netmiko.ssh_dispatcher import CLASS_MAPPER
+
+    base = aoscx_class() if aoscx else CLASS_MAPPER[device_type]
+
+    class TsunamiConnection(base):
+        def _connect_params_dict(self) -> dict[str, Any]:
+            params = super()._connect_params_dict()
+            params["transport_factory"] = transport_factory
+            return params
+
+    return TsunamiConnection
+
+
 def aoscx_class(serial: bool = False) -> type:
     """ArubaCxSSH whose config-mode check also matches sub-contexts like (config-if)#.
 
