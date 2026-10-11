@@ -6,12 +6,16 @@ in history.db for a person to approve them in the GUI, unless the customer is a 
 the policy allows direct apply. Every device connection made here refuses unknown host
 keys: trust on first use is a GUI action.
 
-See design.md, MCP interface: Tools, Approval flow, Leak paths.
+The tools run inside the Tsunami GUI process, which alone holds the unlocked vault:
+tsunami-mcp.exe forwards each call over the bridge (bridge.py) and only relays results.
+
+See design.md, MCP interface: Tools, Approval flow, Leak paths, Process model.
 """
 
 from __future__ import annotations
 
 import hashlib
+import inspect
 import os
 import tempfile
 import threading
@@ -37,12 +41,45 @@ from tsunami.core.yamlio import YamlLoadError, load_yaml_text
 from tsunami.mcp_server.enforcement import McpApp, ToolRefused
 
 PLAY_DIRS = ("plays", "drafts/plays")
+TOOL_NAMES = frozenset(
+    {
+        "list_customers",
+        "list_devices",
+        "list_plays",
+        "read_play",
+        "list_snippets",
+        "read_snippet",
+        "resolved_vars",
+        "validate",
+        "render",
+        "write_draft",
+        "delete_draft",
+        "check",
+        "compliance",
+        "show",
+        "get_job",
+        "list_jobs",
+        "request_run",
+        "cancel_job",
+    }
+)
 
 
 class Tools:
     def __init__(self, app: McpApp) -> None:
         self.app = app
         self._cancels: dict[str, threading.Event] = {}
+
+    def dispatch(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        """Run one tool by name with named arguments (calls arriving over the bridge)."""
+        if tool not in TOOL_NAMES:
+            raise ToolRefused(f"unknown tool {tool!r}")
+        method = getattr(self, tool)
+        try:
+            bound = inspect.signature(method).bind(**args)
+        except TypeError:
+            raise ToolRefused(f"bad arguments for {tool}") from None
+        return method(*bound.args, **bound.kwargs)
 
     # == tier 0: workspace only ======================================================
 
@@ -647,6 +684,33 @@ class Tools:
             return _yaml_customer(_read_text(resolve_read(ws_root, path, allowed=PLAY_DIRS)))
         except Exception:  # noqa: BLE001
             return None
+
+
+class LocalBackend:
+    """Runs tool calls in this process: the GUI behind the bridge, and tests."""
+
+    def __init__(self, tools: Tools) -> None:
+        self.tools = tools
+
+    def call(self, tool: str, args: dict[str, Any]) -> dict[str, Any]:
+        return self.tools.dispatch(tool, args)
+
+
+class ToolProxy:
+    """Tools' method signatures over a backend (LocalBackend or bridge.BridgeClient)."""
+
+    def __init__(self, backend: Any) -> None:
+        self._backend = backend
+
+    def __getattr__(self, name: str) -> Any:
+        if name not in TOOL_NAMES:
+            raise AttributeError(name)
+        params = list(inspect.signature(getattr(Tools, name)).parameters)[1:]
+
+        def call(*args: Any, **kwargs: Any) -> dict[str, Any]:
+            return self._backend.call(name, {**dict(zip(params, args, strict=False)), **kwargs})
+
+        return call
 
 
 def _yaml_customer(text: str) -> str | None:

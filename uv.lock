@@ -1024,6 +1024,7 @@ wheels = [
 name = "tsunami"
 source = { editable = "." }
 dependencies = [
+    { name = "cryptography" },
     { name = "jinja2" },
     { name = "keyring" },
     { name = "mcp" },
@@ -1046,6 +1047,7 @@ dev = [
 
 [package.metadata]
 requires-dist = [
+    { name = "cryptography", specifier = ">=46" },
     { name = "jinja2", specifier = ">=3.1.6" },
     { name = "keyring", specifier = ">=25.7.0" },
     { name = "mcp", specifier = ">=2.3.0" },

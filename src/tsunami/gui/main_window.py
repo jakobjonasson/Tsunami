@@ -291,6 +291,9 @@ class MainWindow(QMainWindow):
         self.status_jobs = _ClickLabel("")
         self.status_alarm = _ClickLabel("", lambda: self.show_view("history"))
         self.status_user = QLabel(self.ctx.windows_user())
+        self.status_lock = QToolButton(objectName="StatusLock")
+        self.status_lock.setAutoRaise(True)
+        self.status_lock.clicked.connect(lambda: self.run_command("tsunami.lock"))
         for label in (self.status_workspace, self.status_issues):
             status.addWidget(label)
         for label in (
@@ -299,8 +302,14 @@ class MainWindow(QMainWindow):
             self.status_approvals,
             self.status_mcp,
             self.status_user,
+            self.status_lock,
         ):
             status.addPermanentWidget(label)
+        lock = getattr(self.ctx, "lock", None)
+        self.status_lock.setVisible(lock is not None)
+        if lock is not None:
+            lock.lock_changed.connect(self._on_lock_changed)
+            self._on_lock_changed(lock.unlocked)
         self._update_editor_stack()
 
     # -- Shell protocol ------------------------------------------------------------------
@@ -417,6 +426,15 @@ class MainWindow(QMainWindow):
         self.register_command(
             "workspace.reload", "Workspace: Reload files and jobs", self.refresh_all, "F5"
         )
+        if getattr(self.ctx, "lock", None) is not None:
+            self.register_command(
+                "tsunami.lock", "Tsunami: Lock", lambda: self.ctx.lock.lock_now(self), "Ctrl+L"
+            )
+            self.register_command(
+                "tsunami.password",
+                "Tsunami: Change password…",
+                lambda: self.ctx.lock.change_password(self),
+            )
         self.register_command("view.panel", "View: Toggle panel", self._toggle_panel, "Ctrl+J")
         self.register_command(
             "view.sidebar", "View: Toggle side bar", self._toggle_sidebar, "Ctrl+B"
@@ -515,6 +533,15 @@ class MainWindow(QMainWindow):
 
     def _update_editor_stack(self) -> None:
         self.editor_stack.setCurrentWidget(self.editor if self.editor.count() else self.welcome)
+
+    def _on_lock_changed(self, unlocked: bool) -> None:
+        p = theme.current()
+        self.status_lock.setIcon(icons.icon("unlock" if unlocked else "lock", p.muted))
+        self.status_lock.setToolTip(
+            "Unlocked. Click or press Ctrl+L to lock Tsunami."
+            if unlocked
+            else "Locked: MCP calls are refused until Tsunami is unlocked."
+        )
 
     def _side_header(self, title: str) -> QWidget:
         """A view's title row: its name, and a refresh button as in VS Code's views."""

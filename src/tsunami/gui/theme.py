@@ -211,6 +211,7 @@ QPushButton:disabled {{ color: {p.muted}; border-color: {p.border}; }}
 #Banner[level="warning"] {{ background: {p.warning}; color: #1a1917; padding: 8px; }}
 #Card {{ background: {p.editor}; border: 1px solid {p.border}; border-radius: 8px; }}
 #Muted {{ color: {p.muted}; }}
+#FormError {{ color: {p.error}; }}
 #Section {{ color: {p.muted}; font-weight: 600; }}
 QPushButton#Link {{ background: transparent; border: none; border-radius: 4px; color: {p.accent};
                     padding: 6px 10px; text-align: left; }}

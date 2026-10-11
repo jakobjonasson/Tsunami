@@ -67,6 +67,7 @@ class AppContext(QObject):
         self.workspace: Workspace | None = None
         self.workspace_path: Path | None = None
         self.last_error: str | None = None
+        self.lock: Any = None  # gui.lock.LockManager, set by app.main after unlocking
         self._transport_factory = transport_factory
         self.qsettings = qsettings or QSettings("Tsunami", "Tsunami")
         self._load_signals = _LoadSignals()

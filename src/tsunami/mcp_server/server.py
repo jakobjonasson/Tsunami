@@ -29,14 +29,19 @@ Rules:
 RO = {"read_only_hint": True, "destructive_hint": False}
 
 
-def build_server(app: Any) -> Any:
+def build_server(backend: Any) -> Any:
+    """The MCP server. backend is a bridge.BridgeClient in tsunami-mcp.exe; tests pass an
+    McpApp, served in this process."""
     from mcp.server.mcpserver import MCPServer
     from mcp.types import ToolAnnotations
 
     from tsunami import __version__
-    from tsunami.mcp_server.tools import Tools
+    from tsunami.mcp_server.enforcement import McpApp
+    from tsunami.mcp_server.tools import LocalBackend, ToolProxy, Tools
 
-    tools = Tools(app)
+    if isinstance(backend, McpApp):
+        backend = LocalBackend(Tools(backend))
+    tools = ToolProxy(backend)
     server = MCPServer(name="tsunami", instructions=INSTRUCTIONS, version=__version__)
     read_only = ToolAnnotations(**RO)
     writes = ToolAnnotations(read_only_hint=False, destructive_hint=False)
@@ -189,24 +194,10 @@ def main(argv: list[str] | None = None) -> int:
     from tsunami.core.logsetup import configure_logging  # before anything that logs
 
     configure_logging(paths.logs_dir / "mcp.log")
-    bootstrap.configure_keyring()
 
-    from tsunami.core.history import History
-    from tsunami.core.secret_store import KeyringSecretStore
-    from tsunami.mcp_server.enforcement import McpApp
+    # No credentials, history or device access here: every call goes to the Tsunami
+    # window over the bridge, and is refused while Tsunami is locked or closed.
+    from tsunami.mcp_server.bridge import BridgeClient
 
-    history = History(paths.history_db)
-    history.mark_interrupted()
-    secrets = KeyringSecretStore(index_path=paths.settings / "credential-index.json")
-    app = McpApp(paths, history=history, secrets=secrets)
-    server = build_server(app)
-    try:
-        server.run("stdio")
-        # The client closed stdio. Let started jobs finish rather than cut a change off
-        # mid-device; if the client kills the process instead, heartbeats stop and the
-        # GUI marks the job interrupted.
-        for thread in list(app.threads):
-            thread.join()
-    finally:
-        history.close()
+    build_server(BridgeClient(paths)).run("stdio")
     return 0

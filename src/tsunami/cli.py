@@ -135,7 +135,9 @@ def _run(args: argparse.Namespace) -> int:
             workspace,
             transport=DeviceTransport(paths, settings),
             history=history,
-            secrets=KeyringSecretStore(index_path=paths.settings / "credential-index.json"),
+            secrets=KeyringSecretStore(
+                index_path=paths.settings / "credential-index.json", cipher=_unlock(paths)
+            ),
             paths=paths,
             app_settings=settings,
             on_event=show,
@@ -181,6 +183,18 @@ def _validate(path: Path) -> int:
     errors, warnings = len(workspace.errors), len(workspace.warnings)
     print(f"{errors} error(s), {warnings} warning(s)")
     return 1 if errors else 0
+
+
+def _unlock(paths):
+    """The vault cipher, after asking for the Tsunami password; None if none is set."""
+    import getpass
+
+    from tsunami.core.vault import Vault
+
+    vault = Vault(paths.vault_file)
+    if not vault.exists():
+        return None
+    return vault.unlock(getpass.getpass("Tsunami password: "))
 
 
 def main(argv: list[str] | None = None) -> int:

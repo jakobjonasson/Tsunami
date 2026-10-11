@@ -50,6 +50,7 @@ import keyring.errors
 
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
+from tsunami.core.vault import TOKEN_PREFIX, LockedCipher, VaultLocked
 
 SERVICE = "tsunami"
 TEST_SERVICE = "tsunami-test"
@@ -145,10 +146,14 @@ class KeyringSecretStore:
         *,
         index_path: Path | None = None,
         enumerator: Callable[[], list[dict[str, Any]]] | None = None,
+        cipher: Any = None,
     ) -> None:
         self._service = service
         self._index_path = index_path
         self._enumerator = enumerator  # test seam: replaces CredEnumerate
+        # vault.Cipher while unlocked, vault.LockedCipher while locked; None stores plain
+        # values (no Tsunami password set: tests, and stores from before the vault).
+        self.cipher = cipher
 
     def __repr__(self) -> str:
         return f"KeyringSecretStore(service={self._service!r})"
@@ -223,9 +228,37 @@ class KeyringSecretStore:
                     values += [v for v in (login.password, login.enable) if v]
                 elif key.startswith(_SECRET_PREFIX):
                     values.append(self._get(key, "secret"))
+            except VaultLocked:
+                raise  # never redact with a silently empty list
             except TsunamiError:
                 continue  # removed between listing and reading, or malformed
         return values
+
+    def rekey(self, cipher: Any) -> int:
+        """Re-store every entry under a new cipher: first-time encryption of plain values,
+        or a password change. Everything is read before anything is written."""
+        keys = self._usernames()
+        plain = {key: self._get(key, key) for key in keys}
+        stored = {key: keyring.get_password(self._service, key) for key in keys}
+        previous, self.cipher = self.cipher, cipher
+        try:
+            for key, value in plain.items():
+                self._set(key, value, key)
+        except BaseException:
+            # Put every entry back as it was, so the old password still opens all of them.
+            for key, raw in stored.items():
+                if raw is not None:
+                    keyring.set_password(self._service, key, raw)
+            self.cipher = previous
+            raise
+        return len(plain)
+
+    def delete_everything(self) -> int:
+        """Remove every Tsunami entry: the reset after a forgotten Tsunami password."""
+        keys = self._usernames()
+        for key in keys:
+            self._delete(key, key)
+        return len(keys)
 
     # ---- internals ----
 
@@ -242,9 +275,18 @@ class KeyringSecretStore:
             raise TsunamiError(
                 f"{label} is not in Credential Manager; add it in Tsunami's Credentials view"
             )
-        return value
+        if self.cipher is not None:
+            if value.startswith(TOKEN_PREFIX):
+                return self.cipher.decrypt(key, value)
+            if isinstance(self.cipher, LockedCipher):
+                raise VaultLocked
+        elif value.startswith(TOKEN_PREFIX):
+            raise VaultLocked  # encrypted, and no key in this process
+        return value  # stored before the Tsunami password was set; rekey encrypts it
 
     def _set(self, key: str, value: str, label: str) -> None:
+        if self.cipher is not None:
+            value = self.cipher.encrypt(key, value)
         size = _stored_size(value)
         if size > MAX_VALUE_BYTES:
             raise TsunamiError(

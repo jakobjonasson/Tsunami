@@ -62,3 +62,9 @@ class AppPaths:
     @property
     def policy_file(self) -> Path:
         return self.settings / "mcp-policy.yml"
+
+    @property
+    def vault_file(self) -> Path:
+        """Salt and check value for the Tsunami password (core/vault.py). Machine-local,
+        like the Credential Manager entries it unlocks."""
+        return self.machine / "vault.json"

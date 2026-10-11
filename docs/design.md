@@ -71,7 +71,8 @@ Machine data stays out of the workspace because running configs contain password
 
 ### Process model
 
-- The GUI and MCP server are separate processes. Each opens its own connection to `history.db` (WAL mode, `busy_timeout` 5000 ms).
+- The GUI and MCP server are separate processes. The MCP server holds no credentials, opens no `history.db` and contacts no device: it relays each tool call over a local named pipe to the GUI, which runs the tools (enforcement, redaction, audit, and any job they start) and answers only while Tsunami is unlocked. Locked, the GUI answers `403 Tsunami is locked`; closed, the relay answers `503 Tsunami is not running`; the MCP server keeps running either way. The pipe has Windows' default named-pipe security (you, SYSTEM and administrators), and its handshake needs a random token the GUI writes to `%LOCALAPPDATA%\Tsunami` at each start. Messages are JSON.
+- The GUI and the CLI open their own connections to `history.db` (WAL mode, `busy_timeout` 5000 ms).
 - A run uses a `ThreadPoolExecutor` with one worker per device in the current batch. Hard cap: 50 concurrent sessions per run.
 - In the GUI, the runner lives in a `QThread`. Workers report through Qt signals. UI updates are throttled to every 100 ms. Worker threads never touch widgets.
 - Cancellation is cooperative through a `threading.Event`. In-flight devices finish their current step, then stop and roll back if a change was partly applied.
@@ -676,7 +677,16 @@ Dialog patterns for every platform are configurable in settings, because prompts
 
 ## Secrets and credentials
 
-Secret values exist only in Windows Credential Manager and, briefly, in memory during a push. Everything else refers to them by name, and every outbound path runs through one redactor.
+Secret values exist only in Windows Credential Manager, encrypted under the Tsunami password, and briefly in memory during a push. Everything else refers to them by name, and every outbound path runs through one redactor.
+
+### Tsunami password
+
+- Set on first launch, and asked for each time Tsunami starts. Values in Credential Manager are AES-256-GCM ciphertext (`tv1:` prefix) under a key derived from the password with scrypt (N=2^17, r=8, p=1). The entry name is the additional data, so a value copied to another entry does not decrypt. `%LOCALAPPDATA%\Tsunami\vault.json` holds the salt, the cost and a check value, none of them secret.
+- The key lives only in the GUI process while unlocked. Tsunami locks after `auto_lock_minutes` without input (default 15, 0 never) or on Ctrl+L; while locked, stored values cannot be read or written, and MCP calls are refused. Jobs already running keep the logins they loaded.
+- First launch encrypts entries saved before the password existed. Changing the password re-encrypts every entry before the new password is saved, and puts every entry back if any write fails.
+- A forgotten password cannot be recovered: the reset deletes every stored login and secret, then asks for a new password.
+- Entries are saved with "local machine" persistence, so they never roam with a domain profile.
+- It protects against other programs and people reading Credential Manager. It does not protect against malware running as you while Tsunami is unlocked.
 
 ### Storage
 
@@ -749,7 +759,8 @@ Accepted residual: if a secret is also stored in plain text somewhere the exact 
 - A separate console-subsystem exe in the same install. Do not route MCP through the windowed GUI exe; it is not a reliable stdio process.
 - Stdout belongs to the protocol. Configure logging to `logs\mcp.log` before importing anything that logs. Send Netmiko session logs to files. No `print()` anywhere reachable from the MCP entry point.
 - Built on the official MCP Python SDK 2.x, `mcp.server.mcpserver.MCPServer` (FastMCP in 1.x). Tools return structured JSON.
-- Every device connection the MCP process makes, for `show`, checks and lab runs, refuses an unknown or changed host key. Trusting a new key is a GUI action.
+- Every device connection an MCP tool makes, for `show`, checks and lab runs, refuses an unknown or changed host key. Trusting a new key is a GUI action.
+- The tools run in the GUI process, behind the relay described under Process model.
 - The process may start with an undefined working directory. Find all paths through `%APPDATA%` and `%LOCALAPPDATA%`, never relative paths.
 - The policy file is re-read on every tool call, so changes made in the GUI apply without a restart.
 
@@ -883,7 +894,7 @@ approval_expiry_minutes: 60
 |Policy tampering|Policy lives outside the workspace. No MCP write path.|
 |Prompt injection from device output|Approval gate for non-lab customers. Device output is returned in a field named `untrusted_device_output`.|
 
-The MCP server runs as your Windows user, so another process you run could read Credential Manager directly. The protection is the narrow tool surface, not OS isolation. That is acceptable for this threat model. Real isolation would mean running the runner as a separate Windows account.
+The MCP server holds no credentials: the GUI runs every tool, and only while unlocked. Another process running as you can still reach the relay while Tsunami is unlocked, and could read process memory; the protection is the narrow tool surface and the Tsunami password, not OS isolation. That is acceptable for this threat model. Real isolation would mean running the runner as a separate Windows account.
 
 ## GUI
 
@@ -1370,6 +1381,7 @@ Changes since the original draft, with reasons:
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.
 - The MCP SDK 2.x renamed FastMCP to `MCPServer`. MCP device connections never accept a new host key, and a change request is `pending` while its check-mode diff runs.
+- Added the Tsunami password: stored values are encrypted under it, and the MCP server became a relay to the unlocked GUI, so tsunami-mcp.exe never holds credentials. Credential Manager entries use local-machine persistence.
 - SHA-1 SSH algorithms are offered last on every connection, because Paramiko 5 dropped them and many devices in service offer nothing newer.
 - Device types (core, distribution, access, wlc, ap, router) are built-in roles; devices may name their own login and sites may set a default (`site_credentials`), because one customer login did not fit sites or devices with different credentials.
 - From the blind leak review: show pipes run locally on redacted output (a device-side `include` recovered a secret character by character); MCP exact-value redaction covers every customer's secrets but not Claude's own echoed input (redacting it made a guessing oracle); audit rows are fully redacted; altered `secret()` output is a render error; refusal reasons reach the client as MCP tool errors.

@@ -173,8 +173,33 @@ class SettingsTab(QScrollArea):
         self.retention_spin.setRange(1, 1000)
         self.retention_spin.setValue(s.backup_retention)
         form.addRow("Backup retention", self.retention_spin)
+        self.legacy_ssh_check = QCheckBox("Allow SHA-1 SSH for devices that offer nothing newer")
+        self.legacy_ssh_check.setChecked(s.ssh_legacy_algorithms)
+        self.legacy_ssh_check.setToolTip(
+            "SHA-1 algorithms are offered after every modern one, so modern devices still "
+            "use modern crypto. Turn off to refuse devices that need SHA-1."
+        )
+        form.addRow("SSH", self.legacy_ssh_check)
+        lock_row = QHBoxLayout()
+        self.auto_lock_spin = QSpinBox()
+        self.auto_lock_spin.setRange(0, 480)
+        self.auto_lock_spin.setSuffix(" min")
+        self.auto_lock_spin.setSpecialValueText("never")
+        self.auto_lock_spin.setValue(s.auto_lock_minutes)
+        lock_row.addWidget(self.auto_lock_spin)
+        self.password_button = QPushButton("Change Tsunami password…")
+        self.password_button.setEnabled(getattr(self.ctx, "lock", None) is not None)
+        self.password_button.clicked.connect(lambda _=False: self._change_password())
+        lock_row.addWidget(self.password_button)
+        lock_row.addStretch(1)
+        form.addRow("Auto-lock", lock_row)
         layout.addLayout(form)
         self._save_button(layout, self.save_general)
+
+    def _change_password(self) -> None:
+        lock = getattr(self.ctx, "lock", None)
+        if lock is not None and lock.change_password(self):
+            self.shell.notify("Tsunami password changed.")
 
     def _browse_workspace(self) -> None:
         chosen = QFileDialog.getExistingDirectory(
@@ -191,6 +216,8 @@ class SettingsTab(QScrollArea):
                 "theme": self.theme_combo.currentText(),
                 "log_level": self.log_combo.currentText(),
                 "backup_retention": self.retention_spin.value(),
+                "ssh_legacy_algorithms": self.legacy_ssh_check.isChecked(),
+                "auto_lock_minutes": self.auto_lock_spin.value(),
             }
         )
         if ok and workspace and Path(workspace) != self.ctx.workspace_path:

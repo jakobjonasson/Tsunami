@@ -25,7 +25,10 @@ def configure_keyring() -> None:
     import keyring
     from keyring.backends.Windows import WinVaultKeyring
 
-    keyring.set_keyring(WinVaultKeyring())
+    backend = WinVaultKeyring()
+    # keyring's default is enterprise persistence, which roams with a domain profile.
+    backend.persist = "local machine"
+    keyring.set_keyring(backend)
 
 
 def selftest() -> int:

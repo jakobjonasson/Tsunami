@@ -28,6 +28,7 @@ def main(argv: list[str] | None = None) -> int:
     from tsunami.core.secret_store import KeyringSecretStore
     from tsunami.gui import icons, theme
     from tsunami.gui.context import AppContext
+    from tsunami.gui.lock import LockManager
     from tsunami.gui.main_window import MainWindow
     from tsunami.gui.screens import load_views, register_all
 
@@ -56,6 +57,15 @@ def main(argv: list[str] | None = None) -> int:
     app.styleHints().colorSchemeChanged.connect(lambda _: apply_theme())
     ctx.settings_changed.connect(apply_theme)
 
+    # The Tsunami password: set on first launch, else asked for before the window opens.
+    lock = LockManager(paths, secrets, settings)
+    if not lock.startup():
+        history.close()
+        return 0
+    ctx.lock = lock
+    ctx.settings_changed.connect(lambda: setattr(lock, "settings", ctx.settings))
+    bridge = start_bridge(paths, history, secrets, lambda: lock.unlocked)
+
     window = MainWindow(ctx, load_views())
     register_all(window)
     window.show()
@@ -65,7 +75,28 @@ def main(argv: list[str] | None = None) -> int:
     try:
         return app.exec()
     finally:
+        if bridge is not None:
+            bridge.stop()
         history.close()
+
+
+def start_bridge(paths, history, secrets, is_unlocked):
+    """Serve MCP tool calls from tsunami-mcp.exe in this process, which alone holds the
+    unlocked vault. None if another Tsunami window already serves them."""
+    import logging
+
+    from tsunami.mcp_server.bridge import BridgeServer
+    from tsunami.mcp_server.enforcement import McpApp
+    from tsunami.mcp_server.tools import Tools
+
+    tools = Tools(McpApp(paths, history=history, secrets=secrets))
+    bridge = BridgeServer(paths, tools.dispatch, is_unlocked=is_unlocked)
+    try:
+        bridge.start()
+    except OSError:
+        logging.getLogger(__name__).warning("MCP bridge not started", exc_info=True)
+        return None
+    return bridge
 
 
 def install_default_policy(paths) -> None:
