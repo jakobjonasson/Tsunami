@@ -1,4 +1,11 @@
-"""The window stays responsive while a 200-device run streams events (plan 4.4)."""
+"""The window stays responsive while a 200-device run streams events (plan 4.4).
+
+The limits catch UI-thread work that grows with the device count, which shows as stalls
+of seconds or as a slow event loop throughout. They allow for scheduling noise: mock
+devices are CPU-bound, so on a 2-vCPU CI runner fifty worker threads compete with the UI
+thread for the GIL and single stalls of about 0.7 s occur. Locally the longest is ~0.06 s.
+Real devices spend their time waiting on the network, which releases the GIL.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +19,8 @@ from tsunami.core.runner import RunRequest
 from tsunami.core.transports.mock import MockTransport
 
 DEVICES = [f"sa-as{n:03d}" for n in range(1, 201)]
-MAX_GAP_SECONDS = 0.5  # the longest the event loop may stall
+MAX_GAP_SECONDS = 2.0  # a freeze: the event loop never stalls this long
+P95_GAP_SECONDS = 0.25  # sluggishness: nineteen ticks in twenty arrive within this
 
 
 @pytest.fixture
@@ -66,4 +74,7 @@ def test_two_hundred_device_run_keeps_the_ui_responsive(main_window, gui_ctx, qt
 
     gaps = [b - a for a, b in zip(ticks, ticks[1:], strict=False)]
     assert len(ticks) > 20
-    assert max(gaps) < MAX_GAP_SECONDS, f"event loop stalled for {max(gaps):.2f}s"
+    p95 = sorted(gaps)[int(len(gaps) * 0.95)]
+    stats = f"max {max(gaps):.2f}s, p95 {p95:.3f}s over {len(gaps)} ticks"
+    assert max(gaps) < MAX_GAP_SECONDS, f"event loop froze: {stats}"
+    assert p95 < P95_GAP_SECONDS, f"event loop sluggish: {stats}"
