@@ -89,7 +89,7 @@ Python 3.12 with pure-Python or Windows-wheel dependencies covers everything, so
 |PySide6|GUI|LGPL. The onedir build keeps Qt as separate DLLs, which satisfies dynamic linking.|
 |netmiko|SSH and serial sessions|Uses paramiko for SSH and pyserial for `cisco_ios_serial`.|
 |pyserial|COM ports|`serial.tools.list_ports` populates the port picker.|
-|jinja2|Templates|Use `jinja2.sandbox.SandboxedEnvironment`.|
+|jinja2|Templates|Use `jinja2.sandbox.ImmutableSandboxedEnvironment`.|
 |pydantic v2|Models, validation, JSON Schema export|Single source of truth for every file format.|
 |ruamel.yaml|YAML load and dump|Preserves comments and key order when the app writes YAML (add to inventory, draft promotion).|
 |keyring|Credential Manager|Set the `WinVaultKeyring` backend explicitly (see Packaging).|
@@ -438,9 +438,10 @@ When the play being run is a draft, the same three paths under `drafts/snippets/
 
 ### Jinja environment
 
-- `jinja2.sandbox.SandboxedEnvironment`, because Claude writes templates.
+- `jinja2.sandbox.ImmutableSandboxedEnvironment`, because Claude writes templates. It is the stricter sandbox: templates also cannot mutate the variables they are given (`{{ servers.append(...) }}`).
 - `undefined=StrictUndefined`.
 - `trim_blocks=True`, `lstrip_blocks=True`, `keep_trailing_newline=True`, `autoescape=False`.
+- Booleans render as `true` and `false`. Rendered text is split into lines on `\n` only, never on the other characters `str.splitlines()` treats as line breaks.
 - No `include`, `import`, or `extends` in v1. The loader raises if a template tries. Composition happens at the step level.
 
 ### Authoring conventions
@@ -467,8 +468,9 @@ All IP filters use Python's `ipaddress` module and raise on invalid input.
 `secret("<customer>/<name>")` is the only way a secret value reaches a template.
 
 - The customer part must equal the play's customer. Cross-customer references fail validation.
-- Rendering runs in two passes. The first pass replaces each `secret()` call with a sentinel token, such as `\x00SECRET:3\x00`.
-- Every rendered line containing a sentinel must match a sink pattern. Otherwise rendering fails with the line number. This stops a template from putting a secret into a description, banner, or exec command where it could be read back.
+- Rendering runs in two passes. The first pass replaces each `secret()` call with a sentinel token that carries a random per-render nonce, such as `\x00SECRET:<nonce>:3\x00`, so neither a template nor a variable can forge one.
+- Every sentinel must sit inside the secret token of a sink pattern for the target platform. Otherwise rendering fails, naming the line. This stops a template from putting a secret into a description, banner, or exec command where it could be read back.
+- Sink patterns are the redactor's own line rules, each marking where its secret token sits, so every secret a template places is one the redactor masks. The redactor's catch-all rules (any token after `password`, for example) mask but are never sinks.
 - In apply mode, sentinels are then replaced with real values in memory just before sending. In every other mode and in every displayed or stored copy, they become `********`.
 
 Each platform driver has its own default sink patterns (see Platform drivers). The IOS defaults, anchored at line start with leading spaces allowed:
@@ -483,7 +485,7 @@ Each platform driver has its own default sink patterns (see Platform drivers). T
 - `ip ospf (authentication-key|message-digest-key)`
 - `neighbor \S+ password`
 
-The list lives in code. Extra patterns can be added in `settings.json`, never in the workspace.
+The list lives in code, in the platform drivers. Extra patterns can be added in `settings.json`, never in the workspace. Each must contain a `(?P<secret>...)` group marking the secret token; the redactor masks those lines too.
 
 ### Example
 
@@ -679,7 +681,8 @@ All entries use keyring service `tsunami`:
 |Device login|`cred/<name>`|JSON: `username`, `password`, optional `enable`|
 |Template secret|`secret/<customer>/<name>`|The secret string|
 
-- Credential Manager limits each value to 2,560 bytes. Reject larger values with a clear error.
+- Credential Manager limits each value to 2,560 bytes. keyring stores values as UTF-16-LE, so that is about 1,280 characters. Reject larger values with a clear error.
+- keyring has no list API. Names are listed with `CredEnumerate` (pywin32-ctypes), keeping entries whose target is `tsunami` or `<name>@tsunami`, which is how keyring stores several names under one service.
 - Unit tests use the service name `tsunami-test` or an in-memory keyring backend defined in the test suite (keyring does not ship one), never the real service.
 
 ### Credentials screen
@@ -711,6 +714,8 @@ One module, `redact.py`, is applied to every outbound path: MCP results, the GUI
 - `crypto pki certificate chain` blocks: hex lines through `quit`
 
 Every encryption type (0, 5, 7, 8, 9) is redacted. Type 7 is reversible, so it counts as plaintext.
+
+Every platform family's rules apply to all text, so output from a mislabelled device is still covered and both sides of a diff are treated alike. Keywords match regardless of case. A rule can depend on its top-level parent line: under `key chain` (IOS) or `keychain` (AOS-CX), ` key 1` is a key id, not a secret.
 
 **Exact-value layer.** At job start, load every secret value in the customer's namespace plus the login credential's password and enable values into an in-memory set. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear.
 
@@ -1338,6 +1343,9 @@ Changes since the original draft, with reasons:
 - The MCP show allowlist and pipe list are per family.
 - Initial plays may set `site`, `role`, and `platform` in play vars, and their prompts are asked in two stages.
 - Prompt values may not contain line breaks or control characters, which would inject config lines.
+- The template sandbox is `ImmutableSandboxedEnvironment`, so templates cannot mutate their variables.
+- Sink patterns are the redactor's own rules, so every secret() placement is guaranteed to be masked; sentinels carry a per-render nonce.
+- The Credential Manager size limit is counted in UTF-16-LE, as keyring stores it, and names are listed with CredEnumerate.
 - An initial play's model dropdown is limited to models whose platform has every snippet the play uses, so a Cisco-only day-0 play never offers Aruba models.
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.

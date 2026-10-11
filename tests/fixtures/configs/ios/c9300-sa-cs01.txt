@@ -1,0 +1,213 @@
+Building configuration...
+
+Current configuration : 14822 bytes
+!
+! Last configuration change at 10:14:02 UTC Mon Oct 5 2026 by acmeops
+!
+version 17.9
+service timestamps debug datetime msec
+service timestamps log datetime msec
+service password-encryption
+service call-home
+platform qfp utilization monitor load 80
+!
+hostname sa-cs01
+!
+vrf definition Mgmt-vrf
+ !
+ address-family ipv4
+ exit-address-family
+!
+enable secret 9 $9$Zp4r1TqLx9WnBa$cV2dHkO7yUe3Fg5MjIs8NtYbRa6ZqLw0XoPh1CdE9vA
+enable password 0 xeClearEnable
+!
+username admin privilege 15 secret 8 $8$dsYGNam3K1SIJO$7nv/35M/qr6t.dkqjPbeEGDvU5aMeXT3rRHHKWQlQEs
+username netops privilege 15 algorithm-type sha256 secret 9 $9$eFg3hJk5LmNo7p$Qr2StUv4WxYz6aBcDeFgHiJkLmNoPqRsTuVwXyZ0123
+username netops2 privilege 15 algorithm-type scrypt secret xeScryptClear
+username svc privilege 1 password 7 0802455D0A16
+username lab password 0 xe"quoted"pw
+!
+aaa new-model
+aaa group server tacacs+ TAC-GRP
+ server name TAC-A
+ server-private 192.0.2.80 key 7 0107130A5A5B
+!
+aaa authentication login default group TAC-GRP local
+aaa authentication login CONSOLE local
+aaa authorization exec default group TAC-GRP local
+!
+ip domain name acme.example
+ip ssh version 2
+ip ssh server algorithm encryption aes256-ctr aes192-ctr
+!
+crypto pki trustpoint SLA-TrustPoint
+ enrollment pkcs12
+ revocation-check crl
+!
+crypto pki certificate chain SLA-TrustPoint
+ certificate ca 01
+  30820321 30820209 A0030201 02020101 300D0609 2A864886 F70D0101 0B050030
+  32310E30 0C060355 040A1305 43697363 6F311030 0E060355 04031307 43697363
+  6F204C69 63656E73 696E6720 526F6F74 20434130 1E170D31 33303533 30313934
+  quit
+!
+license boot level network-advantage addon dna-advantage
+!
+key chain BGP-KC
+ key 10
+  key-string 0 xeKeyChainZero
+  accept-lifetime 00:00:00 Jan 1 2026 infinite
+ key 11
+  key-string 6 xeKeyChainSix==
+  cryptographic-algorithm hmac-sha-256
+!
+key chain OSPF-KC
+ key 1
+  key-string xeKeyStringBare
+!
+vlan 100
+ name Servers
+vlan 200
+ name Wired-Clients
+!
+interface GigabitEthernet0/0
+ vrf forwarding Mgmt-vrf
+ ip address 198.51.100.10 255.255.255.0
+ negotiation auto
+!
+interface TenGigabitEthernet1/0/1
+ description Uplink to sa-ds01 (vendor pw xeDescSecret77)
+ switchport mode trunk
+ ip ospf authentication key-chain OSPF-KC
+!
+interface Vlan100
+ ip address 192.0.2.101 255.255.255.0
+ ip ospf authentication message-digest
+ ip ospf message-digest-key 1 md5 7 03075218050B
+ ip ospf authentication-key 7 094F471A1A0A
+ standby version 2
+ standby 10 ip 192.0.2.1
+ standby 10 priority 110
+ standby 10 preempt
+ standby 10 authentication md5 key-string 7 0705325A5D0E
+ standby 11 authentication md5 key-string xeHsrpMd5Clear
+ standby 12 authentication text xeHsrpText12
+ vrrp 20 authentication text xeVrrpText
+ vrrp 21 authentication md5 key-string 7 0A4A011A0D07
+!
+interface Tunnel0
+ tunnel source GigabitEthernet0/0
+ tunnel destination 203.0.113.50
+ ppp chap password 7 060B1E2F4E4B
+ ppp chap hostname sa-cs01
+!
+router ospf 10
+ router-id 192.0.2.101
+ area 0 authentication message-digest
+!
+router bgp 65010
+ bgp router-id 192.0.2.101
+ neighbor 203.0.113.60 remote-as 65011
+ neighbor 203.0.113.60 password 7 0A4A011A0D07151E
+ neighbor 203.0.113.61 remote-as 65012
+ neighbor 203.0.113.61 password xeBgpClear 
+ neighbor PEERS password 6 xeBgpSix==
+ neighbor 203.0.113.62 ha-mode graceful-restart
+ !
+ address-family ipv4
+  neighbor 203.0.113.60 activate
+ exit-address-family
+!
+crypto isakmp policy 10
+ encryption aes 256
+ authentication pre-share
+crypto isakmp key 6 xeIsaEnc6Key address 203.0.113.70 255.255.255.255
+crypto isakmp key xeIsaPlain!#$ address 0.0.0.0
+crypto isakmp key 7 0402050A1B31 address 203.0.113.71
+!
+crypto keyring KR1 vrf Mgmt-vrf
+ pre-shared-key address 203.0.113.72 key xeKeyringKey
+ pre-shared-key hostname peer.acme.example key xeKeyringHost
+!
+crypto ikev2 keyring K2
+ peer p1
+  address 203.0.113.73
+  pre-shared-key local xeK2Local
+  pre-shared-key remote xeK2Remote
+  pre-shared-key xeK2Both
+!
+crypto ikev2 profile P2
+ match identity remote address 203.0.113.73 255.255.255.255
+ authentication remote pre-share
+ authentication local pre-share
+ keyring local K2
+ pre-shared-key local xeP2Local
+ pre-shared-key remote xeP2Remote
+!
+key config-key password-encrypt xeMasterKey/9
+password encryption aes
+!
+ntp authentication-key 5 md5 xeNtpMd5Clear
+ntp authentication-key 6 md5 08334D5D0C1B 7
+ntp authentication-key 7 sha1 xeNtpSha1 
+ntp authenticate
+ntp trusted-key 5
+ntp server 198.51.100.123 key 5
+!
+snmp-server group V3GRP v3 priv
+snmp-server user v3user V3GRP v3 auth sha xeSnmpAuthSha priv aes 128 xeSnmpPrivAes
+snmp-server user v3user2 V3GRP v3 encrypted auth sha 5A1B2C3D4E5F6A7B8C9D0E1F2A3B4C5D6E7F8A9B priv aes 128 1A2B3C4D5E6F708192A3B4C5D6E7F801
+snmp-server community xeRoCommunity RO
+snmp-server community xeRwCommunity RW 20
+snmp-server community "xeQuoted Comm" RO
+snmp-server host 192.0.2.90 version 2c xeHostComm2c
+snmp-server host 192.0.2.91 version 2c xeHostComm2cUdp udp-port 162
+snmp-server host 192.0.2.92 xeHostBare
+snmp-server host 192.0.2.93 informs version 3 priv v3user
+snmp-server enable traps config
+!
+tacacs server TAC-A
+ address ipv4 192.0.2.80
+ key 7 070C285F4D06
+tacacs server TAC-B
+ address ipv4 192.0.2.81
+ key xeTacBClear
+tacacs server TAC-C
+ address ipv4 192.0.2.82
+ key 6 xeTacCSix==
+!
+radius server ISE-1
+ address ipv4 192.0.2.83 auth-port 1812 acct-port 1813
+ key 7 13061E010803
+ pac key 7 0822455D0A16
+ automate-tester username probe idle-time 5
+radius server ISE-2
+ address ipv4 192.0.2.84 auth-port 1812 acct-port 1813
+ key xeIse2Clear
+ pac key xeIse2Pac
+!
+radius-server attribute 6 on-for-login-auth
+radius-server key 7 0507050C2A57
+radius-server key xeRadGlobalClear
+radius-server host 192.0.2.85 auth-port 1812 acct-port 1813 key 7 110A1016141D
+radius-server host 192.0.2.86 key xeRadHostClear
+!
+spanning-tree mode rapid-pvst
+!
+line con 0
+ password 7 02050D480809
+ logging synchronous
+ stopbits 1
+line vty 0 4
+ password xeVtyClear
+ login authentication default
+ transport input ssh
+line vty 5 15
+ password 6 xeVtySix==
+ transport input ssh
+!
+banner login ^C
+This system belongs to ACME. Break-glass: xeBannerBreak!
+^C
+!
+end

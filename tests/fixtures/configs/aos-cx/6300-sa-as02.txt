@@ -1,0 +1,97 @@
+Current configuration:
+!
+!Version ArubaOS-CX FL.10.13.1000
+!export-password: default
+hostname sa-as02
+user admin group administrators password ciphertext AQBapZk3mT8vQ1wX9yLpR2sN4dJ7hG6fB5cV0xZaE1uYiO3tPqMnKlJhGfDsAzXcVbNm1234ABcdEFgh==
+user ops1 group operators password ciphertext AQBapQ7wE2rT5yU8iO1pA4sD7fG0hJ3kL6zXcVbNm9QwErTyUiOpAsDfGhJkLzXcVbNm5678==
+user audit group auditors password plaintext cxAuditPlain42
+!
+ntp server 192.0.2.10 minpoll 4 maxpoll 4 iburst
+ntp authentication
+ntp authentication-key 1 md5 ciphertext AQBapNtpKeyOne1234567890abcdefGHIJKLmnopQRSTuvwxYZ+/==
+ntp authentication-key 2 sha1 cxNtpPlainKey trusted
+ntp trusted-key 1
+ntp enable
+!
+radius-server host 192.0.2.20 key ciphertext AQBapRadHost0987654321zyxwvuTSRQPonmlKJIHgfeDCBA+/==
+radius-server host 192.0.2.21 key plaintext cxRadPlain#!$ timeout 5 vrf mgmt
+radius-server host 192.0.2.22 key ciphertext AQBapRadHost3Zz9Yy8Xx7Ww6Vv5Uu4Tt3Ss2Rr1Qq0Pp== timeout 10 vrf mgmt
+radius-server key ciphertext AQBapRadGlobalKeyAAAA1111bbbb2222CCCC3333dddd==
+tacacs-server host 192.0.2.30 key ciphertext AQBapTacHostKey5555eeee6666FFFF7777gggg8888HHHH==
+tacacs-server host 192.0.2.31 key plaintext cxTacPlain99 port 49
+tacacs-server key ciphertext AQBapTacGlobal1a2b3c4d5e6f7g8h9i0jKkLlMmNnOo==
+aaa authentication login default group radius local
+aaa authentication login ssh group tacacs local
+aaa authorization commands default group tacacs
+aaa authentication port-access mac-auth password ciphertext AQBapMacAuthPw1234qwertyASDFGH5678zxcvbn==
+aaa authentication port-access dot1x authenticator
+    enable
+    max-eapol-requests 2
+radius dyn-authorization client 192.0.2.40 secret-key ciphertext AQBapDynAuth77aabbccddeeff0011223344556677==
+!
+snmp-server vrf default
+snmp-server community cxCommunityRo
+snmp-server community cxCommunityTwo
+snmpv3 user monitor auth sha auth-pass ciphertext AQBapSnmpAuthA1b2C3d4E5f6G7h8I9j0KlMnOpQrStUv== priv aes priv-pass ciphertext AQBapSnmpPrivZ9y8X7w6V5u4T3s2R1q0PoNmLkJiHgFeDc==
+snmpv3 user plainuser auth md5 auth-pass plaintext cxSnmpAuthPlain priv des priv-pass plaintext cxSnmpPrivPlain
+snmp-server host 192.0.2.41 trap version v2c community cxTrapCommunity
+!
+ssh server vrf mgmt
+!
+keychain ACME-KEYS
+    key 1
+        key-string ciphertext AQBapKeyString11AAbbCCddEEffGGhhIIjjKKllMMnn==
+        accept-lifetime always
+    key 2
+        key-string plaintext cxKeyStringPlain
+!
+vlan 1
+vlan 10
+    name Users
+vlan 20
+    name Voice VLAN
+spanning-tree
+interface mgmt
+    no shutdown
+    ip static 198.51.100.50/24
+    default-gateway 198.51.100.1
+interface lag 1
+    no shutdown
+    description Uplink to core (temp key: cxDescSecret55)
+    no routing
+    vlan trunk native 1
+    vlan trunk allowed 10,20
+    lacp mode active
+interface 1/1/1
+    no shutdown
+    description User port
+    no routing
+    vlan access 10
+interface 1/1/48
+    no shutdown
+    routing
+    ip address 203.0.113.2/30
+    ip ospf 1 area 0.0.0.0
+    ip ospf authentication message-digest
+    ip ospf message-digest-key 1 md5 ciphertext AQBapOspfMd5Key0A1B2C3D4E5F6G7H8I9J0K==
+    ip ospf authentication-key ciphertext AQBapOspfAuthKeyZYXWVUTSRQPONMLKJIHGFEDCBA==
+    ip ospf sha-key 2 sha256 ciphertext AQBapOspfShaKey9876543210fedcba9876543210==
+    ip ospf authentication-key plaintext cxOspfPlain
+interface vlan 10
+    ip address 192.0.2.1/24
+    vrrp 1 address-family ipv4
+        address 192.0.2.254
+        authentication md5 ciphertext AQBapVrrpMd5Key123456789ABCDEFGH==
+router ospf 1
+    router-id 192.0.2.1
+    area 0.0.0.0
+router bgp 65020
+    bgp router-id 192.0.2.1
+    neighbor 203.0.113.1 remote-as 65021
+    neighbor 203.0.113.1 password ciphertext AQBapBgpNbrPw0a1b2c3d4e5f6g7h8i9j0k1l2m3n4==
+    neighbor 203.0.113.5 password plaintext cxBgpPlain
+    neighbor PEERS password ciphertext AQBapBgpGroupPw99887766554433221100aabbccdd==
+    address-family ipv4 unicast
+        neighbor 203.0.113.1 activate
+https-server vrf mgmt

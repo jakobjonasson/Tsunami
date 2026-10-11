@@ -1,0 +1,219 @@
+Building configuration...
+
+Current configuration : 9120 bytes
+!
+version 15.2
+no service pad
+service timestamps debug datetime msec
+service timestamps log datetime msec
+service password-encryption
+!
+hostname sa-as01
+!
+boot-start-marker
+boot-end-marker
+!
+enable secret 5 $1$kQ3x$Zr8yHw1mPq0LdNf7TtUa5/
+enable password 7 104D000A0618
+!
+username admin privilege 15 secret 9 $9$nhEmQVczB7dqsO$X.HsgL6x1il0RxkOSSvyQYwucySCt7qFm4v7pqCxkKM.
+username acmeops privilege 15 password 7 070C285F4D06
+username readonly privilege 1 password 0 R3adOnly#Pass!
+username scryptuser privilege 15 algorithm-type scrypt secret $9$Q7Tn2vLw8XpAcd$mK1rJ0uYhGfE5bNzVx3oIpS9tWqRaLs6DeH2cU4yBjM
+username secret password 0 Xyz123abc
+username password secret 5 $1$ab12$Cd34Ef56Gh78Ij90Kl12M.
+!
+aaa new-model
+aaa authentication login default group tacacs+ local
+aaa authentication enable default group tacacs+ enable
+aaa authorization exec default group tacacs+ local
+aaa accounting exec default start-stop group tacacs+
+!
+aaa session-id common
+clock timezone UTC 0 0
+system mtu routing 1500
+ip domain-name acme.example
+ip name-server 198.51.100.53
+!
+vtp mode transparent
+!
+spanning-tree mode rapid-pvst
+spanning-tree extend system-id
+spanning-tree vlan 1-100 priority 24576
+!
+vlan internal allocation policy ascending
+!
+vlan 10
+ name Users
+!
+vlan 20
+ name Voice
+!
+vlan 99
+ name Mgmt
+!
+key chain ACME-KC
+ key 1
+  key-string 7 06080A2E4F5A1B
+ key 2
+  key-string 0 plainKeyStr2
+!
+interface Port-channel1
+ description Uplink to sa-ds01
+ switchport mode trunk
+!
+interface FastEthernet0/1
+ description Printer rotate pw hunter2xyz-desc
+ switchport access vlan 10
+ switchport mode access
+ spanning-tree portfast
+!
+interface FastEthernet0/2
+ switchport access vlan 20
+ switchport mode access
+ ip ospf authentication-key 7 13061E010803
+!
+interface GigabitEthernet0/1
+ description Trunk to sa-ds01
+ switchport mode trunk
+ channel-group 1 mode active
+ ip ospf message-digest-key 1 md5 7 0822455D0A16
+ ip ospf message-digest-key 2 md5 0 clearOspfMd5
+!
+interface Vlan99
+ ip address 192.0.2.11 255.255.255.0
+ standby 1 ip 192.0.2.1
+ standby 1 authentication md5 key-string 7 110A1016141D
+ standby 2 ip 192.0.2.2
+ standby 2 authentication text hsrpPlainTxt
+ standby 3 authentication md5 key-chain ACME-KC
+ vrrp 5 authentication text vrrpPlain5
+ vrrp 6 authentication md5 key-string 7 045802150C2E
+ ppp chap password 7 0514290E3A5B1F
+ ppp pap sent-username acmeppp password 7 121A0C041104
+!
+ip default-gateway 192.0.2.1
+ip http server
+no ip http secure-server
+ip ssh version 2
+ip ssh time-out 60
+!
+router ospf 1
+ router-id 192.0.2.11
+ network 192.0.2.0 0.0.0.255 area 0
+!
+router bgp 65001
+ neighbor 203.0.113.1 remote-as 65002
+ neighbor 203.0.113.1 password 7 1511021F0725
+ neighbor 203.0.113.2 password 0 bgpClearPw9 
+ neighbor 203.0.113.3 remote-as 65003
+!
+crypto isakmp key 6 \YcbV[TNPSHOSgWZZb\YF^eaiZIPSjN address 203.0.113.9
+crypto isakmp key clearIsaKey99 address 203.0.113.10 255.255.255.255
+crypto isakmp key 0 isakmpZero hostname vpn.acme.example
+!
+crypto keyring ACME-KR
+ pre-shared-key address 203.0.113.20 key keyringPSK#1
+ pre-shared-key address 203.0.113.21 key 6 keyringEnc6==
+!
+crypto ikev2 keyring IKE2-KR
+ peer hq
+  address 203.0.113.30
+  pre-shared-key ikev2KeyRing77
+!
+crypto ikev2 profile IKE2-PROF
+ authentication local pre-share key ikev2LocalKey55
+ authentication remote pre-share key ikev2RemoteKey56
+ keyring local IKE2-KR
+!
+crypto ikev2 profile IKE2-PROF2
+ pre-shared-key local profLocalPsk88
+ pre-shared-key remote profRemotePsk89
+!
+key config-key password-encrypt masterKeyPw42
+!
+ntp authentication-key 1 md5 104D000A0618 7
+ntp authentication-key 2 md5 ntpClearKey
+ntp authenticate
+ntp trusted-key 1
+ntp server 198.51.100.123 key 1
+!
+snmp-server community acmeRoComm RO 10
+snmp-server community acmeRwComm RW 11
+snmp-server community view-comm view V1 RO
+snmp-server host 192.0.2.50 version 2c trapCommunity2c
+snmp-server host 192.0.2.51 trapCommunityOld
+snmp-server host 192.0.2.52 informs version 2c informComm77 
+snmp-server user snmpuser SNMPGRP v3 auth sha snmpAuthKey123 priv aes 128 snmpPrivKey456
+snmp-server user otheruser SNMPGRP v3 auth md5 otherAuthKeyAA
+snmp-server enable traps
+!
+tacacs-server host 192.0.2.60 key 7 0822455D0A16544541
+tacacs-server host 192.0.2.61 key tacHostClear
+tacacs-server key 7 060506324F41584B56
+tacacs-server directed-request
+!
+tacacs server TAC-PRIMARY
+ address ipv4 192.0.2.62
+ key 7 14141B180F0B7B7977
+ timeout 5
+tacacs server TAC-SECOND
+ address ipv4 192.0.2.63
+ key 0 tacSecondClear
+!
+radius server RAD-1
+ address ipv4 192.0.2.70 auth-port 1812 acct-port 1813
+ key 7 02050D480809
+ pac key 7 15060E1F0A3B2C
+radius server RAD-2
+ address ipv4 192.0.2.71 auth-port 1812 acct-port 1813
+ key 0 radTwoClearKey
+!
+radius-server key radGlobalKey88
+radius-server host 192.0.2.72 key radHostKey99
+radius-server host 192.0.2.73 auth-port 1812 key 7 00071A150754
+!
+aaa group server radius RAD-GRP
+ server-private 192.0.2.74 key 7 1311181F0D1B
+ server-private 192.0.2.75 auth-port 1812 key radPrivClear
+ server name RAD-1
+!
+aaa group server tacacs+ TAC-GRP
+ server name TAC-PRIMARY
+!
+banner motd ^C
+Authorized access only. Temp wifi password: bannerPw-9931
+^C
+!
+line con 0
+ exec-timeout 5 0
+ password 7 060506324F41
+ logging synchronous
+line vty 0 4
+ password 7 05080F1C2243
+ transport input ssh
+line vty 5 15
+ password 0 vtyClearPw
+ transport input ssh
+!
+crypto pki trustpoint TP-ACME
+ enrollment selfsigned
+ revocation-check none
+ rsakeypair TP-ACME
+!
+crypto pki certificate chain TP-ACME
+ certificate self-signed 01
+  3082022B 30820194 A0030201 02020101 300D0609 2A864886 F70D0101 05050030
+  31312F30 2D060355 04031326 494F532D 53656C66 2D536967 6E65642D 43657274
+  6966CAFE 01234567 89ABCDEF 0123456789ABCDEF0123456789ABCDEF
+  quit
+crypto pki certificate chain TP-OTHER
+ certificate ca 02
+  30820300 308202E8 A0030201 02020102 300D0609 2A864886 F70D0101 0B050030
+  DEADBEEF 12345678 9ABCDEF0 11223344 55667788
+  quit
+!
+ip access-list standard 10
+ permit 192.0.2.0 0.0.0.255
+!
+end

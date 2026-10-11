@@ -78,6 +78,8 @@ class Workspace:
     customers: dict[str, CustomerInventory] = field(default_factory=dict)
     plays: dict[Path, PlayEntry] = field(default_factory=dict)
     issues: list[Issue] = field(default_factory=list)
+    # Line maps of loaded plays, so later checks (validation renders) can report lines.
+    play_docs: dict[Path, YamlDoc] = field(default_factory=dict, repr=False)
 
     @property
     def errors(self) -> list[Issue]:
@@ -151,8 +153,15 @@ class Workspace:
         return resolve(layers, defaults={"hostname": dev.name}, builtins=builtins)
 
 
-def load_workspace(root: Path) -> Workspace:
-    return _Loader(Path(root)).load()
+def load_workspace(root: Path, *, render: bool = True) -> Workspace:
+    """Load and validate a workspace. render=False skips the validation renders."""
+    workspace = _Loader(Path(root)).load()
+    if render and not any(i.code == "workspace.schema_too_new" for i in workspace.issues):
+        from tsunami.core.render.renderer import validation_render_issues  # imports this module
+
+        workspace.issues.extend(validation_render_issues(workspace))
+        workspace.issues.sort(key=lambda i: (str(i.file), i.line or 0))
+    return workspace
 
 
 class _Loader:
@@ -419,6 +428,7 @@ class _Loader:
                 "type",
             )
         entry = PlayEntry(path=rel, draft=draft, play=play)
+        ws.play_docs[rel] = doc
         self.check_play_against_workspace(entry, doc, ws)
         return entry
 

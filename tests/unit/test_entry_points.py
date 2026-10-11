@@ -32,9 +32,9 @@ def test_cli_selftest():
 
 
 def test_cli_unimplemented_command_exits_2():
-    result = run_cli("render")
+    result = run_cli("run")
     assert result.returncode == 2
-    assert "Phase 2" in result.stderr
+    assert "Phase 3" in result.stderr
 
 
 def test_gui_version(capsys):

@@ -1,0 +1,67 @@
+Running configuration:
+
+; JL255A Configuration Editor; Created on release #WC.16.10.0010C
+; Ver #14:67.6f.f8.1d.9b.3f.bf.bb.ef.7c.59.fc.6b.fb.9f.fc.ff.ff.37.ef:44
+; encrypt-cred AQBapEncCredHdr0123456789abcdefABCDEF+/==
+hostname "sa-as03"
+module 1 type jl255a
+trunk 25-26 trk1 lacp
+timesync ntp
+ntp unicast
+ntp server 192.0.2.10 iburst
+ntp enable
+time timezone -300
+sntp authentication key-id 1 authentication-mode md5 key-value sNtpKeyValue1
+sntp authentication key-id 2 authentication-mode md5 key-value "sNtpQuoted 2" trusted
+sntp authentication key-id 3 authentication-mode md5 encrypted-key "AQBapSntpEnc3AAbbCCddEEff=="
+ntp authentication key-id 4 authentication-mode sha1 key-value sNtpKeyV4
+snmp-server community "sCommPublic Ro" operator
+snmp-server community "sCommRW" manager unrestricted
+snmp-server community sBareComm operator
+snmp-server host 192.0.2.30 community "sTrapComm"
+snmp-server host 192.0.2.31 community sTrapBare informs
+snmpv3 user "monitor" auth sha "5f4dcc3b5aa765d61d8327deb882cf99aabbccdd" priv aes "0123456789abcdef0123456789abcdef01234567"
+snmpv3 user "plain2" auth md5 "sMd5AuthHash00" priv des "sDesPrivHash11"
+radius-server host 192.0.2.20 key "sRadKeyOne"
+radius-server host 192.0.2.21 key sRadKeyBare dyn-authorization
+radius-server host 192.0.2.22 encrypted-key "AQBapRadEncKey22ZzYyXxWw=="
+radius-server key "sRadGlobalKey"
+radius-server encrypted-key "AQBapRadGlobalEnc77Vv=="
+tacacs-server host 192.0.2.50 key "sTacKeyHost"
+tacacs-server host 192.0.2.51 encrypted-key "AQBapTacHostEnc51Aa=="
+tacacs-server key "sTacGlobalKey"
+tacacs-server encrypted-key "AQBapTacGlobalEnc99Bb=="
+aaa authentication ssh login radius local
+aaa authentication local-user "ops1" group "Level-1"
+aaa authentication local-user "root2" group "Level-15" password sha1 "a94a8fe5ccb19ba61c4c0873d391e987982fbbd3"
+aaa authentication local-user "root3" group "Level-15" password sha256 "9f86d081884c7d659a2feaa0c55ad015a3bf4f1b2b0b822cd15d6c15b0f00a08"
+aaa authentication local-user "root4" group "Level-15" password plaintext sLocalPlain44
+password manager user-name "manager" sha1 "da39a3ee5e6b4b0d3255bfef95601890afd80709"
+password operator user-name "operator" sha1 "7c4a8d09ca3762af61e59520943dc26494f8941b"
+password manager user-name "mgr2" sha256 "2c26b46b68ffc68ff99b453c1d30413413422d706483bfa0f98a5e886266e7ae"
+password port-access user-name "dot1xuser" sha1 "356a192b7913b04c54574d18c28d46e6395428ab"
+oobm
+   ip address 198.51.100.60 255.255.255.0
+   exit
+vlan 1
+   name "DEFAULT_VLAN"
+   no untagged 1-12
+   exit
+vlan 10
+   name "Users"
+   untagged 1-12
+   tagged Trk1
+   ip address 10.10.10.1 255.255.255.0
+   exit
+vlan 20
+   name "Voice VLAN"
+   tagged Trk1
+   voice
+   exit
+interface 1
+   name "User port, spare pw sDescSecret66"
+   exit
+banner motd "Restricted. Rescue pw: sBannerRescue77"
+spanning-tree
+password manager
+password operator

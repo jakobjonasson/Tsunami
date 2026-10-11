@@ -17,7 +17,6 @@ from tsunami.core.workspace import load_workspace
 
 # Subcommand: (help text, phase that implements it). Each phase adds its arguments.
 _PLANNED = {
-    "render": ("render a play for one device, secrets masked", 2),
     "run": ("run a play headless", 3),
 }
 
@@ -38,9 +37,40 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument(
         "path", type=Path, nargs="?", default=Path("."), help="workspace folder (default: .)"
     )
+    render = sub.add_parser("render", help="render a play for one device, secrets masked")
+    render.add_argument("play", help="play path inside the workspace, e.g. plays/push/x.yml")
+    render.add_argument("-w", "--workspace", type=Path, default=Path("."), help="default: .")
+    render.add_argument("-d", "--device", help="target device (omit for initial plays)")
+    render.add_argument(
+        "--set", action="append", default=[], metavar="NAME=VALUE", help="a prompt answer"
+    )
+    render.add_argument("--tags", help="comma-separated tag filter")
     for name, (help_text, _phase) in _PLANNED.items():
         sub.add_parser(name, help=help_text)
     return parser
+
+
+def _render(args: argparse.Namespace) -> int:
+    from tsunami.core.services import render_play
+
+    prompts = {}
+    for item in args.set:
+        name, sep, value = item.partition("=")
+        if not sep:
+            print(f"tsunami render: --set needs NAME=VALUE, got {item!r}", file=sys.stderr)
+            return 2
+        prompts[name.strip()] = value
+    tags = [t.strip() for t in args.tags.split(",")] if args.tags else None
+    workspace = load_workspace(args.workspace)
+    try:
+        rendering = render_play(
+            workspace, args.play, device=args.device, prompts=prompts, tags=tags
+        )
+    except TsunamiError as exc:
+        print(f"tsunami render: {exc}", file=sys.stderr)
+        return 1
+    sys.stdout.write(rendering.masked_text())
+    return 0
 
 
 def _init(path: Path, name: str | None) -> int:
@@ -76,6 +106,8 @@ def main(argv: list[str] | None = None) -> int:
         return _init(args.path, args.name)
     if args.command == "validate":
         return _validate(args.path)
+    if args.command == "render":
+        return _render(args)
     phase = _PLANNED[args.command][1]
     print(f"tsunami {args.command}: not implemented yet (Phase {phase})", file=sys.stderr)
     return 2

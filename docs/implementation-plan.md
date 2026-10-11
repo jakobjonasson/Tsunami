@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0 and 1 are done. Phase 2 (rendering and secrets) is next.
+**Status:** Phases 0, 1 and 2 are done. Phase 3 (execution engine) is next.
 
 ---
 
@@ -200,14 +200,16 @@ Phase 1 acceptance: the sample workspace validates clean; 21 golden broken copie
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 2.1 | Sandboxed environment and filters + sandbox-escape tests. Snippet lookup was built in 1.8 (`render/lookup.py`). The renderer must split rendered text on `\n` only, never `str.splitlines()` | Sonnet | Phase 1 |
-| 2.2 | `secret()` sentinels, sink rule, renderer, settings model | Opus | 2.1 |
-| 2.3 | Keyring-backed `SecretStore`, including enumeration (pending issue 2) | Sonnet | — |
-| 2.4 | `redact.py`, both layers | Opus | — |
-| 2.5 | Redactor fixture configs + adversarial tests for all three families, written without seeing 2.4 | Sonnet (separate agent) | — |
-| 2.6 | CLI `render` | Opus | 2.2 |
-| 2.7 | `PlatformDriver` protocol + IOS driver, rendering side: sink and redactor patterns, interface validation, config-tree rules, guarded commands | Opus | 2.2, 2.4 |
-| 2.8 | AOS-CX and AOS-S drivers, rendering side. Opus writes the sink and redactor patterns; Sonnet writes interface validation, config-tree rules (`exit` blocks, quoting) and the reboot-required lint | Opus + Sonnet | 2.7 |
+| 2.1 ✅ | Sandboxed environment and filters + sandbox-escape tests. Snippet lookup was built in 1.8 (`render/lookup.py`). The renderer must split rendered text on `\n` only, never `str.splitlines()` | Sonnet | Phase 1 |
+| 2.2 ✅ | `secret()` sentinels, sink rule, renderer, settings model | Opus | 2.1 |
+| 2.3 ✅ | Keyring-backed `SecretStore`, including enumeration (pending issue 2) | Sonnet | — |
+| 2.4 ✅ | `redact.py`, both layers | Opus | — |
+| 2.5 ✅ | Redactor fixture configs + adversarial tests for all three families, written without seeing 2.4 | Sonnet (separate agent) | — |
+| 2.6 ✅ | CLI `render` | Opus | 2.2 |
+| 2.7 ✅ | `PlatformDriver` protocol + IOS driver, rendering side: sink and redactor patterns, interface validation, config-tree rules, guarded commands | Opus | 2.2, 2.4 |
+| 2.8 ✅ | AOS-CX and AOS-S drivers, rendering side. Opus writes the sink and redactor patterns; Sonnet writes interface validation, config-tree rules (`exit` blocks, quoting) and the reboot-required lint | Opus + Sonnet | 2.7 |
+
+Phase 2 acceptance: `tsunami render` prints masked config for any sample device; the blind redactor suite (written without seeing the code) found 13 leaks, all fixed, and now passes on IOS, IOS-XE, AOS-CX and AOS-S fixtures; sink-rule violations fail with the offending file and line. 1,931 tests.
 
 **Phase 3: Execution engine (headless)**
 
