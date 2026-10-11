@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phase 0 (repo and tooling) is done. Phase 1 is next.
+**Status:** Phases 0 and 1 are done. Phase 2 (rendering and secrets) is next.
 
 ---
 
@@ -184,21 +184,23 @@ Each phase ends with the acceptance criteria listed in design.md, Build plan.
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 1.1 | yamlio + issues: ruamel load with a line map; Pydantic error `loc` → file:line | Opus | — |
-| 1.2 | Models: workspace, inventory, play, including per-type defaults and cross-field rules | Opus | 1.1 |
-| 1.3 | `prompts.py` validators, coercion, placeholders + edge-case tests | Sonnet | `PromptType` (done) |
-| 1.4 | `targets.py` + AND/OR/exclude/empty-target tests | Sonnet | 1.2 |
-| 1.5 | `resolver.py` with provenance, tests first | Opus | 1.2 |
-| 1.6 | Init workspace, schema export, `.vscode/settings.json`, CLI `init` / `validate` | Sonnet | 1.2 |
-| 1.7 | Fixtures: appendix workspace + minimal `base` / `access-ports` snippets; broken variants | Haiku | — |
-| 1.8 | Workspace loader, `services.py` start, golden error tests, phase acceptance | Opus | all |
-| 1.9 | `catalog.py` model and loader; verify catalog entries against vendor sources | Sonnet (web research); Opus reviews | — |
+| 1.1 ✅ | yamlio + issues: ruamel load with a line map; Pydantic error `loc` → file:line | Opus | — |
+| 1.2 ✅ | Models: workspace, inventory, play, including per-type defaults and cross-field rules | Opus | 1.1 |
+| 1.3 ✅ | `prompts.py` validators, coercion, placeholders + edge-case tests | Sonnet | `PromptType` (done) |
+| 1.4 ✅ | `targets.py` + AND/OR/exclude/empty-target tests | Sonnet | 1.2 |
+| 1.5 ✅ | `resolver.py` with provenance, tests first | Opus | 1.2 |
+| 1.6 ✅ | Init workspace, schema export, `.vscode/settings.json`, CLI `init` / `validate` | Sonnet | 1.2 |
+| 1.7 ✅ | Fixtures: appendix workspace + minimal `base` / `access-ports` snippets; broken variants | Haiku | — |
+| 1.8 ✅ | Workspace loader, `services.py` start, golden error tests, phase acceptance | Opus | all |
+| 1.9 ✅ | `catalog.py` model and loader; verify catalog entries against vendor sources | Sonnet (web research); Opus reviews | — |
+
+Phase 1 acceptance: the sample workspace validates clean; 21 golden broken copies report the right file and line; resolver, target, prompt and catalog tests pass (1,240 tests in total). VS Code autocompletion comes from the generated schemas but has not been checked by hand yet.
 
 **Phase 2: Rendering and secrets**
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 2.1 | Sandboxed environment, lookup, filters + sandbox-escape tests | Sonnet | Phase 1 |
+| 2.1 | Sandboxed environment and filters + sandbox-escape tests. Snippet lookup was built in 1.8 (`render/lookup.py`). The renderer must split rendered text on `\n` only, never `str.splitlines()` | Sonnet | Phase 1 |
 | 2.2 | `secret()` sentinels, sink rule, renderer, settings model | Opus | 2.1 |
 | 2.3 | Keyring-backed `SecretStore`, including enumeration (pending issue 2) | Sonnet | — |
 | 2.4 | `redact.py`, both layers | Opus | — |

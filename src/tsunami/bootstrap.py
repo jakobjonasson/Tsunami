@@ -32,14 +32,22 @@ def selftest() -> int:
     import keyring
     from keyring.backends.Windows import WinVaultKeyring
 
-    import tsunami.core.models.common  # noqa: F401
+    import tsunami.core.models.inventory  # noqa: F401
     import tsunami.core.models.jobs  # noqa: F401
     import tsunami.core.models.play  # noqa: F401
+    import tsunami.core.models.workspace  # noqa: F401
+    from tsunami.core.catalog import load_catalog
+    from tsunami.core.issues import TsunamiError
 
     data = files("tsunami.core.data")
     missing = [name for name in _REQUIRED_DATA if not data.joinpath(name).is_file()]
     if missing:
         print(f"selftest: missing data files: {', '.join(missing)}", file=sys.stderr)
+        return 1
+    try:
+        load_catalog()
+    except TsunamiError as exc:
+        print(f"selftest: hardware catalog: {exc}", file=sys.stderr)
         return 1
 
     configure_keyring()

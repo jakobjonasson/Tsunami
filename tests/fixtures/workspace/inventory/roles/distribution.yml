@@ -1,0 +1,2 @@
+stp_mode: rapid-pvst
+portfast_default: false

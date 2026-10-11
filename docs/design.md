@@ -197,10 +197,11 @@ Each platform belongs to a family that shares one CLI: `ios` and `ios-xe` are fa
 
 The app ships a catalog of common Cisco and Aruba switch families in `core/data/hardware.yml`. It lives in code, not the workspace. The day-0 wizard uses it so people pick a switch model from a dropdown instead of typing a platform.
 
-- Each entry has `id` (slug), `vendor`, `family` (the dropdown label), `platform`, `netmiko_device_type`, `console_baud`, `lifecycle` (`current` or `end-of-sale`), `eos_year`, `show_version_model` (regex), and `examples` (representative SKUs).
+- Each entry has `id` (slug), `vendor`, `label` (the dropdown label), `platform`, `netmiko_device_type`, `console_baud`, `lifecycle` (`current` or `end-of-sale`), `eos_year`, `model_pattern` (a regex searched in the model string that fact gathering reports), and `examples` (representative SKUs).
 - An entry is selectable only if its platform has a driver. Every catalog platform has one in v1; the rule covers platforms added to the catalog before their driver exists, which appear disabled and labeled "not supported yet".
-- The `model` prompt type picks an entry. In an initial play it sets the built-in `platform`, and the serial `baud` unless the play sets `connection.baud`.
-- When facts are gathered for a device with a `model`, a `show version` model number that does not match the entry's `show_version_model` is a warning, not a failure. The platform check in the device pipeline still applies.
+- The `model` prompt type picks an entry. In an initial play it sets the built-in `platform`, and the serial `baud` unless the play sets `connection.baud`. The dropdown offers only models whose platform has every snippet the play uses; if no model qualifies, the play fails validation.
+- An entry can span product lines that reached end of sale in different years; `eos_year` is the year the newest of them did.
+- When facts are gathered for a device with a `model`, a reported model that does not match the entry's `model_pattern` is a warning, not a failure. The platform check in the device pipeline still applies.
 
 ### Precedence, lowest to highest
 
@@ -1337,4 +1338,6 @@ Changes since the original draft, with reasons:
 - The MCP show allowlist and pipe list are per family.
 - Initial plays may set `site`, `role`, and `platform` in play vars, and their prompts are asked in two stages.
 - Prompt values may not contain line breaks or control characters, which would inject config lines.
+- An initial play's model dropdown is limited to models whose platform has every snippet the play uses, so a Cisco-only day-0 play never offers Aruba models.
+- Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.

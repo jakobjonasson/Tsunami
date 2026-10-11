@@ -1,0 +1,44 @@
+name: Acme access switch (day 0)
+description: Bench-stage a new access switch
+type: initial
+customer: acme
+connection:
+  method: serial
+  port: ask
+prompts:
+  model:
+    type: model
+    label: Switch model
+  hostname:
+    type: hostname
+  site:
+    type: site
+  mgmt_vlan:
+    type: vlan
+  mgmt_ip:
+    type: ipv4_interface
+    label: Mgmt SVI (IP/prefix)
+  gateway:
+    type: ipv4
+  uplink:
+    type: interface
+    default: TenGigabitEthernet1/1/1
+vars:
+  role: access
+steps:
+  - snippet: base
+  - snippet: aaa
+  - snippet: ntp
+    tags: [ntp]
+  - config:
+      - spanning-tree mode rapid-pvst
+  - snippet: access-ports
+    when: platform == "ios-xe"
+execution:
+  save: true
+checks:
+  post:
+    - exec: show interfaces {{ uplink }} status
+      expect: connected
+on_success:
+  add_to_inventory: true

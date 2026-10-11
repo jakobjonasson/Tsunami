@@ -2,7 +2,7 @@
 
 Tsunami is a Windows desktop tool that pushes templated Cisco IOS/IOS-XE and HPE Aruba AOS-CX/AOS-S configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude. Claude can read inventory, draft plays, render and run read-only checks. It never sees credentials or secret values, and changes to customer devices need approval in the GUI.
 
-**Status:** Phase 0 (skeleton). See [docs/implementation-plan.md](docs/implementation-plan.md) for build progress and [docs/design.md](docs/design.md) for the spec.
+**Status:** Phase 1 done (models, workspace loader, validation). Phase 2 next. See [docs/implementation-plan.md](docs/implementation-plan.md) for build progress and [docs/design.md](docs/design.md) for the spec.
 
 ## Development setup
 
@@ -12,6 +12,8 @@ Requires Windows 10 or 11 and [uv](https://docs.astral.sh/uv/). uv installs Pyth
 uv sync                                  # create .venv and install everything
 uv run python -m tsunami --version       # dev CLI
 uv run python -m tsunami --selftest
+uv run python -m tsunami init C:\path\to\workspace   # new workspace skeleton
+uv run python -m tsunami validate C:\path\to\workspace
 uv run tsunami                           # GUI (placeholder window until Phase 4)
 uv run pytest                            # unit tests; CML and serial tests skip by default
 uv run ruff check

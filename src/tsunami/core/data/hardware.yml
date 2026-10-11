@@ -1,401 +1,411 @@
 # Hardware catalog: switch families offered in the day-0 "model" dropdown.
 # Spec: design.md, Inventory and variables: Hardware catalog.
 #
-# Checked against sources: Netmiko device types (Netmiko ssh_dispatcher.py) and the
-# AOS-CX console baud (HPE AOS-CX CLI reference).
-# Not yet checked against vendor sources: platform assignments, lifecycle, eos_year,
-# examples and show_version_model. Verify before relying on them (work package 1.9).
+# Keys: id, vendor, label (dropdown text), platform, netmiko_device_type, console_baud,
+# lifecycle, eos_year, model_pattern (regex searched in the model string from fact
+# gathering), examples (representative SKUs).
+#
+# Verification (details and sources: docs/research/hardware-catalog.md, checked 2026-10-10):
+# - Verified against vendor sources: Netmiko device types, AOS-CX console baud, Cisco
+#   lifecycle and eos_year (Cisco EoS/EoL bulletins), Cisco platform (IOS vs IOS-XE) for
+#   most families, Aruba 2530/2540/3810M/8360 end-of-sale notices.
+# - eos_year is the year the newest member of the family reached end of sale.
+# - NOT verified against a device or vendor source: every model_pattern (checked only
+#   against the documented formats in docs/research/aruba-cli.md and Cisco show version
+#   samples), most Aruba examples, Aruba lifecycle for 6000, 8320/8400, 2920, 3800,
+#   legacy ProCurve (third-party trackers only or nothing), and AOS-S console baud.
+#   See the research doc for the per-field table.
 #
 # AOS-S entries use hp_procurve; aruba_procurve and aruba_osswitch are aliases for the
 # same Netmiko class. Every platform in this file has a driver in v1.
 
 - id: cisco-c9300
   vendor: cisco
-  family: "Catalyst 9300 / 9300L / 9300X"
+  label: "Catalyst 9300 / 9300L / 9300X"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9300'
+  model_pattern: '^C9300'
   examples: [C9300-24P, C9300-48U, C9300L-48P-4G, C9300X-24Y]
 - id: cisco-c9200
   vendor: cisco
-  family: "Catalyst 9200 / 9200L / 9200CX"
+  label: "Catalyst 9200 / 9200L / 9200CX"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9200'
+  model_pattern: '^C9200'
   examples: [C9200L-24P-4G, C9200-48P, C9200CX-12P-2X2G]
 - id: cisco-c1000
   vendor: cisco
-  family: "Catalyst 1000"
+  label: "Catalyst 1000"
   platform: ios
   netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C1000'
+  model_pattern: '^C1000'
   examples: [C1000-24T-4G-L, C1000-48P-4G-L, C1000FE-24P-4G-L]
 - id: cisco-c9500
   vendor: cisco
-  family: "Catalyst 9500 / 9500X"
+  label: "Catalyst 9500 / 9500X"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9500'
+  model_pattern: '^C9500'
   examples: [C9500-24Y4C, C9500-48Y4C, C9500X-28C8D]
 - id: cisco-c9400
   vendor: cisco
-  family: "Catalyst 9400 / 9400X"
+  label: "Catalyst 9400 / 9400X"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9400'
+  model_pattern: '^C94(00|04|07|10)'
   examples: [C9407R, C9410R, C9404R]
 - id: cisco-c9600
   vendor: cisco
-  family: "Catalyst 9600"
+  label: "Catalyst 9600"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9600'
+  model_pattern: '^C96(00|06)'
   examples: [C9606R, C9600X-SUP-2]
 - id: cisco-c9350
   vendor: cisco
-  family: "Catalyst 9350"
+  label: "Catalyst 9350"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9350'
+  model_pattern: '^C9350'
   examples: [C9350-24P, C9350-48P]
 - id: cisco-c9610
   vendor: cisco
-  family: "Catalyst 9610"
+  label: "Catalyst 9610"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^C9610'
+  model_pattern: '^C9610'
   examples: [C9610R]
 - id: cisco-ie3x00
   vendor: cisco
-  family: "Catalyst IE3200 / IE3300 / IE3400"
+  label: "Catalyst IE3200 / IE3300 / IE3400"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '^IE-?3[234]00'
+  model_pattern: '^IE-?3[234]00'
   examples: [IE-3200-8T2S, IE-3300-8T2S, IE-3400-8P3S]
 - id: cisco-c2960x
   vendor: cisco
-  family: "Catalyst 2960-X / 2960-XR"
+  label: "Catalyst 2960-X / 2960-XR"
   platform: ios
   netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: end-of-sale
   eos_year: 2022
-  show_version_model: '^WS-C2960XR?-'
+  model_pattern: '^WS-C2960XR?-'
   examples: [WS-C2960X-24PS-L, WS-C2960X-48FPD-L, WS-C2960XR-48LPD-I]
 - id: cisco-c2960l
   vendor: cisco
-  family: "Catalyst 2960-L"
+  label: "Catalyst 2960-L"
   platform: ios
   netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: end-of-sale
-  eos_year: 2024
-  show_version_model: '^WS-C2960L-'
+  eos_year: 2021
+  model_pattern: '^WS-C2960L-'
   examples: [WS-C2960L-24PS-LL, WS-C2960L-48TS-LL]
 - id: cisco-c3850
   vendor: cisco
-  family: "Catalyst 3850"
+  label: "Catalyst 3850"
   platform: ios-xe
   netmiko_device_type: cisco_xe
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2022
-  show_version_model: '^WS-C3850'
-  examples: [WS-C3850-24P, WS-C3850-48U, WS-C3850-12X48U]
-- id: cisco-c3650
-  vendor: cisco
-  family: "Catalyst 3650"
-  platform: ios-xe
-  netmiko_device_type: cisco_xe
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2022
-  show_version_model: '^WS-C3650'
-  examples: [WS-C3650-24PS, WS-C3650-48TD]
-- id: cisco-c2960plus
-  vendor: cisco
-  family: "Catalyst 2960-Plus"
-  platform: ios
-  netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: end-of-sale
   eos_year: 2020
-  show_version_model: '^WS-C2960\+'
-  examples: [WS-C2960+24TC-L, WS-C2960+48PST-L]
-- id: cisco-c2960cx
+  model_pattern: '^WS-C3850'
+  examples: [WS-C3850-24P, WS-C3850-48U, WS-C3850-12X48U]
+- id: cisco-c3650
   vendor: cisco
-  family: "Catalyst 2960-C / 2960-CX / 3560-CX"
-  platform: ios
-  netmiko_device_type: cisco_ios
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2021
-  show_version_model: '^WS-C(2960C|2960CX|3560CX|3560C)'
-  examples: [WS-C2960CX-8PC-L, WS-C3560CX-12PD-S, WS-C2960C-8PC-L]
-- id: cisco-c3750x
-  vendor: cisco
-  family: "Catalyst 3750-X / 3750-E / 3750-G"
-  platform: ios
-  netmiko_device_type: cisco_ios
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2015
-  show_version_model: '^WS-C3750'
-  examples: [WS-C3750X-48P-S, WS-C3750X-24T-L, WS-C3750G-24TS]
-- id: cisco-c2960s
-  vendor: cisco
-  family: "Catalyst 2960-S / 2960-G / 2960"
-  platform: ios
-  netmiko_device_type: cisco_ios
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2016
-  show_version_model: '^WS-C2960(S|G)?-'
-  examples: [WS-C2960S-48FPS-L, WS-C2960G-24TC-L, WS-C2960-24TT-L]
-- id: cisco-c3560x
-  vendor: cisco
-  family: "Catalyst 3560-X / 3560-E / 3560-G"
-  platform: ios
-  netmiko_device_type: cisco_ios
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2015
-  show_version_model: '^WS-C3560(X|E|G)'
-  examples: [WS-C3560X-48P-S, WS-C3560G-24PS-S]
-- id: cisco-c4500e
-  vendor: cisco
-  family: "Catalyst 4500-E / 4500-X (Sup 7/8, IOS-XE)"
+  label: "Catalyst 3650"
   platform: ios-xe
   netmiko_device_type: cisco_xe
   console_baud: 9600
   lifecycle: end-of-sale
   eos_year: 2021
-  show_version_model: '^(WS-C45|WS-X45-SUP[78])'
-  examples: [WS-C4507R+E, WS-C4510R+E, WS-C4500X-32]
-- id: cisco-c4500-ios
+  model_pattern: '^WS-C3650'
+  examples: [WS-C3650-24PS, WS-C3650-48TD]
+- id: cisco-c2960plus
   vendor: cisco
-  family: "Catalyst 4500 / 4948E (Sup 6-E and older, IOS)"
+  label: "Catalyst 2960-Plus"
+  platform: ios
+  netmiko_device_type: cisco_ios
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2021
+  model_pattern: '^WS-C2960\+'
+  examples: [WS-C2960+24TC-L, WS-C2960+48PST-L]
+- id: cisco-c2960cx
+  vendor: cisco
+  label: "Catalyst 2960-C / 2960-CX / 3560-CX"
+  platform: ios
+  netmiko_device_type: cisco_ios
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2024
+  model_pattern: '^WS-C(2960C|2960CX|3560CX|3560C)'
+  examples: [WS-C2960CX-8PC-L, WS-C3560CX-12PD-S, WS-C2960C-8PC-L]
+- id: cisco-c3750x
+  vendor: cisco
+  label: "Catalyst 3750-X / 3750-E / 3750-G"
   platform: ios
   netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: end-of-sale
   eos_year: 2016
-  show_version_model: '^WS-C4(5|948)'
+  model_pattern: '^WS-C3750'
+  examples: [WS-C3750X-48P-S, WS-C3750X-24T-L, WS-C3750G-24TS]
+- id: cisco-c2960s
+  vendor: cisco
+  label: "Catalyst 2960-S / 2960-G / 2960"
+  platform: ios
+  netmiko_device_type: cisco_ios
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2015
+  model_pattern: '^WS-C2960(S|SF|G)?-'
+  examples: [WS-C2960S-48FPS-L, WS-C2960G-24TC-L, WS-C2960-24TT-L]
+- id: cisco-c3560x
+  vendor: cisco
+  label: "Catalyst 3560-X / 3560-E / 3560-G"
+  platform: ios
+  netmiko_device_type: cisco_ios
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2016
+  model_pattern: '^WS-C3560(X|E|G)'
+  examples: [WS-C3560X-48P-S, WS-C3560G-24PS-S]
+- id: cisco-c4500e
+  vendor: cisco
+  label: "Catalyst 4500-E / 4500-X (Sup 7/8, IOS-XE)"
+  platform: ios-xe
+  netmiko_device_type: cisco_xe
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2020
+  model_pattern: '^(WS-C45|WS-X45-SUP[78])'
+  examples: [WS-C4507R+E, WS-C4510R+E, WS-C4500X-32]
+- id: cisco-c4500-ios
+  vendor: cisco
+  label: "Catalyst 4500 / 4948E (Sup 6-E and older, IOS)"
+  platform: ios
+  netmiko_device_type: cisco_ios
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2017
+  model_pattern: '^WS-C4(5(?!00X)|948)'
   examples: [WS-C4506-E, WS-C4948E, WS-C4503-E]
 - id: cisco-c6500
   vendor: cisco
-  family: "Catalyst 6500-E / 6800"
+  label: "Catalyst 6500-E / 6800"
   platform: ios
   netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: end-of-sale
-  eos_year: 2017
-  show_version_model: '^(WS-C65|C68)'
+  eos_year: 2022
+  model_pattern: '^(WS-C65|C68)'
   examples: [WS-C6509-E, WS-C6506-E, C6807-XL]
 - id: cisco-ie4000
   vendor: cisco
-  family: "Industrial Ethernet IE4000 / IE4010 / IE5000"
+  label: "Industrial Ethernet IE4000 / IE4010 / IE5000"
   platform: ios
   netmiko_device_type: cisco_ios
   console_baud: 9600
   lifecycle: end-of-sale
-  eos_year: 2023
-  show_version_model: '^IE-?(4000|4010|5000)'
+  eos_year: 2026
+  model_pattern: '^IE-?(4000|4010|5000)'
   examples: [IE-4000-8GT8GP4G-E, IE-4010-16S12P, IE-5000-12S12P-10G]
 - id: aruba-cx6300
   vendor: aruba
-  family: "CX 6300 / 6300M"
+  label: "CX 6300 / 6300M"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: current
   eos_year: null
-  show_version_model: '6300'
+  model_pattern: '6300'
   examples: [JL658A, JL659A, JL762A]
 - id: aruba-cx6200
   vendor: aruba
-  family: "CX 6200F"
+  label: "CX 6200F"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: current
   eos_year: null
-  show_version_model: '6200'
+  model_pattern: '6200'
   examples: [JL725A, JL726A]
 - id: aruba-cx6100
   vendor: aruba
-  family: "CX 6100"
+  label: "CX 6100"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: current
   eos_year: null
-  show_version_model: '6100'
+  model_pattern: '6100'
   examples: [JL679A, JL678A]
 - id: aruba-cx6400
   vendor: aruba
-  family: "CX 6400 v2"
+  label: "CX 6400 v2"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: current
   eos_year: null
-  show_version_model: '6400'
-  examples: [R0X26A, R0X31A]
+  model_pattern: '64(00|05|10)'
+  examples: [R0X26C, R0X27C]
 - id: aruba-cx8325
   vendor: aruba
-  family: "CX 8325 / 8360"
+  label: "CX 8325 / 8360"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: current
   eos_year: null
-  show_version_model: '83(25|60)'
-  examples: [JL624A, JL700A]
+  model_pattern: '83(25|60)'
+  examples: [JL624A, JL700C]
 - id: aruba-cx4100i
   vendor: aruba
-  family: "CX 4100i"
+  label: "CX 4100i"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: current
   eos_year: null
-  show_version_model: '4100'
+  model_pattern: '4100'
   examples: [JL817A]
 - id: aruba-cx6000
   vendor: aruba
-  family: "CX 6000"
+  label: "CX 6000"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: end-of-sale
-  eos_year: 2024
-  show_version_model: '6000'
+  eos_year: 2026
+  model_pattern: '6000'
   examples: [R8N85A, R8N86A]
 - id: aruba-cx8320
   vendor: aruba
-  family: "CX 8320 / 8400"
+  label: "CX 8320 / 8400"
   platform: aos-cx
   netmiko_device_type: aruba_aoscx
   console_baud: 115200
   lifecycle: end-of-sale
   eos_year: 2023
-  show_version_model: '8(320|400)'
+  model_pattern: '8(320|400)'
   examples: [JL479A, JL375A]
 - id: aruba-2930f
   vendor: aruba
-  family: "2930F"
+  label: "2930F"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '2930F'
-  examples: [JL253A, JL258A, JL263A]
+  model_pattern: '2930F'
+  examples: [JL253A, JL258A, JL261A]
 - id: aruba-2930m
   vendor: aruba
-  family: "2930M"
+  label: "2930M"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '2930M'
+  model_pattern: '2930M'
   examples: [JL319A, JL322A]
 - id: aruba-2540
   vendor: aruba
-  family: "2540"
+  label: "2540"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
-  lifecycle: current
-  eos_year: null
-  show_version_model: '2540'
+  lifecycle: end-of-sale
+  eos_year: 2021
+  model_pattern: '2540'
   examples: [JL354A, JL356A]
 - id: aruba-3810m
   vendor: aruba
-  family: "3810M"
+  label: "3810M"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
-  lifecycle: current
-  eos_year: null
-  show_version_model: '3810M'
+  lifecycle: end-of-sale
+  eos_year: 2023
+  model_pattern: '3810M'
   examples: [JL073A, JL074A]
 - id: aruba-5400r
   vendor: aruba
-  family: "5400R zl2"
+  label: "5400R zl2"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
   lifecycle: current
   eos_year: null
-  show_version_model: '5400R'
+  model_pattern: '54(06|12)R'
   examples: [J9850A, J9821A]
 - id: aruba-2530
   vendor: aruba
-  family: "2530"
+  label: "2530"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
   lifecycle: end-of-sale
-  eos_year: 2019
-  show_version_model: '2530'
-  examples: [J9772A, J9779A]
+  eos_year: 2021
+  model_pattern: '2530'
+  examples: [J9772A, J9773A]
 - id: aruba-2920
   vendor: aruba
-  family: "2920 / 2620"
-  platform: aos-s
-  netmiko_device_type: hp_procurve
-  console_baud: 9600
-  lifecycle: end-of-sale
-  eos_year: 2017
-  show_version_model: '2(920|620)'
-  examples: [J9726A, J9625A]
-- id: aruba-3800
-  vendor: aruba
-  family: "3800"
+  label: "2920 / 2620"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
   lifecycle: end-of-sale
   eos_year: 2018
-  show_version_model: '3800'
+  model_pattern: '2(920|620)'
+  examples: [J9726A, J9625A]
+- id: aruba-3800
+  vendor: aruba
+  label: "3800"
+  platform: aos-s
+  netmiko_device_type: hp_procurve
+  console_baud: 9600
+  lifecycle: end-of-sale
+  eos_year: 2016
+  model_pattern: '3800'
   examples: [J9575A, J9576A]
 - id: aruba-legacy-procurve
   vendor: aruba
-  family: "Legacy ProCurve (2910al / 3500yl / 5400zl / 2510 / 2610)"
+  label: "Legacy ProCurve (2910al / 3500yl / 5400zl / 2510 / 2610)"
   platform: aos-s
   netmiko_device_type: hp_procurve
   console_baud: 9600
   lifecycle: end-of-sale
   eos_year: 2014
-  show_version_model: '(2910al|3500yl|5400zl|2510|2610)'
+  model_pattern: '(2910al|3500yl|5400zl|54(06|12)zl|2510|2610)'
   examples: [J9145A, J8692A, J8697A]

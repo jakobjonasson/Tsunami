@@ -1,0 +1,11 @@
+name: Acme Corporation
+credential: acme-netadmin
+jump_host: null
+lab: false
+vars:
+  domain: acme.example.local
+  ntp_servers: [198.51.100.1, 198.51.100.2]
+  tacacs_host: 198.51.100.30
+role_vars:
+  access:
+    mgmt_vlan: 10

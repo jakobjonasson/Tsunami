@@ -9,7 +9,7 @@ import re
 from enum import StrEnum
 from typing import Annotated
 
-from pydantic import StringConstraints
+from pydantic import AfterValidator, BaseModel, ConfigDict, StringConstraints
 
 from tsunami.core.issues import TsunamiError
 
@@ -72,3 +72,29 @@ NETMIKO_SERIAL_DEVICE_TYPE = {
 BUILTIN_VARS = frozenset(
     {"inventory_name", "customer", "site", "role", "platform", "host", "facts"}
 )
+
+
+class StrictModel(BaseModel):
+    """Base for every file-format model: unknown keys are errors, instances are immutable."""
+
+    model_config = ConfigDict(extra="forbid", frozen=True)
+
+
+def _single_line(value: str) -> str:
+    # A line break inside one config line would send extra lines to the device.
+    if "\n" in value or "\r" in value:
+        raise ValueError("must be a single line")
+    return value
+
+
+SingleLine = Annotated[str, AfterValidator(_single_line)]
+
+
+def _not_builtin(name: str) -> str:
+    if name in BUILTIN_VARS:
+        raise ValueError(f"'{name}' is a built-in variable set by the engine")
+    return name
+
+
+# Variable names in vars files: the pattern, and never a built-in.
+UserVarName = Annotated[VarName, AfterValidator(_not_builtin)]

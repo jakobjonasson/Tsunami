@@ -1,0 +1,19 @@
+name: Add VLAN
+type: push
+customer: acme
+targets:
+  roles: [access]
+prompts:
+  vlan_id:
+    type: vlan
+  vlan_name:
+    type: string
+    pattern: '^[A-Za-z0-9_-]{1,32}$'
+steps:
+  - config:
+      - vlan {{ vlan_id }}
+      - " name {{ vlan_name }}"
+checks:
+  post:
+    - exec: show vlan id {{ vlan_id }}
+      expect: active

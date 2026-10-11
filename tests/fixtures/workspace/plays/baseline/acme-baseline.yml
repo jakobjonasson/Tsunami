@@ -1,0 +1,13 @@
+name: Acme baseline
+type: baseline
+customer: acme
+targets:
+  roles: [access]
+steps:
+  - snippet: archive
+    tags: [archive, always]
+  - snippet: aaa
+    tags: [aaa]
+  - snippet: ntp
+    tags: [ntp]
+    owns: [ntp server]

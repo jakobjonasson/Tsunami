@@ -1,0 +1,7 @@
+hostname {{ hostname }}
+ip domain name {{ domain }}
+vlan {{ mgmt_vlan }}
+interface Vlan{{ mgmt_vlan }}
+ ip address {{ mgmt_ip | ip }} {{ mgmt_ip | netmask }}
+ no shutdown
+ip default-gateway {{ gateway }}

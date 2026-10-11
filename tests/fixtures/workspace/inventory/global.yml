@@ -1,0 +1,4 @@
+domain: example.local
+ntp_servers: [192.0.2.10, 192.0.2.11]
+logging_hosts: [192.0.2.20]
+timezone: CST -6 0

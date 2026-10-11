@@ -1,0 +1,5 @@
+aaa new-model
+tacacs server ISE1
+ address ipv4 {{ tacacs_host }}
+ key {{ secret('acme/tacacs') }}
+aaa authentication login default group tacacs+ local

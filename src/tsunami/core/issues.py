@@ -31,5 +31,19 @@ class Issue:
         return f"{where}{self.severity}: {self.message} [{self.code}]"
 
 
+@dataclass(frozen=True)
+class Finding:
+    """A problem located by its path in a document (e.g. ("steps", 2, "exec")).
+
+    Model-level checks produce Findings; the loader turns them into Issues by looking
+    the path up in the file's line map.
+    """
+
+    severity: Severity
+    code: str
+    message: str
+    loc: tuple[str | int, ...] = ()
+
+
 class TsunamiError(Exception):
     """An error reported to a person. The message must already be redacted."""

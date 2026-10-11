@@ -1,0 +1,5 @@
+name: Example network workspace
+schema_version: 1
+defaults:
+  platform: ios-xe
+  batch_size: 5
