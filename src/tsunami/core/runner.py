@@ -27,6 +27,7 @@ from typing import Any
 from tsunami.core.events import (
     BatchFinished,
     CanaryWaiting,
+    DeviceStatusChanged,
     Event,
     JobFinished,
     JobStarted,
@@ -160,6 +161,9 @@ class Runner:
         finally:
             stop_heartbeat.set()
             heartbeat.join(timeout=5)
+            close = getattr(self.transport, "close", None)
+            if callable(close):  # jump-host connections live for one run
+                close()
         return self._finish(job_id, results)
 
     # -- preparation (no device contact) ----------------------------------------------
@@ -367,6 +371,14 @@ class Runner:
                 render_hash=rendering.render_hash(),
             )
             results[target.label] = DeviceStatus.SUCCESS
+            self.on_event(
+                DeviceStatusChanged(
+                    job_id=job_id,
+                    device=target.label,
+                    status=DeviceStatus.SUCCESS,
+                    detail="rendered",
+                )
+            )
         return self._finish(job_id, results)
 
     # -- bookkeeping --------------------------------------------------------------------

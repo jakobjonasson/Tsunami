@@ -515,7 +515,7 @@ Every device goes through the same pipeline. Batching, canary, and max-fail wrap
 5. Mode `render` stops here and shows the output.
 6. If apply mode and `canary: true`, run one device, then pause for confirmation.
 7. Run the remaining devices in batches of `batch_size` in parallel.
-8. After each batch, compute failed devices over attempted devices. If the percentage exceeds `max_fail_percent`, schedule no further batches. In-flight devices finish. Unstarted devices get `skipped_maxfail`.
+8. After each batch, compute failed devices over attempted devices. If the percentage exceeds `max_fail_percent`, schedule no further batches. In-flight devices finish. Unstarted devices get `skipped_maxfail`. Failed means `failed`, `rolled_back`, `rollback_failed`, `unreachable`, `hostkey_mismatch`, `render_changed`, or `interrupted`; `skipped_precheck` and `device_busy` do not count, because nothing was changed.
 9. Write the job summary.
 
 ### Device level (apply mode)
@@ -942,7 +942,7 @@ Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `
 
 - Trust on first use, recorded per customer in `known_hosts\<customer>` in OpenSSH known_hosts format, keyed the way paramiko looks keys up (`host`, or `[host]:port` for ports other than 22). Files are per customer because customers reuse private address ranges, so one shared file would match one customer's key against another customer's device. Jump hosts are recorded in their customer's file too.
 - Before the first login to a host with no recorded key, the transport opens an unauthenticated paramiko transport (directly, or over the jump host's `direct-tcpip` channel), reads the server key, and records it. Credentials are only ever sent to a host whose key is on file.
-- Netmiko then connects with `ssh_strict=True`, `alt_host_keys=True`, and `alt_key_file` set to the customer's file. Netmiko accepts any host key by default, so these must always be set.
+- Netmiko then connects with `ssh_strict=True`, `alt_host_keys=True`, and `alt_key_file` set to a private copy of this host's entry. Netmiko accepts any host key by default, so these must always be set. The copy exists because Netmiko reads its key file during login, outside Tsunami's lock, and Windows refuses to replace a file another thread has open.
 - A later mismatch fails the device with `hostkey_mismatch`. Only the GUI can accept a new key, after showing old and new fingerprints. MCP-initiated jobs can never accept one.
 
 ### Retention
@@ -1345,6 +1345,9 @@ Changes since the original draft, with reasons:
 - Prompt values may not contain line breaks or control characters, which would inject config lines.
 - The template sandbox is `ImmutableSandboxedEnvironment`, so templates cannot mutate their variables.
 - Sink patterns are the redactor's own rules, so every secret() placement is guaranteed to be masked; sentinels carry a per-render nonce.
+- max_fail_percent counts only statuses that mean a change failed or could not be made safely; pre-check skips and busy devices do not count.
+- Netmiko logs in with a private copy of the host's known_hosts entry, so parallel logins never read the shared file while it is being written.
+- AOS-S diffs accept a running line with no secret clause for a rendered secret line, because AOS-S hides credentials from the running config.
 - The Credential Manager size limit is counted in UTF-16-LE, as keyring stores it, and names are listed with CredEnumerate.
 - An initial play's model dropdown is limited to models whose platform has every snippet the play uses, so a Cisco-only day-0 play never offers Aruba models.
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.

@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0, 1 and 2 are done. Phase 3 (execution engine) is next.
+**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is next.
 
 ---
 
@@ -144,7 +144,6 @@ Every module not marked done is a stub containing only a docstring. The docstrin
 
 | # | Issue | Proposed | Needed by |
 |---|---|---|---|
-| 1 | Which device statuses count as failed for `max_fail_percent`? For example, `skipped_precheck`, `device_busy` or `unreachable`. | Count `failed`, `rolled_back`, `rollback_failed`, `unreachable`, `hostkey_mismatch`, `render_changed` and `interrupted`. Do not count `skipped_precheck` or `device_busy`, since nothing was changed. | 3.1 |
 | 2 | keyring has no list API, but the Credentials screen and the exact-value redactor both need to enumerate names. | Use `CredEnumerate` through pywin32-ctypes, filtered to the `tsunami` service (to be verified). Fallback: a names index in `%APPDATA%\Tsunami`. | 2.3 |
 | 3 | Facts that change over time (uptime) in a template would trip `render_changed` on every approved job. | A lint warning on templates that reference volatile facts. | 2.2 |
 | 4 | Python 3.12 now receives security fixes only. The spec allows 3.13. | Stay on 3.12; revisit in Phase 6. | 6.1 |
@@ -215,17 +214,27 @@ Phase 2 acceptance: `tsunami render` prints masked config for any sample device;
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 3.1 | Runner (canary, batches, max-fail, 50-session cap, cancel, heartbeats), pipeline, rollback | Opus | Phase 2 |
-| 3.2 | Mock transport + 200-device scale test | Sonnet | Session protocol |
-| 3.3 | `history.py` + migrations (including leases and heartbeats), `logsetup.py` | Sonnet | jobs enums |
-| 3.4 | configtree + diff + compliance, including the stale `ntp server` case | Sonnet | — |
-| 3.5 | facts, errordetect, checks + show-output fixtures | Sonnet | — |
-| 3.6 | SSH transport, jump-host channel pool, per-customer host keys | Opus | 3.1 |
-| 3.7 | Console transport with configurable day-0 dialog patterns, fake-device tests | Sonnet | Session protocol |
-| 3.8 | CML integration suite + CLI `run` | Opus + you | everything above, plus the CML lab |
-| 3.9 | IOS driver, run side: facts, error patterns, flash backup, `configure replace`, revert timer, day-0 dialogs | Opus | 3.1 |
-| 3.10 | Aruba drivers, run side. Sonnet: facts parsers, error patterns, the serial session subclasses, day-0 dialogs. Opus: checkpoint, `cfg-restore` and job-based rollback, and the AOS-CX `check_config_mode` subclass | Sonnet + Opus | 3.1, 2.8 |
-| 3.11 | Aruba lab: get the AOS-CX simulator booting as a CML custom node; bench AOS-S tests; resolve every *verify* item in design.md, Platform drivers | Opus + you | 3.10, hardware |
+| 3.1 ✅ | Runner (canary, batches, max-fail, 50-session cap, cancel, heartbeats), pipeline, rollback | Opus | Phase 2 |
+| 3.2 ✅ | Mock transport + 200-device scale test | Sonnet | Session protocol |
+| 3.3 ✅ | `history.py` + migrations (including leases and heartbeats), `logsetup.py` | Sonnet | jobs enums |
+| 3.4 ✅ | configtree + diff + compliance, including the stale `ntp server` case | Sonnet | — |
+| 3.5 ✅ | facts, errordetect, checks + show-output fixtures | Sonnet | — |
+| 3.6 ✅ | SSH transport, jump-host channel pool, per-customer host keys | Opus | 3.1 |
+| 3.7 ✅ | Console transport with configurable day-0 dialog patterns, fake-device tests | Sonnet | Session protocol |
+| 3.8 ⏸ | CML integration suite (CLI `run` is done) | Opus + you | everything above, plus the CML lab |
+| 3.9 ✅ | IOS driver, run side: facts, error patterns, flash backup, `configure replace`, revert timer, day-0 dialogs | Opus | 3.1 |
+| 3.10 ✅ | Aruba drivers, run side. Sonnet: facts parsers, error patterns, the serial session subclasses, day-0 dialogs. Opus: checkpoint, `cfg-restore` and job-based rollback, and the AOS-CX `check_config_mode` subclass | Sonnet + Opus | 3.1, 2.8 |
+| 3.11 ⏸ | Aruba lab: get the AOS-CX simulator booting as a CML custom node; bench AOS-S tests; resolve every *verify* item in design.md, Platform drivers | Opus + you | 3.10, hardware |
+
+Phase 3 status: every engine piece is built and tested against the mock transport, including a 200-device run within the 50-session cap, rollback on rejected lines and failed post-checks, max-fail, canary, leases, and secret materialization with no leaks into history or events (2,115 tests). The CML and hardware acceptance criteria wait for 3.8 and 3.11.
+
+To verify on hardware in 3.11, in addition to the *verify* items in design.md:
+- AOS-S first-login manager-password prompt text, and whether a retype prompt follows.
+- AOS-S console flow control (XON/XOFF default vs HPE's "off" guidance) and whether the boot dialog needs 9600 baud.
+- Netmiko `serial_login` and `HPProcurveSSH` session preparation after the dialog phase leaves the console at a prompt.
+- AOS-CX forced-password and empty-password prompt text on each firmware.
+- IOS-XE autoinstall timing against the 5-second wake carriage return.
+- AOS-S `cfg-backup`, `cfg-restore`, `alias` and `job` from manager context vs config context.
 
 **Phase 4: GUI**
 

@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import subprocess
 import sys
+from pathlib import Path
 
 from tsunami import __version__
 from tsunami.gui import app
@@ -31,10 +32,33 @@ def test_cli_selftest():
     assert "selftest ok" in result.stdout
 
 
-def test_cli_unimplemented_command_exits_2():
-    result = run_cli("run")
+def test_cli_unknown_command_exits_2():
+    result = run_cli("frobnicate")
     assert result.returncode == 2
-    assert "Phase 3" in result.stderr
+
+
+def test_cli_run_render_mode_needs_no_devices(monkeypatch, capsys):
+    from tsunami import bootstrap, cli
+
+    monkeypatch.setattr(bootstrap, "configure_keyring", lambda: None)  # keep the test keyring
+    fixture = str(Path(__file__).parents[1] / "fixtures" / "workspace")
+    code = cli.main(
+        [
+            "run",
+            "plays/push/add-vlan.yml",
+            "-w",
+            fixture,
+            "--mode",
+            "render",
+            "--set",
+            "vlan_id=30",
+            "--set",
+            "vlan_name=Cameras",
+        ]
+    )
+    out = capsys.readouterr().out
+    assert code == 0
+    assert "sa-as01: success" in out and "completed" in out
 
 
 def test_gui_version(capsys):

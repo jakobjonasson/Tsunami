@@ -15,10 +15,7 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.scaffold import init_workspace
 from tsunami.core.workspace import load_workspace
 
-# Subcommand: (help text, phase that implements it). Each phase adds its arguments.
-_PLANNED = {
-    "run": ("run a play headless", 3),
-}
+RUN_MODES = ("check", "compliance", "apply", "render")
 
 
 def _parser() -> argparse.ArgumentParser:
@@ -37,40 +34,132 @@ def _parser() -> argparse.ArgumentParser:
     validate.add_argument(
         "path", type=Path, nargs="?", default=Path("."), help="workspace folder (default: .)"
     )
-    render = sub.add_parser("render", help="render a play for one device, secrets masked")
-    render.add_argument("play", help="play path inside the workspace, e.g. plays/push/x.yml")
-    render.add_argument("-w", "--workspace", type=Path, default=Path("."), help="default: .")
-    render.add_argument("-d", "--device", help="target device (omit for initial plays)")
-    render.add_argument(
-        "--set", action="append", default=[], metavar="NAME=VALUE", help="a prompt answer"
-    )
-    render.add_argument("--tags", help="comma-separated tag filter")
-    for name, (help_text, _phase) in _PLANNED.items():
-        sub.add_parser(name, help=help_text)
+    for name, help_text in (
+        ("render", "render a play for one device, secrets masked"),
+        ("run", "run a play headless (check mode unless --mode says otherwise)"),
+    ):
+        cmd = sub.add_parser(name, help=help_text)
+        cmd.add_argument("play", help="play path inside the workspace, e.g. plays/push/x.yml")
+        cmd.add_argument("-w", "--workspace", type=Path, default=Path("."), help="default: .")
+        cmd.add_argument(
+            "--set", action="append", default=[], metavar="NAME=VALUE", help="a prompt answer"
+        )
+        cmd.add_argument("--tags", help="comma-separated tag filter")
+        if name == "render":
+            cmd.add_argument("-d", "--device", help="target device (omit for initial plays)")
+        else:
+            cmd.add_argument("--mode", choices=RUN_MODES, default="check")
+            cmd.add_argument(
+                "-d", "--device", action="append", default=[], help="limit to this device"
+            )
+            cmd.add_argument("--port", help="serial port for day-0 plays, e.g. COM3")
+            cmd.add_argument("--yes", action="store_true", help="continue past the canary")
     return parser
+
+
+def _prompts(items: list[str]) -> dict[str, str]:
+    prompts = {}
+    for item in items:
+        name, sep, value = item.partition("=")
+        if not sep:
+            raise TsunamiError(f"--set needs NAME=VALUE, got {item!r}")
+        prompts[name.strip()] = value
+    return prompts
 
 
 def _render(args: argparse.Namespace) -> int:
     from tsunami.core.services import render_play
 
-    prompts = {}
-    for item in args.set:
-        name, sep, value = item.partition("=")
-        if not sep:
-            print(f"tsunami render: --set needs NAME=VALUE, got {item!r}", file=sys.stderr)
-            return 2
-        prompts[name.strip()] = value
     tags = [t.strip() for t in args.tags.split(",")] if args.tags else None
     workspace = load_workspace(args.workspace)
     try:
         rendering = render_play(
-            workspace, args.play, device=args.device, prompts=prompts, tags=tags
+            workspace, args.play, device=args.device, prompts=_prompts(args.set), tags=tags
         )
     except TsunamiError as exc:
         print(f"tsunami render: {exc}", file=sys.stderr)
         return 1
     sys.stdout.write(rendering.masked_text())
     return 0
+
+
+def _run(args: argparse.Namespace) -> int:
+    from tsunami.core.events import (
+        BatchFinished,
+        CanaryWaiting,
+        DeviceLog,
+        DeviceStatusChanged,
+        JobFinished,
+        MaxFailReached,
+    )
+    from tsunami.core.history import History
+    from tsunami.core.logsetup import configure_logging
+    from tsunami.core.models.jobs import JobStatus
+    from tsunami.core.models.play import RunMode
+    from tsunami.core.models.settings import load_settings
+    from tsunami.core.paths import AppPaths
+    from tsunami.core.runner import Runner, RunRequest
+    from tsunami.core.secret_store import KeyringSecretStore
+    from tsunami.core.transports import DeviceTransport
+
+    bootstrap.configure_keyring()
+    paths = AppPaths.from_env()
+    settings = load_settings(paths.settings_file)
+    configure_logging(paths.logs_dir / "app.log", level=settings.log_level)
+    workspace = load_workspace(args.workspace)
+    history = History(paths.history_db)
+    history.mark_interrupted()
+
+    def show(event) -> None:
+        if isinstance(event, DeviceStatusChanged):
+            detail = f" ({event.detail})" if event.detail else ""
+            print(f"{event.device}: {event.status}{detail}")
+        elif isinstance(event, DeviceLog) and args.verbose_log:
+            print(f"{event.device} | {event.text}")
+        elif isinstance(event, BatchFinished):
+            print(f"batch {event.batch} done: {event.failed} failed of {event.attempted}")
+        elif isinstance(event, MaxFailReached):
+            print(f"max_fail_percent {event.max_fail_percent} exceeded; no further batches")
+        elif isinstance(event, CanaryWaiting):
+            print(f"canary {event.device} finished")
+        elif isinstance(event, JobFinished):
+            print(f"job {event.job_id}: {event.status} {event.counts}")
+
+    def confirm(device: str) -> bool:
+        if args.yes:
+            return True
+        return input(f"Continue past canary {device}? [y/N] ").strip().lower().startswith("y")
+
+    try:
+        runner = Runner(
+            workspace,
+            transport=DeviceTransport(paths, settings),
+            history=history,
+            secrets=KeyringSecretStore(index_path=paths.settings / "credential-index.json"),
+            paths=paths,
+            app_settings=settings,
+            on_event=show,
+            confirm_canary=confirm,
+        )
+        job_id = runner.run(
+            RunRequest(
+                args.play,
+                RunMode(args.mode),
+                prompts=_prompts(args.set),
+                tags=[t.strip() for t in args.tags.split(",")] if args.tags else None,
+                limit=args.device or None,
+                serial_port=args.port,
+            )
+        )
+        job = history.get_job(job_id)
+    except TsunamiError as exc:
+        print(f"tsunami run: {exc}", file=sys.stderr)
+        return 1
+    finally:
+        history.close()
+    if job.summary.get("error"):
+        print(f"tsunami run: {job.summary['error']}", file=sys.stderr)
+    return 0 if job.status == JobStatus.COMPLETED else 1
 
 
 def _init(path: Path, name: str | None) -> int:
@@ -99,15 +188,14 @@ def main(argv: list[str] | None = None) -> int:
     args = parser.parse_args(argv)
     if args.selftest:
         return bootstrap.selftest()
-    if args.command is None:
-        parser.print_help()
-        return 0
     if args.command == "init":
         return _init(args.path, args.name)
     if args.command == "validate":
         return _validate(args.path)
     if args.command == "render":
         return _render(args)
-    phase = _PLANNED[args.command][1]
-    print(f"tsunami {args.command}: not implemented yet (Phase {phase})", file=sys.stderr)
-    return 2
+    if args.command == "run":
+        args.verbose_log = False
+        return _run(args)
+    parser.print_help()
+    return 0
