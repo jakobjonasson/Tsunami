@@ -721,6 +721,10 @@ Every platform family's rules apply to all text, so output from a mislabelled de
 
 MCP results use every stored secret and login password of every customer, not just the call's customer, and a call fails if the store cannot be read. One exception: a value Claude supplied in the same call (an argument, or a word of one; for `get_job`, an MCP job's prompt values) is not exact-redacted where it is echoed back. Redacting the echo of a correct guess would confirm the guess, so a prompt value or argument set to a candidate secret would work as an oracle. The pattern layer still applies, so sink lines stay masked. MCP jobs apply the same exception to their prompt values when the runner stores diffs and output. Audit rows always get the full redaction.
 
+A draft Claude wrote over MCP counts as its own input too, while the file is unchanged: `write_draft` records the file's SHA-256 in `history.db`, and a read, render, or job of that draft leaves its text out of the exact layer. Otherwise Claude could write a guess in one call and read it back in the next. A draft a person saved or edited is redacted like any other file.
+
+Accepted residual: if a secret is also stored in plain text somewhere the exact layer alone catches (a workspace variable printed in a `description`, say), a right whole-value guess in the same call unmasks that copy too, so the guess is confirmed. This needs that misconfiguration, costs one rate-limited, audited call per guess, and the pattern layer still masks every sink line.
+
 ### Backups
 
 - Backups are stored unredacted, because a redacted backup cannot be used for restore.

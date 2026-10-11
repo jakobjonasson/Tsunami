@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import logging
-import re
 import threading
 import time
 from collections import deque
@@ -35,7 +34,7 @@ from tsunami.core.models.policy import McpPolicy
 from tsunami.core.models.settings import load_settings
 from tsunami.core.paths import AppPaths
 from tsunami.core.policy import load_policy
-from tsunami.core.redact import Redactor
+from tsunami.core.redact import Redactor, supplied_values
 from tsunami.core.workspace import Workspace, load_workspace
 
 log = logging.getLogger(__name__)
@@ -122,7 +121,7 @@ class McpApp:
         try:
             secrets = self.secret_values()
             full = Redactor(secrets)
-            supplied = _supplied_values(args) | _supplied_values(list(known))
+            supplied = supplied_values(args) | supplied_values(list(known))
             redactor = Redactor(v for v in secrets if v not in supplied)
             policy = self.policy()
             if not policy.enabled:
@@ -195,30 +194,11 @@ class McpApp:
             log.warning("could not record audit row for %s", tool, exc_info=True)
 
 
-_WORD_SPLIT = re.compile(r"[\s'\"`,\[\]{}()]+")
-
-
-def _supplied_values(value: Any) -> set[str]:
-    """Every string the caller sent, whole and split into words."""
-    out: set[str] = set()
-    if isinstance(value, str):
-        out |= {value, value.strip(), *(w for w in _WORD_SPLIT.split(value) if w)}
-    elif isinstance(value, dict):
-        for key, item in value.items():
-            out |= _supplied_values(key) | _supplied_values(item)
-    elif isinstance(value, list | tuple | set):
-        for item in value:
-            out |= _supplied_values(item)
-    elif value is not None and not isinstance(value, bool):
-        out.add(str(value))
-    return out
-
-
 def _redact_value(value: Any, redactor: Redactor) -> Any:
     if isinstance(value, str):
         return redactor.text(value)
-    if isinstance(value, dict):
-        return {k: _redact_value(v, redactor) for k, v in value.items()}
+    if isinstance(value, dict):  # keys too: a prompt name can be anything the caller sends
+        return {_redact_value(k, redactor): _redact_value(v, redactor) for k, v in value.items()}
     if isinstance(value, list | tuple):
         return [_redact_value(v, redactor) for v in value]
     return value

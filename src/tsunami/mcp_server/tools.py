@@ -11,10 +11,11 @@ See design.md, MCP interface: Tools, Approval flow, Leak paths.
 
 from __future__ import annotations
 
+import hashlib
 import os
 import tempfile
 import threading
-from pathlib import Path
+from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from tsunami.core.issues import Issue, Severity, TsunamiError
@@ -23,6 +24,7 @@ from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
 from tsunami.core.policy import PolicyError, check_show_command
+from tsunami.core.redact import supplied_values
 from tsunami.core.render.environment import TemplateError, compile_template, make_environment
 from tsunami.core.render.lookup import find_snippet
 from tsunami.core.runner import Runner, RunRequest, play_hash
@@ -117,7 +119,8 @@ class Tools:
             return {"plays": plays}
 
         args = {"type": type, "customer": customer, "include_drafts": include_drafts}
-        return self.app.call("list_plays", 0, args, run, customer=customer)
+        known = self._drafts() if include_drafts else []
+        return self.app.call("list_plays", 0, args, run, customer=customer, known=known)
 
     def read_play(self, path: str):
         def run(policy):
@@ -127,7 +130,8 @@ class Tools:
             self._check_play_customer(policy, ws, text)
             return {"path": _rel(ws.root, real), "text": text}
 
-        return self.app.call("read_play", 0, {"path": path}, run, customer=self._customer_of(path))
+        customer, known = self._customer_of(path), self._drafts_for(path)
+        return self.app.call("read_play", 0, {"path": path}, run, customer=customer, known=known)
 
     def list_snippets(self, customer: str | None = None, platform: str | None = None):
         def run(policy):
@@ -214,7 +218,9 @@ class Tools:
             return _issues_result(issues)
 
         args = {"path": path, "content": _short(content)}
-        return self.app.call("validate", 0, args, run, customer=self._customer_of(path, content))
+        customer, known = self._customer_of(path, content), self._drafts_for(path)
+        known += [content] if content is not None else []  # args hold only a prefix
+        return self.app.call("validate", 0, args, run, customer=customer, known=known)
 
     def render(self, path: str, device: str | None = None, prompts: dict | None = None):
         def run(policy):
@@ -234,7 +240,8 @@ class Tools:
             }
 
         args = {"path": path, "device": device, "prompts": prompts}
-        return self.app.call("render", 0, args, run, customer=self._customer_of(path))
+        customer, known = self._customer_of(path), self._drafts_for(path)
+        return self.app.call("render", 0, args, run, customer=customer, known=known)
 
     def write_draft(self, path: str, content: str):
         def run(policy):
@@ -250,6 +257,8 @@ class Tools:
             elif rel.parts[2] == "customers":
                 self.app.visible_customer(policy, ws, rel.parts[3])
             _atomic_write(target, content)
+            digest = hashlib.sha256(target.read_bytes()).hexdigest()
+            self.app.history.record_mcp_draft(rel.as_posix(), digest)
             if target.suffix == ".yml":
                 result = _issues_result(validate_play_text(self.app.workspace(), content, rel))
             else:
@@ -257,7 +266,8 @@ class Tools:
             return {"path": rel.as_posix(), "written": True, **result}
 
         args = {"path": path, "content": _short(content)}
-        return self.app.call("write_draft", 0, args, run, customer=self._customer_of(None, content))
+        customer = self._customer_of(None, content)
+        return self.app.call("write_draft", 0, args, run, customer=customer, known=[content])
 
     def delete_draft(self, path: str):
         def run(policy):
@@ -266,6 +276,7 @@ class Tools:
             if not target.is_file():
                 raise ToolRefused(f"no draft at {path}")
             target.unlink()
+            self.app.history.forget_mcp_draft(_rel(ws.root, target))
             return {"path": _rel(ws.root, target), "deleted": True}
 
         return self.app.call("delete_draft", 0, {"path": path}, run)
@@ -352,7 +363,7 @@ class Tools:
             }
 
         args = {"job_id": job_id}
-        return self.app.call("get_job", 1, args, run, known=self._job_prompts(job_id))
+        return self.app.call("get_job", 1, args, run, known=self._job_supplied(job_id))
 
     def list_jobs(self, customer: str | None = None, limit: int = 20):
         def run(policy):
@@ -414,6 +425,7 @@ class Tools:
                         actor=Actor.MCP,
                         job_id=job_id,
                         allow_new_host_key=False,
+                        exact_exempt=self._exempt(entry, prompts),
                     )
                 )
                 return {
@@ -431,6 +443,7 @@ class Tools:
                     actor=Actor.MCP,
                     job_id=job_id,
                     allow_new_host_key=False,
+                    exact_exempt=self._exempt(entry, prompts),
                 ),
                 after=lambda: self._await_approval(job_id),
             )
@@ -460,7 +473,7 @@ class Tools:
             return {"job_id": job_id, "status": "cancelled"}
 
         args = {"job_id": job_id}
-        return self.app.call("cancel_job", 2, args, run, known=self._job_prompts(job_id))
+        return self.app.call("cancel_job", 2, args, run, known=self._job_supplied(job_id))
 
     # == helpers ===========================================================================
 
@@ -489,6 +502,7 @@ class Tools:
                     actor=Actor.MCP,
                     job_id=job_id,
                     allow_new_host_key=False,
+                    exact_exempt=self._exempt(entry, prompts),
                 )
             )
             return {"job_id": job_id, "status": "running", "devices": len(devices)}
@@ -573,15 +587,49 @@ class Tools:
             raise ToolRefused(f"unknown job {job_id!r}")
         return job
 
-    def _job_prompts(self, job_id: str) -> list[str]:
-        """An MCP job's prompt values: Claude supplied them, so their echo is not redacted."""
+    def _job_supplied(self, job_id: str) -> list[str]:
+        """What Claude supplied for an MCP job: its prompt values, and the draft it ran."""
         try:
             job = self.app.history.get_job(job_id)
         except TsunamiError:
             return []
         if job.actor != Actor.MCP:
             return []  # a person typed these; Claude never saw them
-        return [str(v) for v in job.prompts.values()]
+        return [str(v) for v in job.prompts.values()] + self._drafts_for(job.play_path)
+
+    def _exempt(self, entry, prompts) -> frozenset[str]:
+        """Text Claude supplied for a run, kept out of the runner's exact-value layer."""
+        known = list((prompts or {}).values()) + (self._drafts() if entry.draft else [])
+        return frozenset(supplied_values(known))
+
+    def _drafts_for(self, path: str | None) -> list[str]:
+        if path and PureWindowsPath(path).as_posix().startswith("drafts/"):
+            return self._drafts()
+        return []
+
+    def _drafts(self) -> list[str]:
+        """Path, name and text of each draft Claude wrote over MCP and nobody changed since.
+
+        When Claude reads its own text back, an exact-value redaction would answer whether
+        the text it wrote is a secret. A draft a person saved or edited is not Claude's
+        input, so it is redacted like any other file.
+        """
+        try:
+            root = Path(self.app.settings().workspace or "")
+            written = self.app.history.mcp_draft_hashes()
+        except Exception:  # noqa: BLE001
+            return []
+        out: list[str] = []
+        for rel, digest in written.items():
+            file = root / rel
+            try:
+                data = file.read_bytes()
+            except OSError:
+                continue
+            if hashlib.sha256(data).hexdigest() != digest:
+                continue
+            out += [rel, file.stem, data.decode("utf-8-sig", errors="replace")]
+        return out
 
     def _check_play_customer(self, policy, ws, text: str) -> None:
         customer = _yaml_customer(text)

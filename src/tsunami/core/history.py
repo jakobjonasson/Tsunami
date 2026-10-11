@@ -400,6 +400,22 @@ class History:
             (self._now(), tool, _dumps(args_redacted), status, duration_ms, result_bytes, job_id),
         )
 
+    # --- drafts written over MCP ---
+
+    def record_mcp_draft(self, path: str, sha256: str) -> None:
+        self._exec(
+            "INSERT INTO mcp_drafts (path, sha256, written_at) VALUES (?,?,?)"
+            " ON CONFLICT(path) DO UPDATE SET sha256 = excluded.sha256,"
+            " written_at = excluded.written_at",
+            (path, sha256, self._now()),
+        )
+
+    def forget_mcp_draft(self, path: str) -> None:
+        self._exec("DELETE FROM mcp_drafts WHERE path = ?", (path,))
+
+    def mcp_draft_hashes(self) -> dict[str, str]:
+        return {r["path"]: r["sha256"] for r in self._query("SELECT path, sha256 FROM mcp_drafts")}
+
     def add_compliance_result(
         self, *, job_id: str, device: str, missing_count: int, extra_count: int, details: dict
     ) -> None:

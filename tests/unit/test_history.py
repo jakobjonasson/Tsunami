@@ -63,9 +63,16 @@ def raw(path: Path, sql: str, params=()):
 
 def test_migrations_apply(hist: History, db_path: Path):
     tables = {r[0] for r in raw(db_path, "SELECT name FROM sqlite_master WHERE type='table'")}
-    assert {"schema_version", "jobs", "job_devices", "mcp_calls", "compliance_results"} <= tables
+    assert {
+        "schema_version",
+        "jobs",
+        "job_devices",
+        "mcp_calls",
+        "compliance_results",
+        "mcp_drafts",
+    } <= tables
     assert "device_leases" in tables
-    assert raw(db_path, "SELECT version FROM schema_version") == [(1,)]
+    assert raw(db_path, "SELECT version FROM schema_version") == [(2,)]
 
 
 def test_wal_and_busy_timeout(hist: History):
@@ -81,7 +88,7 @@ def test_reopen_is_idempotent(db_path: Path, clock: FakeClock):
     h2 = History(db_path, clock=clock)
     assert h2.get_job(job_id).id == job_id
     h2.close()
-    assert raw(db_path, "SELECT version FROM schema_version") == [(1,)]
+    assert raw(db_path, "SELECT version FROM schema_version") == [(2,)]
 
 
 def test_newer_database_is_refused(db_path: Path, clock: FakeClock):

@@ -18,6 +18,7 @@ from typing import Any
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import RunMode
+from tsunami.core.redact import supplied_values
 from tsunami.core.runner import RunRequest, play_hash
 
 PLAY_CHANGED = "play-changed"  # never equals a real render hash
@@ -45,6 +46,7 @@ def approve(history: Any, workspace: Any, job_id: str, *, approved_by: str) -> R
         actor=Actor.MCP,
         job_id=job_id,
         approved_hashes=hashes,
+        exact_exempt=frozenset(supplied_values(dict(job.prompts))),  # Claude's own input
     )
 
 

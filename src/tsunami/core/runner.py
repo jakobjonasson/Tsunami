@@ -78,6 +78,9 @@ class RunRequest:
     approved_hashes: Mapping[str, str] | None = None
     allow_new_host_key: bool = True
     serial_port: str | None = None
+    # MCP jobs: text Claude supplied (prompt values, a draft's content). It is left out of
+    # the exact-value layer where echoed; redacting a correct guess would confirm it.
+    exact_exempt: frozenset[str] = frozenset()
 
 
 @dataclass(frozen=True)
@@ -258,13 +261,8 @@ class Runner:
         for cred in (credential, jump.credential if jump else None):
             if cred is not None:
                 exact += [v for v in (cred.password, cred.enable) if v]
-        if request.actor == Actor.MCP:
-            # Prompt values came from Claude. Redacting their echo in a diff would tell it
-            # that a guess equals a stored secret; sink lines stay masked by the pattern layer.
-            supplied = {str(v).strip() for v in request.prompts.values()}
-            for answers in request.device_prompts.values():
-                supplied |= {str(v).strip() for v in answers.values()}
-            exact = [v for v in exact if v not in supplied]
+        if request.exact_exempt:  # sink lines stay masked by the pattern layer
+            exact = [v for v in exact if v not in request.exact_exempt]
         return JobContext(
             job_id=job_id,
             workspace=self.workspace,

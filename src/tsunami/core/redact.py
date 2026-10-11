@@ -14,13 +14,36 @@ MCP passes through here. See design.md, Secrets and credentials: Redactor.
 
 from __future__ import annotations
 
+import re
 from collections.abc import Iterable
+from typing import Any
 
 from tsunami.core.platforms import all_drivers
 from tsunami.core.platforms.base import LineRule, top_level_parent
 
 REDACTED = "<redacted>"
 MIN_EXACT_LENGTH = 4
+_WORD_SPLIT = re.compile(r"[\s'\"`,\[\]{}()]+")
+
+
+def supplied_values(value: Any) -> set[str]:
+    """Every string in value, whole and split into words: text an MCP caller supplied.
+
+    MCP redaction leaves these out of the exact-value layer where they are echoed back,
+    because redacting the echo of a correct guess would confirm it (design.md, Redaction).
+    """
+    out: set[str] = set()
+    if isinstance(value, str):
+        out |= {value, value.strip(), *(w for w in _WORD_SPLIT.split(value) if w)}
+    elif isinstance(value, dict):
+        for key, item in value.items():
+            out |= supplied_values(key) | supplied_values(item)
+    elif isinstance(value, list | tuple | set | frozenset):
+        for item in value:
+            out |= supplied_values(item)
+    elif value is not None and not isinstance(value, bool):
+        out.add(str(value))
+    return out
 
 
 class Redactor:

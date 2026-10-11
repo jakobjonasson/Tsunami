@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is done. Phase 5 (MCP server) is done except the leak suite (5.4) and the Inspector and GUI round trip (5.5).
+**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is done. Phase 5 (MCP server) is done except the MCP Inspector pass in 5.5. Phase 6 packaging is built (6.1); the installer compile, signing and CI run are unverified.
 
 ---
 
@@ -259,7 +259,7 @@ Screen groups for 4.2:
 | 5.1 ✅ | Enforcement wrapper, pathguard (symlinks, junctions), approval hashing, lab exception | Opus | Phase 4 |
 | 5.2 ✅ | Policy model and loader + per-family show-allowlist matcher + tests | Sonnet | — |
 | 5.3 ✅ | The MCP tools on top of `services`, tool descriptions | Sonnet | 5.1 |
-| 5.4 | Scripted secret-leak client suite, written without seeing 5.3 | Sonnet (separate agent) | 5.1 |
+| 5.4 ✅ | Scripted secret-leak client suite, written without seeing 5.3 (`tests/unit/test_mcp_leaks.py`) | Sonnet (separate agent) | 5.1 |
 | 5.5 | MCP Inspector pass (open); approval round trip with the GUI ✅ (`tests/gui/test_mcp_round_trip.py`) | Opus + you | 5.3 |
 
 **Phase 6: Packaging and day-0**
