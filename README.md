@@ -2,7 +2,7 @@
 
 Tsunami is a Windows desktop tool that pushes templated Cisco IOS/IOS-XE and HPE Aruba AOS-CX/AOS-S configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude. Claude can read inventory, draft plays, render and run read-only checks. It never sees credentials or secret values, and changes to customer devices need approval in the GUI.
 
-**Status:** Phases 1–3 done (models, validation, rendering, secrets, redaction, execution engine). Lab testing deferred; Phase 4 (GUI) next. See [docs/implementation-plan.md](docs/implementation-plan.md) for build progress and [docs/design.md](docs/design.md) for the spec.
+**Status:** Phases 1–5 done: models, validation, rendering, secrets, redaction, the execution engine, the GUI, and the MCP server. Lab and hardware testing is deferred; Phase 6 (packaging) is in progress. See [docs/implementation-plan.md](docs/implementation-plan.md) for build progress and [docs/design.md](docs/design.md) for the spec.
 
 ## Development setup
 
@@ -16,7 +16,8 @@ uv run python -m tsunami init C:\path\to\workspace   # new workspace skeleton
 uv run python -m tsunami validate C:\path\to\workspace
 uv run python -m tsunami run plays/push/add-vlan.yml -w C:\path\to\workspace --mode check --set vlan_id=30 --set vlan_name=Cameras
 uv run python -m tsunami render plays/push/add-vlan.yml -w C:\path\to\workspace -d sa-as01 --set vlan_id=30 --set vlan_name=Cameras
-uv run tsunami                           # GUI (placeholder window until Phase 4)
+uv run tsunami                           # GUI
+uv run tsunami-mcp                       # MCP server on stdio (for Claude Desktop or Claude Code)
 uv run pytest                            # unit tests; CML and serial tests skip by default
 uv run ruff check
 uv run ruff format
