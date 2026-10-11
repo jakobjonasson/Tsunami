@@ -11,6 +11,7 @@ from pathlib import Path
 import pytest
 
 from tsunami.core.issues import Severity
+from tsunami.core.models.inventory import DEVICE_TYPES
 from tsunami.core.resolver import Level
 from tsunami.core.workspace import load_workspace
 
@@ -45,7 +46,7 @@ def test_sample_workspace_is_clean():
     ws = load_workspace(FIXTURE)
     assert ws.issues == []
     assert set(ws.customers) == {"acme"}
-    assert set(ws.roles) == {"access", "distribution"}
+    assert set(ws.roles) == set(DEVICE_TYPES)  # built-in types; access and distribution have files
     assert all(entry.play is not None for entry in ws.plays.values())
 
 
@@ -244,3 +245,42 @@ def test_cli_validate(workspace, capsys):
     out = capsys.readouterr().out
     assert f"{Path(BASELINE)}:11: error:" in out
     assert "[play.snippet_missing]" in out
+
+
+def test_built_in_device_types_need_no_role_file(workspace):
+    router = (
+        "- name: sa-rt01\n  host: 203.0.113.30\n  site: site-a\n  role: router\n  platform: ios\n"
+    )
+    (workspace / DEVICES).write_text(
+        (workspace / DEVICES).read_text(encoding="utf-8") + router, encoding="utf-8"
+    )
+    ws = load_workspace(workspace)
+    assert ws.errors == []
+    assert ws.customers["acme"].device("sa-rt01").role == "router"
+
+
+def test_login_precedence_device_then_site_then_customer(workspace):
+    edit(
+        workspace,
+        CUSTOMER,
+        "lab: false\n",
+        "lab: false\nsite_credentials:\n  site-a: acme-site-a\n",
+    )
+    edit(
+        workspace,
+        DEVICES,
+        "  platform: ios-xe\n  vars:\n    mgmt_ip: 203.0.113.12/24\n",
+        "  platform: ios-xe\n  credential: acme-sa-as02\n  vars:\n    mgmt_ip: 203.0.113.12/24\n",
+    )
+    ws = load_workspace(workspace)
+    assert ws.errors == []
+    acme = ws.customers["acme"]
+    assert acme.credential_for(acme.device("sa-as02")) == "acme-sa-as02"
+    assert acme.credential_for(acme.device("sa-as01")) == "acme-site-a"
+    assert acme.credential_for(None) == "acme-netadmin"
+
+
+def test_site_credentials_must_name_a_site(workspace):
+    edit(workspace, CUSTOMER, "lab: false\n", "lab: false\nsite_credentials:\n  site-z: x-login\n")
+    issues = [i for i in load_workspace(workspace).errors if i.code == "inventory.unknown_site"]
+    assert issues and "site-z" in issues[0].message

@@ -172,11 +172,12 @@ Inventory is customers, then sites, then devices, with roles as a cross-cutting 
 ### customer.yml
 
 - `name`: display name. Required.
-- `credential`: name of the login credential in Credential Manager. Required.
+- `credential`: name of the login credential in Credential Manager. Required. The default login for the customer's devices.
 - `jump_host`: optional object with `host`, `port` (default 22), and `credential`.
 - `lab`: bool, default false. Marks a lab customer such as CML. MCP policy decides whether lab customers can be changed without approval.
 - `vars`: customer-level variables.
 - `role_vars`: map of role slug to variables, for customer-specific role defaults.
+- `site_credentials`: optional map of site slug to login credential name: the default login for devices at that site.
 
 ### devices.yml
 
@@ -186,10 +187,15 @@ A list of devices. Each device has:
 - `host`: IP or DNS name used to connect.
 - `port`: default 22.
 - `site`: must match a file in `sites/`.
-- `role`: must match a file in `inventory/roles/`.
+- `role`: the device type. One of the built-in types `core`, `distribution`, `access` (switches), `wlc`, `ap` and `router`, or a custom role with a file in `inventory/roles/`. A file for a built-in type adds variables to it. Plays target types with `targets.roles`.
 - `platform`: `ios`, `ios-xe`, `aos-cx`, or `aos-s`.
 - `model`: optional hardware catalog id. Written by `add_to_inventory`; used for the facts sanity check.
+- `credential`: optional login credential name for this device.
 - `vars`: device-level variables.
+
+A device logs in with its own `credential`, else its site's entry in `site_credentials`, else the customer's `credential`. Day-0 staging over console has no device yet and uses the customer's.
+
+The GUI edits inventory through the Inventory view's context menus: devices (edit, delete, properties), sites (new device, edit, settings, delete), and customers (add site, properties, delete). Every edit keeps comments and layout, is validated before it is written, and is written atomically. Deleting a customer or a site file sends it to the Recycle Bin; deleting a site with devices needs explicit consent and removes them too.
 
 Each platform belongs to a family that shares one CLI: `ios` and `ios-xe` are family `ios`, and `aos-cx` and `aos-s` are each their own family. Netmiko device types and console handling come from the platform driver (see Platform drivers).
 
@@ -1363,4 +1369,5 @@ Changes since the original draft, with reasons:
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.
 - The MCP SDK 2.x renamed FastMCP to `MCPServer`. MCP device connections never accept a new host key, and a change request is `pending` while its check-mode diff runs.
+- Device types (core, distribution, access, wlc, ap, router) are built-in roles; devices may name their own login and sites may set a default (`site_credentials`), because one customer login did not fit sites or devices with different credentials.
 - From the blind leak review: show pipes run locally on redacted output (a device-side `include` recovered a secret character by character); MCP exact-value redaction covers every customer's secrets but not Claude's own echoed input (redacting it made a guessing oracle); audit rows are fully redacted; altered `secret()` output is a render error; refusal reasons reach the client as MCP tool errors.

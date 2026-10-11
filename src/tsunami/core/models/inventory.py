@@ -32,6 +32,17 @@ Host = Annotated[str, AfterValidator(_host)]
 Port = Annotated[int, Field(ge=1, le=65535)]
 Vars = dict[UserVarName, Any]
 
+# Built-in roles: the device types every workspace has, whether or not it has a
+# roles/<role>.yml file (one adds variables to the role). Plays target them by slug.
+DEVICE_TYPES: dict[str, str] = {
+    "core": "Core switch",
+    "distribution": "Distribution switch",
+    "access": "Access switch",
+    "wlc": "Wireless LAN controller",
+    "ap": "Access point",
+    "router": "Router",
+}
+
 
 class VarsFile(RootModel[Vars]):
     """inventory/global.yml, inventory/roles/<role>.yml, sites/<site>.yml."""
@@ -52,6 +63,9 @@ class CustomerFile(StrictModel):
     )
     vars: Vars = {}
     role_vars: dict[Slug, Vars] = {}
+    site_credentials: dict[Slug, Slug] = Field(
+        {}, description="Default login credential per site; a device's own credential wins."
+    )
 
 
 class Device(StrictModel):
@@ -59,9 +73,12 @@ class Device(StrictModel):
     host: Host
     port: Port = 22
     site: Slug
-    role: Slug
+    role: Slug = Field(description="Device type: a built-in role or roles/<role>.yml.")
     platform: Platform
     model: Slug | None = Field(None, description="Hardware catalog id.")
+    credential: Slug | None = Field(
+        None, description="Login credential; default: the site's, then the customer's."
+    )
     vars: Vars = {}
 
     @field_validator("platform")

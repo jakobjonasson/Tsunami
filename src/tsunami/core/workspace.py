@@ -29,7 +29,7 @@ from tsunami.core.models.common import (
     Platform,
     PlatformFamily,
 )
-from tsunami.core.models.inventory import CustomerFile, Device, VarsFile
+from tsunami.core.models.inventory import DEVICE_TYPES, CustomerFile, Device, VarsFile
 from tsunami.core.models.play import Play, PlayType, PromptType, play_findings
 from tsunami.core.models.workspace import SCHEMA_VERSION, WorkspaceFile
 from tsunami.core.prompts import PromptContext, PromptValueError, coerce
@@ -60,6 +60,17 @@ class CustomerInventory:
 
     def device(self, name: str) -> Device | None:
         return next((d for d in self.devices if d.name == name), None)
+
+    def credential_for(self, device: Device | None) -> str:
+        """The login credential name for a device: its own, else its site's default, else
+        the customer's. Without a device (staging over console), the customer's."""
+        if device is not None:
+            if device.credential:
+                return device.credential
+            site_default = self.config.site_credentials.get(device.site)
+            if site_default:
+                return site_default
+        return self.config.credential
 
 
 @dataclass(frozen=True)
@@ -316,7 +327,8 @@ class _Loader:
         return dict(model.root)
 
     def load_roles(self) -> dict[str, dict[str, Any]]:
-        roles = {}
+        # The built-in device types always exist; a roles/<role>.yml file adds variables.
+        roles: dict[str, dict[str, Any]] = {name: {} for name in DEVICE_TYPES}
         for path in sorted((self.root / ROLES_DIR).glob("*.yml")):
             name = self.slug_name(path, "role")
             if name is not None:
@@ -355,6 +367,18 @@ class _Loader:
             name = self.slug_name(path, "site")
             if name is not None:
                 sites[name] = self.load_vars(path)
+
+        if config is not None:
+            for site in config.site_credentials:
+                if site not in sites:
+                    self.at(
+                        doc,
+                        Severity.ERROR,
+                        "inventory.unknown_site",
+                        f"site_credentials names site {site!r}, which has no file in sites/",
+                        "site_credentials",
+                        site,
+                    )
 
         devices = self.load_devices(folder / "devices.yml", sites, roles)
         if slug is None or config is None:
@@ -406,7 +430,8 @@ class _Loader:
                     doc,
                     Severity.ERROR,
                     "inventory.unknown_role",
-                    f"role {device.role!r} has no file in inventory/roles/",
+                    f"role {device.role!r} is not a device type and has no file in "
+                    "inventory/roles/",
                     index,
                     "role",
                 )

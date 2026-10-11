@@ -74,7 +74,8 @@ class JobContext:
     renderer: Renderer
     cancel: threading.Event
     emit: Callable[[Event], None]
-    credential: LoginCredential | None = field(default=None, repr=False)
+    # Login per target label: the device's own, its site's default, or the customer's.
+    credentials: Mapping[str, LoginCredential] = field(default_factory=dict, repr=False)
     jump: JumpTarget | None = None
     secret_values: Mapping[str, str] = field(default_factory=dict, repr=False)
     approved_hashes: Mapping[str, str] | None = None
@@ -176,7 +177,7 @@ class DevicePipeline:
             port=device.port if device else 22,
             platform=platform,
             method=method,
-            credential=ctx.credential,
+            credential=ctx.credentials.get(self.label),
             jump=ctx.jump if method == ConnectionMethod.SSH else None,
             connect_timeout=ctx.settings.connect_timeout,
             command_timeout=ctx.settings.command_timeout

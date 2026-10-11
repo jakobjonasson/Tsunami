@@ -324,3 +324,39 @@ def test_job_that_fails_before_any_device_leaves_none_pending(ws_root, history, 
     changed = [e for e in events if isinstance(e, DeviceStatusChanged)]
     assert {e.device for e in changed} == {"sa-as01", "sa-as02"}
     assert mock.connections == 0
+
+
+def test_each_device_logs_in_with_its_own_credential(ws_root, history, secrets, app_paths):
+    customer = ws_root / "inventory/customers/acme/customer.yml"
+    customer.write_text(
+        customer.read_text(encoding="utf-8").replace(
+            "lab: false\n", "lab: false\nsite_credentials:\n  site-a: acme-site-a\n"
+        ),
+        encoding="utf-8",
+    )
+    devices = ws_root / "inventory/customers/acme/devices.yml"
+    devices.write_text(
+        devices.read_text(encoding="utf-8").replace(
+            "  host: 203.0.113.12\n", "  host: 203.0.113.12\n  credential: acme-sa-as02\n"
+        ),
+        encoding="utf-8",
+    )
+    secrets.set_login("acme-site-a", LoginCredential("siteadmin", "Site-Pass-5151"))
+    secrets.set_login("acme-sa-as02", LoginCredential("as02admin", "Dev-Pass-6262"))
+    mock = mock_for(["sa-as01", "sa-as02"])
+    used = {}
+    real_open = mock.open
+
+    def recording_open(target):
+        used[target.device] = target.credential.username
+        state = mock.device(target.device)
+        state.exec_responses["show running-config"] = f"hostname x\n{target.credential.password}\n"
+        return real_open(target)
+
+    mock.open = recording_open
+    runner, events = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(ADD_VLAN, RunMode.CHECK, prompts=VLAN))
+    assert history.get_job(job_id).status == JobStatus.COMPLETED
+    assert used == {"sa-as01": "siteadmin", "sa-as02": "as02admin"}
+    stored = repr([vars(d) for d in history.devices(job_id)]) + repr(events)
+    assert "Site-Pass-5151" not in stored and "Dev-Pass-6262" not in stored

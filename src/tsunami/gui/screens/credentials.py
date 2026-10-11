@@ -317,8 +317,8 @@ class CredentialsView(QWidget):
         return [
             (slug, device.name)
             for slug, inv in sorted(workspace.customers.items())
-            if inv.config.credential == credential
             for device in inv.devices
+            if inv.credential_for(device) == credential  # own, site default, or customer's
         ]
 
     def test_login(self) -> None:

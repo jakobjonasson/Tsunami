@@ -42,6 +42,7 @@ from tsunami.core.paths import AppPaths
 from tsunami.core.pipeline import DevicePipeline, JobContext
 from tsunami.core.redact import Redactor
 from tsunami.core.render.renderer import Renderer, RenderError
+from tsunami.core.secret_store import LoginCredential
 from tsunami.core.services import collect_prompts, play_entry
 from tsunami.core.targets import resolve_targets
 from tsunami.core.transports.base import JumpTarget, Transport
@@ -227,13 +228,20 @@ class Runner:
         settings = play.settings(
             self.workspace.config.defaults.batch_size if self.workspace.config else None
         )
-        credential = None
+        # Each target's login: its own, else its site's default, else the customer's.
+        credentials: dict[str, LoginCredential] = {}
         if settings.method != ConnectionMethod.RENDER:
-            try:
-                credential = self.secrets.get_login(cust.config.credential)
-            except TsunamiError:
-                if settings.method != ConnectionMethod.SERIAL:  # factory-default consoles need none
-                    raise
+            loaded: dict[str, LoginCredential] = {}
+            for target in targets:
+                name = cust.credential_for(target.device)
+                if name not in loaded:
+                    try:
+                        loaded[name] = self.secrets.get_login(name)
+                    except TsunamiError:
+                        if settings.method == ConnectionMethod.SERIAL:
+                            continue  # factory-default consoles need none
+                        raise
+                credentials[target.label] = loaded[name]
         jump = None
         if cust.config.jump_host is not None:
             jh = cust.config.jump_host
@@ -258,7 +266,7 @@ class Runner:
 
         exact = list(self.secrets.secret_values(play.customer)) if _can_list(self.secrets) else []
         exact += list(secret_values.values())
-        for cred in (credential, jump.credential if jump else None):
+        for cred in (*credentials.values(), jump.credential if jump else None):
             if cred is not None:
                 exact += [v for v in (cred.password, cred.enable) if v]
         if request.exact_exempt:  # sink lines stay masked by the pattern layer
@@ -279,7 +287,7 @@ class Runner:
             renderer=renderer,
             cancel=self.cancel,
             emit=self.on_event,
-            credential=credential,
+            credentials=credentials,
             jump=jump,
             secret_values=secret_values,
             approved_hashes=request.approved_hashes,

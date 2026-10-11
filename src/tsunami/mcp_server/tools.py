@@ -310,7 +310,7 @@ class Tools:
                 port=dev.port,
                 platform=dev.platform,
                 method=ConnectionMethod.SSH,
-                credential=self.app.secrets.get_login(cust.config.credential),
+                credential=self.app.secrets.get_login(cust.credential_for(dev)),
                 jump=self._jump(cust),
                 allow_new_host_key=False,
             )
