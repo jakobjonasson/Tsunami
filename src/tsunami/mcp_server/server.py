@@ -198,9 +198,15 @@ def main(argv: list[str] | None = None) -> int:
     history = History(paths.history_db)
     history.mark_interrupted()
     secrets = KeyringSecretStore(index_path=paths.settings / "credential-index.json")
-    server = build_server(McpApp(paths, history=history, secrets=secrets))
+    app = McpApp(paths, history=history, secrets=secrets)
+    server = build_server(app)
     try:
         server.run("stdio")
+        # The client closed stdio. Let started jobs finish rather than cut a change off
+        # mid-device; if the client kills the process instead, heartbeats stop and the
+        # GUI marks the job interrupted.
+        for thread in list(app.threads):
+            thread.join()
     finally:
         history.close()
     return 0
