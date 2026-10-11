@@ -29,7 +29,7 @@ def test_login_round_trip_with_and_without_enable(store):
     assert store.get_login("lab") == LoginCredential("admin", "pw1", "en1")
     assert store.get_login("plain").enable is None
     store.delete_login("lab")
-    with pytest.raises(TsunamiError, match="no credential named credential lab"):
+    with pytest.raises(TsunamiError, match="^credential lab is not in Credential Manager"):
         store.get_login("lab")
 
 
@@ -64,7 +64,7 @@ def test_index_holds_names_only(store, tmp_path):
 
 
 def test_delete_missing_raises(store):
-    with pytest.raises(TsunamiError, match="no credential named"):
+    with pytest.raises(TsunamiError, match="is not in Credential Manager"):
         store.delete_login("ghost")
 
 

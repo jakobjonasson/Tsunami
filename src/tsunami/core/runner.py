@@ -35,7 +35,7 @@ from tsunami.core.events import (
 )
 from tsunami.core.issues import Severity, TsunamiError
 from tsunami.core.models.inventory import Device
-from tsunami.core.models.jobs import Actor, DeviceStatus, JobStatus
+from tsunami.core.models.jobs import TERMINAL_DEVICE_STATUSES, Actor, DeviceStatus, JobStatus
 from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
 from tsunami.core.models.settings import AppSettings
 from tsunami.core.paths import AppPaths
@@ -411,6 +411,23 @@ class Runner:
         return job_id
 
     def _fail_job(self, job_id: str, message: str) -> str:
+        # No device may be left looking in progress. One that never started failed with
+        # the job's reason; one caught mid-change may be half-configured, so it alarms.
+        for record in self.history.devices(job_id):
+            if record.status in TERMINAL_DEVICE_STATUSES:
+                continue
+            if record.status == DeviceStatus.PENDING:
+                status, detail = DeviceStatus.FAILED, f"not started: {message}"
+            else:
+                status, detail = DeviceStatus.INTERRUPTED, f"stopped mid-run: {message}"
+            self.history.update_device(
+                job_id, record.device, status=status, error_redacted=detail, finished_at=_now()
+            )
+            self.on_event(
+                DeviceStatusChanged(
+                    job_id=job_id, device=record.device, status=status, detail=detail
+                )
+            )
         self.history.set_job_status(
             job_id, JobStatus.FAILED, finished_at=_now(), summary={"error": message}
         )

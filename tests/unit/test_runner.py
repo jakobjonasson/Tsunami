@@ -8,7 +8,13 @@ from pathlib import Path
 
 import pytest
 
-from tsunami.core.events import CanaryWaiting, Event, JobFinished, MaxFailReached
+from tsunami.core.events import (
+    CanaryWaiting,
+    DeviceStatusChanged,
+    Event,
+    JobFinished,
+    MaxFailReached,
+)
 from tsunami.core.history import History
 from tsunami.core.models.jobs import DeviceStatus, JobStatus
 from tsunami.core.models.play import RunMode
@@ -302,3 +308,19 @@ def test_host_key_mismatch_status(ws_root, history, secrets, app_paths):
     runner, _ = make_runner(ws_root, Refusing(), history, secrets, app_paths)
     job_id = runner.run(RunRequest(ADD_VLAN, RunMode.APPLY, prompts=VLAN, limit=["sa-as01"]))
     assert statuses(history, job_id) == {"sa-as01": DeviceStatus.HOSTKEY_MISMATCH}
+
+
+def test_job_that_fails_before_any_device_leaves_none_pending(ws_root, history, secrets, app_paths):
+    secrets.delete_login("acme-netadmin")
+    mock = mock_for(["sa-as01", "sa-as02"])
+    runner, events = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(ADD_VLAN, RunMode.CHECK, prompts=VLAN))
+    job = history.get_job(job_id)
+    assert job.status == JobStatus.FAILED
+    assert job.summary["error"].startswith("credential acme-netadmin is not in Credential Manager")
+    devices = history.devices(job_id)
+    assert {d.status for d in devices} == {DeviceStatus.FAILED}
+    assert all(d.error_redacted.startswith("not started: credential") for d in devices)
+    changed = [e for e in events if isinstance(e, DeviceStatusChanged)]
+    assert {e.device for e in changed} == {"sa-as01", "sa-as02"}
+    assert mock.connections == 0

@@ -23,6 +23,7 @@ from PySide6.QtWidgets import (
     QButtonGroup,
     QFileDialog,
     QFrame,
+    QGridLayout,
     QHBoxLayout,
     QLabel,
     QMainWindow,
@@ -131,27 +132,49 @@ class WelcomePage(QWidget):
     def __init__(self, shell: MainWindow) -> None:
         super().__init__()
         layout = QVBoxLayout(self)
-        layout.setContentsMargins(48, 48, 48, 48)
+        layout.setContentsMargins(38, 48, 48, 48)  # links pad 10 px; labels indent to match
         title = QLabel("Tsunami")
         title.setObjectName("Title")
+        title.setIndent(10)
         subtitle = QLabel(
             f"Version {__version__}. Push templated config to Cisco and Aruba switches."
         )
         subtitle.setObjectName("Muted")
+        subtitle.setIndent(10)
         layout.addWidget(title)
+        layout.addSpacing(4)
         layout.addWidget(subtitle)
-        layout.addSpacing(16)
-        for text, command in (
-            ("Open workspace…", "workspace.open"),
-            ("Init workspace…", "workspace.init"),
-            ("Command palette    Ctrl+Shift+P", "palette.show"),
-            ("Quick open    Ctrl+P", "quickopen.show"),
+        layout.addSpacing(28)
+        start = QLabel("Start")
+        start.setObjectName("Section")
+        start.setIndent(10)
+        layout.addWidget(start)
+        layout.addSpacing(6)
+        # VS Code's welcome page: link-style actions, shortcuts as key caps beside them.
+        grid = QGridLayout()
+        grid.setContentsMargins(0, 0, 0, 0)
+        grid.setHorizontalSpacing(16)
+        grid.setVerticalSpacing(4)
+        accent = theme.current().accent
+        for row, (text, command, glyph, keys) in enumerate(
+            (
+                ("Open workspace…", "workspace.open", "folder-opened", ""),
+                ("Init workspace…", "workspace.init", "new-folder", ""),
+                ("Command palette", "palette.show", "list-selection", "Ctrl+Shift+P"),
+                ("Quick open", "quickopen.show", "go-to-file", "Ctrl+P"),
+            )
         ):
-            button = QPushButton(text)
-            button.setFlat(True)
-            button.setStyleSheet("text-align: left; padding: 4px 0;")
+            button = QPushButton(icons.icon(glyph, accent), text)
+            button.setObjectName("Link")
+            button.setCursor(Qt.CursorShape.PointingHandCursor)
             button.clicked.connect(lambda _=False, c=command: shell.run_command(c))
-            layout.addWidget(button, 0, Qt.AlignmentFlag.AlignLeft)
+            grid.addWidget(button, row, 0, Qt.AlignmentFlag.AlignLeft)
+            if keys:
+                caps = QLabel(keys)
+                caps.setObjectName("Keys")
+                grid.addWidget(caps, row, 1, Qt.AlignmentFlag.AlignLeft)
+        grid.setColumnStretch(2, 1)
+        layout.addLayout(grid)
         layout.addStretch(1)
 
 

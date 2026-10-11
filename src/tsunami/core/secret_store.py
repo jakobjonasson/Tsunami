@@ -239,7 +239,9 @@ class KeyringSecretStore:
         except Exception as exc:  # noqa: BLE001
             raise self._backend_error("reading", label, exc) from None
         if value is None:
-            raise TsunamiError(f"no credential named {label}")
+            raise TsunamiError(
+                f"{label} is not in Credential Manager; add it in Tsunami's Credentials view"
+            )
         return value
 
     def _set(self, key: str, value: str, label: str) -> None:
@@ -260,7 +262,7 @@ class KeyringSecretStore:
             keyring.delete_password(self._service, key)
         except keyring.errors.PasswordDeleteError:
             self._index_remove(key)
-            raise TsunamiError(f"no credential named {label}") from None
+            raise TsunamiError(f"{label} is not in Credential Manager") from None
         except Exception as exc:  # noqa: BLE001
             raise self._backend_error("deleting", label, exc) from None
         self._index_remove(key)

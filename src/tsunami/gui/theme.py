@@ -2,7 +2,7 @@
 
 Fusion style with Tsunami's own palettes: Qt's native windows11 style does not support
 style sheets reliably, and the shell's chrome (activity bar, side bar, tabs, panel,
-status bar) needs them. Colors are calm warm neutrals with one accent. The scheme
+status bar) needs them. Colors are calm warm neutrals with one teal-blue accent. The scheme
 follows the Windows light or dark setting unless Settings overrides it.
 
 See design.md, GUI: Layout.
@@ -52,8 +52,8 @@ DARK = Palette(
     border="#34322f",
     text="#e8e6e1",
     muted="#a19d96",
-    accent="#d97757",
-    accent_text="#1a1917",
+    accent="#4fb3c8",  # teal-blue: 6.2:1 on the editor background
+    accent_text="#10191b",
     selection="#3d3a36",
     hover="#2e2c29",
     input="#1d1c1a",
@@ -73,7 +73,7 @@ LIGHT = Palette(
     border="#dcd8cc",
     text="#1f1e1c",
     muted="#6b6760",
-    accent="#c2603f",
+    accent="#1f7a8c",  # teal-blue: 5:1 with white text
     accent_text="#ffffff",
     selection="#e2ddd0",
     hover="#e6e2d7",
@@ -206,5 +206,11 @@ QPushButton:disabled {{ color: {p.muted}; border-color: {p.border}; }}
 #Banner[level="warning"] {{ background: {p.warning}; color: #1a1917; padding: 8px; }}
 #Card {{ background: {p.editor}; border: 1px solid {p.border}; border-radius: 8px; }}
 #Muted {{ color: {p.muted}; }}
+#Section {{ color: {p.muted}; font-weight: 600; }}
+QPushButton#Link {{ background: transparent; border: none; border-radius: 4px; color: {p.accent};
+                    padding: 6px 10px; text-align: left; }}
+QPushButton#Link:hover {{ background: {p.hover}; }}
+#Keys {{ color: {p.muted}; background: {p.hover}; border: 1px solid {p.border}; border-radius: 4px;
+         padding: 2px 8px; font-family: "{MONO_FONTS[0]}", "{MONO_FONTS[2]}"; font-size: 8.5pt; }}
 #Title {{ font-size: 14pt; font-weight: 600; }}
 """

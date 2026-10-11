@@ -18,7 +18,7 @@ workspace (inventory, plays, snippets), write drafts under drafts/, render plays
 secrets masked, and run read-only checks and allowlisted show commands.
 
 Rules:
-- You never receive credentials or secret values. Secrets appear as ******** or <redacted>.
+- You never receive credentials or secret values. Secrets appear as <redacted>.
 - Changes to customer devices need a person to approve them in the Tsunami GUI. After
   request_run, show the user the per-device diff from get_job and tell them to approve it.
 - Drafts never reach a customer device until a person promotes them.
@@ -104,7 +104,7 @@ def build_server(app: Any) -> Any:
 
     @server.tool(
         annotations=read_only,
-        description="Render a play for one device with prompt values. Secrets are masked as ********. No device is contacted.",
+        description="Render a play for one device with prompt values. No device is contacted. Secret values come back as <redacted>; secret_names lists the secrets the render uses. render_hash identifies this exact render: an approved change re-renders every device and fails it with render_changed if the play or its render differs from what was approved.",
     )
     def render(
         path: str, device: str | None = None, prompts: dict[str, Any] | None = None
@@ -158,7 +158,7 @@ def build_server(app: Any) -> Any:
 
     @server.tool(
         annotations=requests,
-        description="Request a change: renders and diffs each target, then waits for a person to approve it in the Tsunami GUI (lab customers may run directly if policy allows). Show the user the diff from get_job. Plays only, not drafts, except for lab customers when allowed.",
+        description="Request a change: renders and diffs each target, then waits for a person to approve it in the Tsunami GUI (lab customers may run directly if policy allows). Show the user the diff from get_job. The approved run uses exactly the renders that were diffed: each device's render hash is stored, and a device whose play or render changed before the run fails with render_changed. Plays only, not drafts, except for lab customers when allowed.",
     )
     def request_run(
         path: str,
