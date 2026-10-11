@@ -38,3 +38,26 @@ def test_app_icon_has_every_size(qapp):
 
     sizes = sorted(s.width() for s in icons.app_icon().availableSizes())
     assert sizes == [16, 24, 32, 48, 64, 256]
+
+
+def test_refresh_button_picks_up_new_devices(main_window, gui_ctx, workspace_root, qtbot):
+    from PySide6.QtWidgets import QToolButton
+
+    devices = workspace_root / "inventory/customers/acme/devices.yml"
+    devices.write_text(
+        devices.read_text(encoding="utf-8")
+        + "- name: sa-as03\n  host: 203.0.113.13\n  site: site-a\n  role: access\n"
+        "  platform: ios-xe\n",
+        encoding="utf-8",
+    )
+    assert gui_ctx.workspace.customers["acme"].device("sa-as03") is None
+    buttons = main_window.findChildren(QToolButton, "SideBarAction")
+    assert buttons and "F5" in buttons[0].toolTip()
+    buttons[0].click()
+    qtbot.waitUntil(
+        lambda: (
+            gui_ctx.workspace is not None
+            and gui_ctx.workspace.customers["acme"].device("sa-as03") is not None
+        ),
+        timeout=10_000,
+    )

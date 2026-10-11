@@ -160,6 +160,8 @@ QToolTip {{ background: {p.editor}; color: {p.text}; border: 1px solid {p.border
 
 #SideBar {{ background: {p.sidebar}; }}
 #SideBarHeader {{ color: {p.muted}; font-weight: 600; letter-spacing: 1px; padding: 10px 12px 6px 12px; }}
+#SideBarAction {{ border: none; border-radius: 4px; padding: 3px; margin-top: 4px; }}
+#SideBarAction:hover {{ background: {p.hover}; }}
 
 QTabWidget#Editor::pane, QTabWidget#Panel::pane {{ border: none; }}
 QTabWidget#Editor > QWidget {{ background: {p.editor}; }}

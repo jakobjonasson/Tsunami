@@ -188,6 +188,7 @@ class MainWindow(QMainWindow):
         self._tabs: dict[str, QWidget] = {}
         self._threads: list[RunnerThread] = []
         self._views: dict[str, QWidget] = {}
+        self._refresh_buttons: list[QToolButton] = []
         self._view_items = sorted(views, key=lambda v: (v.bottom, v.order))
         self._build()
         self._register_builtin_commands()
@@ -240,8 +241,7 @@ class MainWindow(QMainWindow):
             page_layout = QVBoxLayout(page)
             page_layout.setContentsMargins(0, 0, 0, 0)
             page_layout.setSpacing(0)
-            header = QLabel(item.title.upper(), objectName="SideBarHeader")
-            page_layout.addWidget(header)
+            page_layout.addWidget(self._side_header(item.title))
             view = item.factory(self.ctx, self)
             page_layout.addWidget(view, 1)
             self.side_stack.addWidget(page)
@@ -415,7 +415,7 @@ class MainWindow(QMainWindow):
         self.register_command("workspace.open", "Workspace: Open…", self._open_workspace_dialog)
         self.register_command("workspace.init", "Workspace: Init…", self._init_workspace_dialog)
         self.register_command(
-            "workspace.reload", "Workspace: Reload", self.ctx.reload_workspace, "F5"
+            "workspace.reload", "Workspace: Reload files and jobs", self.refresh_all, "F5"
         )
         self.register_command("view.panel", "View: Toggle panel", self._toggle_panel, "Ctrl+J")
         self.register_command(
@@ -516,7 +516,33 @@ class MainWindow(QMainWindow):
     def _update_editor_stack(self) -> None:
         self.editor_stack.setCurrentWidget(self.editor if self.editor.count() else self.welcome)
 
+    def _side_header(self, title: str) -> QWidget:
+        """A view's title row: its name, and a refresh button as in VS Code's views."""
+        row = QWidget(objectName="SideBarHeaderRow")
+        layout = QHBoxLayout(row)
+        layout.setContentsMargins(0, 0, 6, 0)
+        layout.setSpacing(0)
+        layout.addWidget(QLabel(title.upper(), objectName="SideBarHeader"), 1)
+        button = QToolButton(objectName="SideBarAction")
+        button.setIcon(icons.icon("refresh", theme.current().muted))
+        button.setToolTip("Reload workspace files and jobs (F5)")
+        button.setAutoRaise(True)
+        button.clicked.connect(self.refresh_all)
+        layout.addWidget(button)
+        self._refresh_buttons.append(button)
+        return row
+
+    def refresh_all(self) -> None:
+        """Re-read the workspace from disk (new devices, plays, snippets, drafts) and
+        history.db (jobs, approvals), without restarting."""
+        self.ctx.reload_workspace()
+        self.ctx.jobs_changed.emit()
+        self.ctx.alarms_changed.emit()
+        self.poller.poll()
+
     def _on_loading(self, loading: bool) -> None:
+        for button in self._refresh_buttons:
+            button.setEnabled(not loading)
         if loading:
             self.status_workspace.setText("Loading workspace…")
 
