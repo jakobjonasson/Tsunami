@@ -32,3 +32,54 @@ jobs:
 
       - name: Self-test
         run: uv run python -m tsunami --selftest
+
+  frozen-build:
+    runs-on: windows-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v7
+
+      - uses: astral-sh/setup-uv@v7
+        with:
+          enable-cache: true
+
+      # One command per step: a multi-line pwsh step only fails on its last command.
+      - name: Install
+        run: uv sync --locked --group build
+
+      - name: Build icon
+        run: uv run python packaging/make_icon.py
+
+      - name: Build frozen app
+        run: uv run pyinstaller packaging/tsunami.spec --noconfirm --clean --distpath dist --workpath build
+
+      - name: Self-test, MCP exe
+        run: dist\Tsunami\tsunami-mcp.exe --selftest
+
+      # The GUI exe is windowed: wait for it, then check the exit code.
+      - name: Self-test, GUI exe
+        run: $p = Start-Process dist\Tsunami\tsunami.exe -ArgumentList '--selftest' -Wait -PassThru; exit $p.ExitCode
+
+      - name: MCP stdio smoke test
+        run: uv run python packaging/smoke_mcp.py dist\Tsunami\tsunami-mcp.exe
+
+      - name: Install Inno Setup
+        run: if (-not (Test-Path "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe")) { choco install innosetup -y --no-progress }
+
+      - name: Read version
+        run: echo "VERSION=$(uv run python -c 'from tsunami import __version__; print(__version__)')" >> $env:GITHUB_ENV
+
+      - name: Compile installer
+        run: '& "${env:ProgramFiles(x86)}\Inno Setup 6\ISCC.exe" "/DAppVersion=$env:VERSION" packaging\installer.iss'
+
+      - name: Upload frozen app
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsunami-dist
+          path: dist/Tsunami
+
+      - name: Upload installer
+        uses: actions/upload-artifact@v4
+        with:
+          name: tsunami-installer
+          path: packaging/Output/*.exe

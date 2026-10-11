@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import sys
 from importlib.resources import files
+from pathlib import Path
 
 from tsunami import __version__
 
@@ -59,11 +60,50 @@ def selftest() -> int:
     return 0
 
 
+def register_claude_desktop_flag() -> int:
+    """Register the tsunami-mcp.exe next to this exe. Used by the installer's last page.
+
+    The windowed tsunami.exe has no console, so the result also goes to a message box there.
+    """
+    from tsunami.core.issues import TsunamiError
+    from tsunami.core.registration import register_claude_desktop
+
+    exe = Path(sys.executable).parent / "tsunami-mcp.exe"
+    try:
+        if not exe.is_file():
+            raise TsunamiError(f"tsunami-mcp.exe not found next to {Path(sys.executable).name}")
+        register_claude_desktop(exe)
+    except TsunamiError as exc:
+        _report(f"Could not register with Claude Desktop: {exc}", error=True)
+        return 1
+    _report(
+        "Registered with Claude Desktop. Quit Claude Desktop from the system tray and "
+        "reopen it to load the Tsunami tools."
+    )
+    return 0
+
+
+def _report(message: str, *, error: bool = False) -> None:
+    if sys.stdout is not None and sys.stderr is not None:
+        print(message, file=sys.stderr if error else sys.stdout)
+        return
+    try:  # windowed exe: no console, so show a message box
+        import ctypes
+
+        flags = 0x10 if error else 0x40  # MB_ICONERROR / MB_ICONINFORMATION
+        ctypes.windll.user32.MessageBoxW(None, message, "Tsunami", flags)
+    except (AttributeError, OSError):
+        pass
+
+
 def handle_common_flags(argv: list[str], prog: str) -> int | None:
-    """Handle --version and --selftest for the exes. Returns an exit code if handled."""
+    """Handle --version, --selftest and --register-claude-desktop. Returns an exit code if
+    handled."""
     if "--version" in argv:
         print(f"{prog} {__version__}")
         return 0
     if "--selftest" in argv:
         return selftest()
+    if "--register-claude-desktop" in argv:
+        return register_claude_desktop_flag()
     return None

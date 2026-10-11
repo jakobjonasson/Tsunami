@@ -25,3 +25,4 @@ packaging/Output/
 .claude/settings.local.json
 .claude/worktrees/
 .scratch/
+packaging/version_info.txt

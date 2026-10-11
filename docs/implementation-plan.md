@@ -266,7 +266,7 @@ Screen groups for 4.2:
 
 | # | Work package | Owner | Depends on |
 |---|---|---|---|
-| 6.1 | PyInstaller spec (two EXEs, one COLLECT, data files), version resource, `--selftest` on the frozen build | Sonnet; Opus debugs failures that appear only in the frozen build | Phase 5 |
+| 6.1 ✅ | PyInstaller spec (two EXEs, one COLLECT, data files), version resource, `--selftest` on the frozen build | Sonnet; Opus debugs failures that appear only in the frozen build | Phase 5 |
 | 6.2 | Inno Setup script, `sign.ps1` hook | Sonnet | 6.1 |
 | 6.3 | Claude Desktop registration (GUI button + installer page); `claude mcp add` instructions | Sonnet | 6.1 |
 | 6.4 | CI frozen-build job | Sonnet | 6.1 |
