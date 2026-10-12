@@ -507,6 +507,7 @@ class Tools:
             if event is not None:
                 event.set()
             self.app.history.set_job_status(job_id, JobStatus.CANCELLED)
+            self.app.history.cancel_ready_devices(job_id)
             return {"job_id": job_id, "status": "cancelled"}
 
         args = {"job_id": job_id}
@@ -604,9 +605,7 @@ class Tools:
         thread.start()
 
     def _await_approval(self, job_id: str) -> None:
-        job = self.app.history.get_job(job_id)
-        if job.status == JobStatus.COMPLETED:
-            self.app.history.set_job_status(job_id, JobStatus.AWAITING_APPROVAL)
+        self.app.history.mark_ready_for_approval(job_id)  # only if the check completed
 
     def _jump(self, cust) -> JumpTarget | None:
         jh = cust.config.jump_host

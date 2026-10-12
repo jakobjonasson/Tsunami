@@ -32,6 +32,7 @@ class JobStatus(StrEnum):
 
 class DeviceStatus(StrEnum):
     PENDING = "pending"
+    READY = "ready"  # diffed for an approval request; nothing applied yet
     CONNECTING = "connecting"
     RUNNING = "running"
     SUCCESS = "success"

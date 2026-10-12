@@ -489,3 +489,41 @@ def test_policy_can_let_claude_make_first_contact(env):
     env.tools.check(PLAY, prompts=PROMPTS)
     env.join()
     assert all(t.allow_new_host_key for t in env.recorder.targets[1:])
+
+
+def test_devices_read_ready_until_approved_and_applied(env):
+    from tsunami.core.models.jobs import DeviceStatus
+    from tsunami.core.runner import Runner
+
+    started = env.tools.request_run(PLAY, ["sa-as01", "sa-as02"], prompts=PROMPTS)
+    env.join()
+    job = env.history.get_job(started["job_id"])
+    assert {d.status for d in env.history.devices(job.id)} == {DeviceStatus.READY}
+    assert job.summary == {"counts": {"ready": 2}}
+    assert env.tools.get_job(job.id)["devices"][0]["status"] == "ready"
+
+    request = approve(env.history, load_workspace(env.root), job.id, approved_by="tech1")
+    runner = Runner(
+        load_workspace(env.root),
+        transport=env.mock,
+        history=env.history,
+        secrets=env.app.secrets,
+        paths=env.paths,
+        heartbeat_seconds=0.05,
+    )
+    runner.run(request)
+    assert {d.status for d in env.history.devices(job.id)} == {DeviceStatus.SUCCESS}
+    assert env.history.get_job(job.id).summary["counts"] == {"success": 2}
+
+
+def test_denied_or_cancelled_requests_leave_no_ready_devices(env):
+    from tsunami.core.approvals import deny
+    from tsunami.core.models.jobs import DeviceStatus
+
+    denied = env.tools.request_run(PLAY, ["sa-as01"], prompts=PROMPTS)["job_id"]
+    cancelled = env.tools.request_run(PLAY, ["sa-as02"], prompts=PROMPTS)["job_id"]
+    env.join()
+    deny(env.history, denied, denied_by="tech1")
+    env.tools.cancel_job(cancelled)
+    for job_id in (denied, cancelled):
+        assert {d.status for d in env.history.devices(job_id)} == {DeviceStatus.CANCELLED}

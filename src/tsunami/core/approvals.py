@@ -61,3 +61,4 @@ def deny(history: Any, job_id: str, *, denied_by: str) -> None:
         approved_at=datetime.now(UTC),
         finished_at=datetime.now(UTC),
     )
+    history.cancel_ready_devices(job_id)

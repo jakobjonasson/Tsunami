@@ -62,6 +62,7 @@ from tsunami.gui.widgets.masked_text import MaskedTextView
 
 _ICONS = {
     DeviceStatus.PENDING: "circle-outline",
+    DeviceStatus.READY: "eye",
     DeviceStatus.CONNECTING: "sync",
     DeviceStatus.RUNNING: "sync",
     DeviceStatus.SUCCESS: "check",
@@ -99,6 +100,8 @@ def status_color(status: DeviceStatus) -> str:
     p = theme.current()
     if status == DeviceStatus.SUCCESS:
         return p.success
+    if status == DeviceStatus.READY:  # diffed, waiting for approval
+        return p.info
     if status in _RED:
         return p.error
     if status in _ORANGE:

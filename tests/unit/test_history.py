@@ -190,6 +190,22 @@ def test_expire_approvals(hist: History, clock: FakeClock):
     assert hist.get_job(other_state).status is JobStatus.PENDING
 
 
+def test_ready_devices_of_an_expired_request_are_cancelled(hist: History, clock: FakeClock):
+    from tsunami.core.models.jobs import DeviceStatus
+
+    job_id = make_job(hist, status=JobStatus.COMPLETED)
+    hist.add_devices(job_id, ["sw1", "sw2"])
+    hist.update_device(job_id, "sw1", status=DeviceStatus.SUCCESS)
+    hist.update_device(job_id, "sw2", status=DeviceStatus.SUCCESS)
+    assert hist.mark_ready_for_approval(job_id)
+    assert hist.get_job(job_id).status is JobStatus.AWAITING_APPROVAL
+    assert {d.status for d in hist.devices(job_id)} == {DeviceStatus.READY}
+    assert not hist.mark_ready_for_approval(job_id)  # only from completed
+    clock.advance(30 * 60)
+    hist.expire_approvals(older_than_minutes=15)
+    assert {d.status for d in hist.devices(job_id)} == {DeviceStatus.CANCELLED}
+
+
 # --- devices ---
 
 

@@ -322,7 +322,43 @@ class History:
                     "UPDATE jobs SET status = ?, finished_at = ? WHERE id = ?",
                     (_cell(JobStatus.EXPIRED), self._now(), job_id),
                 )
+                self._cancel_ready(conn, job_id)
         return ids
+
+    def mark_ready_for_approval(self, job_id: str) -> bool:
+        """After an approval request's check-mode diff: its devices become ready (not
+        success, which would read as applied) and the job waits for a person."""
+        with self._tx() as conn:
+            updated = conn.execute(
+                "UPDATE jobs SET status = ? WHERE id = ? AND status = ?",
+                (_cell(JobStatus.AWAITING_APPROVAL), job_id, _cell(JobStatus.COMPLETED)),
+            ).rowcount
+            if not updated:
+                return False
+            conn.execute(
+                "UPDATE job_devices SET status = ? WHERE job_id = ? AND status = ?",
+                (_cell(DeviceStatus.READY), job_id, _cell(DeviceStatus.SUCCESS)),
+            )
+            ready = conn.execute(
+                "SELECT COUNT(*) FROM job_devices WHERE job_id = ? AND status = ?",
+                (job_id, _cell(DeviceStatus.READY)),
+            ).fetchone()[0]
+            conn.execute(
+                "UPDATE jobs SET summary_json = ? WHERE id = ?",
+                (_dumps({"counts": {str(DeviceStatus.READY): ready}}), job_id),
+            )
+        return True
+
+    def cancel_ready_devices(self, job_id: str) -> None:
+        """A denied, expired or cancelled request: its ready devices were never touched."""
+        with self._tx() as conn:
+            self._cancel_ready(conn, job_id)
+
+    def _cancel_ready(self, conn: sqlite3.Connection, job_id: str) -> None:
+        conn.execute(
+            "UPDATE job_devices SET status = ?, finished_at = ? WHERE job_id = ? AND status = ?",
+            (_cell(DeviceStatus.CANCELLED), self._now(), job_id, _cell(DeviceStatus.READY)),
+        )
 
     # --- devices ---
 

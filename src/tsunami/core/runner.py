@@ -424,7 +424,7 @@ class Runner:
         for record in self.history.devices(job_id):
             if record.status in TERMINAL_DEVICE_STATUSES:
                 continue
-            if record.status == DeviceStatus.PENDING:
+            if record.status in (DeviceStatus.PENDING, DeviceStatus.READY):
                 status, detail = DeviceStatus.FAILED, f"not started: {message}"
             else:
                 status, detail = DeviceStatus.INTERRUPTED, f"stopped mid-run: {message}"
