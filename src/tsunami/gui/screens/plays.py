@@ -6,6 +6,7 @@ See design.md, GUI: Views; Play schema.
 from __future__ import annotations
 
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
@@ -14,6 +15,8 @@ from PySide6.QtWidgets import (
     QLabel,
     QListWidget,
     QListWidgetItem,
+    QMenu,
+    QMessageBox,
     QPlainTextEdit,
     QPushButton,
     QTreeWidget,
@@ -143,6 +146,8 @@ class PlaysView(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setFrameShape(QTreeWidget.Shape.NoFrame)
         self.tree.itemDoubleClicked.connect(self._open_item)
+        self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.tree.customContextMenuRequested.connect(self._show_menu)
         layout.addWidget(self.tree, 1)
         ctx.workspace_changed.connect(self.refresh)
         self.refresh()
@@ -181,6 +186,72 @@ class PlaysView(QWidget):
         path = item.data(0, _PATH_ROLE)
         if path is not None:
             open_play(self.ctx, self.shell, path)
+
+    # -- context menu -------------------------------------------------------------------
+
+    def _show_menu(self, pos: Any) -> None:
+        item = self.tree.itemAt(pos)
+        if item is None or item.data(0, _PATH_ROLE) is None:
+            return
+        self.menu_for(item).exec(self.tree.viewport().mapToGlobal(pos))
+
+    def menu_for(self, item: QTreeWidgetItem | None) -> QMenu:
+        """The context menu for a play item; empty for groups and empty space."""
+        menu = QMenu(self)
+        path = item.data(0, _PATH_ROLE) if item is not None else None
+        if path is None:
+            return menu
+        colors = theme.current()
+        ws = self.ctx.workspace
+        entry = ws.plays.get(path) if ws else None
+        has_errors = ws is not None and any(
+            i.severity == Severity.ERROR for i in ws.issues_for(path)
+        )
+        runnable = entry is not None and entry.play is not None and not has_errors
+
+        def add(text: str, icon_name: str, slot: Any, enabled: bool = True) -> None:
+            action = menu.addAction(icon(icon_name, colors.text), text)
+            action.setEnabled(enabled)
+            action.triggered.connect(lambda _=False: slot(path))
+
+        add("Open", "play", lambda p: open_play(self.ctx, self.shell, p))
+        add("Edit in VS Code", "edit", self.edit_in_vscode)
+        add("Run…", "play", self.run_play, runnable)
+        menu.addSeparator()
+        add("Delete…", "trash", self.delete_play)
+        return menu
+
+    def _absolute(self, path: Path) -> Path:
+        root = self.ctx.workspace.root if self.ctx.workspace else Path()
+        return root / path
+
+    def edit_in_vscode(self, path: Path) -> None:
+        self.shell.open_in_vscode(self._absolute(path))
+
+    def run_play(self, path: Path) -> None:
+        from tsunami.gui.screens.run_wizard import open_run_wizard
+
+        open_run_wizard(self.ctx, self.shell, path)
+
+    def delete_play(self, path: Path) -> None:
+        from tsunami.core import inventory_edit
+
+        answer = QMessageBox.question(
+            self,
+            f"Delete play {path.stem}",
+            f"This moves {path.as_posix()} to the Recycle Bin. You can restore it from there.",
+        )
+        if answer != QMessageBox.StandardButton.Yes:
+            return
+        try:
+            inventory_edit.send_to_recycle_bin(self._absolute(path))  # looked up at call time
+        except Exception as exc:  # the shell call can fail in many OS-specific ways
+            self.shell.notify(f"Could not delete {path.name}: {exc}", "error")
+            return
+        self.shell.close_tab(f"play:{path.as_posix()}")
+        self.shell.close_tab(f"run-wizard:{path.as_posix()}")
+        self.shell.refresh_all()
+        self.shell.notify(f"Deleted play {path.stem}.")
 
 
 def open_play(ctx: AppContext, shell: Shell, path: Path | str) -> None:

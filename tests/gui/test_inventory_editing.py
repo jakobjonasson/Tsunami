@@ -331,17 +331,24 @@ def test_menu_contents(main_window):
     view = _view(main_window)
     tree = view.tree
     assert _texts(view.menu_for(_find(tree, "acme", "site-a", "sa-as01"))) == [
+        "Run play…",
         "Edit…",
         "Properties",
         "Delete…",
     ]
     assert _texts(view.menu_for(_find(tree, "acme", "site-a"))) == [
+        "Show devices",
         "New device…",
         "Edit…",
         "View settings",
         "Delete…",
     ]
-    assert _texts(view.menu_for(_find(tree, "acme"))) == ["Add site…", "Properties…", "Delete…"]
+    assert _texts(view.menu_for(_find(tree, "acme"))) == [
+        "Show devices",
+        "Add site…",
+        "Properties…",
+        "Delete…",
+    ]
     assert _texts(view.menu_for(None)) == ["New customer…"]
 
 

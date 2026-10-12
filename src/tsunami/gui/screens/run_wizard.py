@@ -59,8 +59,13 @@ MODE_LABELS = {
 }
 
 
-def open_run_wizard(ctx: AppContext, shell: Shell, play_path: Path | str) -> QWidget | None:
-    """Open (or focus) the run wizard tab for a play."""
+def open_run_wizard(
+    ctx: AppContext,
+    shell: Shell,
+    play_path: Path | str,
+    devices: list[str] | None = None,
+) -> QWidget | None:
+    """Open (or focus) the run wizard tab for a play. With devices, only those start ticked."""
     if ctx.workspace is None:
         shell.notify("Open a workspace first.", "warning")
         return None
@@ -76,12 +81,15 @@ def open_run_wizard(ctx: AppContext, shell: Shell, play_path: Path | str) -> QWi
         shell.notify(str(exc), "error")
         return None
     assert entry.play is not None
-    return shell.open_tab(
+    tab = shell.open_tab(
         f"run-wizard:{path.as_posix()}",
         f"Run: {entry.play.name}",
         lambda: RunWizard(ctx, shell, path),
         "play",
     )
+    if devices is not None and isinstance(tab, RunWizard):
+        tab.preselect_devices(devices)
+    return tab
 
 
 def _card(title: str) -> tuple[QFrame, QVBoxLayout]:
@@ -345,6 +353,14 @@ class RunWizard(QWidget):
             if self.target_list.item(i).checkState() == Qt.CheckState.Checked
         }
         return [d for d in self.devices if d.name in checked]
+
+    def preselect_devices(self, names: list[str]) -> None:
+        """Tick exactly these devices and untick the rest."""
+        wanted = set(names)
+        for i in range(self.target_list.count()):
+            item = self.target_list.item(i)
+            on = item.data(Qt.ItemDataRole.UserRole) in wanted
+            item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
 
     def set_device_checked(self, name: str, checked: bool) -> None:
         for i in range(self.target_list.count()):

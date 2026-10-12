@@ -31,6 +31,7 @@ from tsunami.core.resolver import Level, ResolvedVars
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
+from tsunami.gui.screens import device_list
 from tsunami.gui.screens import inventory_dialogs as dialogs
 from tsunami.gui.shell import ActivityItem, Shell
 
@@ -180,6 +181,7 @@ class InventoryView(QWidget):
         self.tree.setHeaderHidden(True)
         self.tree.setFrameShape(QTreeWidget.Shape.NoFrame)
         self.tree.itemDoubleClicked.connect(self._open_item)
+        self.tree.itemClicked.connect(self._click_item)
         self.tree.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
         self.tree.customContextMenuRequested.connect(self._show_menu)
         layout.addWidget(self.tree, 1)
@@ -248,6 +250,13 @@ class InventoryView(QWidget):
         for i in range(self.tree.topLevelItemCount()):
             visit(self.tree.topLevelItem(i))
 
+    def _click_item(self, item: QTreeWidgetItem) -> None:
+        kind = item.data(0, _KIND_ROLE)
+        if kind is not None and kind[0] == "customer":
+            self.show_devices(kind[1])
+        elif kind is not None and kind[0] == "site":
+            self.show_devices(kind[1], kind[2])
+
     def _open_item(self, item: QTreeWidgetItem) -> None:
         target = item.data(0, _DEVICE_ROLE)
         if target is not None:
@@ -274,22 +283,31 @@ class InventoryView(QWidget):
         if kind is None:
             add("New customer…", "add", self.new_customer)
         elif kind[0] == "customer":
+            add("Show devices", "server-environment", self.show_devices, kind[1])
             add("Add site…", "add", self.new_site, kind[1])
             add("Properties…", "info", self.edit_customer, kind[1])
             menu.addSeparator()
             add("Delete…", "trash", self.delete_customer, kind[1])
         elif kind[0] == "site":
+            add("Show devices", "server-environment", self.show_devices, kind[1], kind[2])
             add("New device…", "add", self.new_device, kind[1], kind[2])
             add("Edit…", "edit", self.edit_site, kind[1], kind[2])
             add("View settings", "info", self.view_site, kind[1], kind[2])
             menu.addSeparator()
             add("Delete…", "trash", self.delete_site, kind[1], kind[2])
         else:
+            add("Run play…", "play", self.run_play, kind[1], kind[2])
             add("Edit…", "edit", self.edit_device, kind[1], kind[2])
             add("Properties", "info", self.open_properties, kind[1], kind[2])
             menu.addSeparator()
             add("Delete…", "trash", self.delete_device, kind[1], kind[2])
         return menu
+
+    def show_devices(self, customer: str, site: str | None = None) -> None:
+        device_list.open_device_list(self.ctx, self.shell, customer, site)
+
+    def run_play(self, customer: str, name: str) -> None:
+        device_list.pick_play_and_run(self.ctx, self.shell, customer, [name], self)
 
     def _editor(self) -> InventoryEditor | None:
         try:
