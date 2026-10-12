@@ -527,3 +527,47 @@ def test_denied_or_cancelled_requests_leave_no_ready_devices(env):
     env.tools.cancel_job(cancelled)
     for job_id in (denied, cancelled):
         assert {d.status for d in env.history.devices(job_id)} == {DeviceStatus.CANCELLED}
+
+
+def test_request_that_would_change_nothing_ends_no_changes(env):
+    from tsunami.core.models.jobs import DeviceStatus
+
+    for name in ("sa-as01", "sa-as02"):  # VLAN 30 is already configured as rendered
+        env.mock.device(name).running += ["vlan 30", " name Cameras"]
+    started = env.tools.request_run(PLAY, ["sa-as01", "sa-as02"], prompts=PROMPTS)
+    env.join()
+    job = env.history.get_job(started["job_id"])
+    assert job.status == JobStatus.NO_CHANGES and job.finished_at is not None
+    assert {d.status for d in env.history.devices(job.id)} == {DeviceStatus.NO_CHANGES}
+    assert job.summary == {"counts": {"no_changes": 2}}
+    assert env.history.list_jobs(status=JobStatus.AWAITING_APPROVAL) == []
+
+
+def test_mixed_request_approves_only_the_devices_that_change(env):
+    from tsunami.core.models.jobs import DeviceStatus
+
+    env.mock.device("sa-as01").running += ["vlan 30", " name Cameras"]
+    started = env.tools.request_run(PLAY, ["sa-as01", "sa-as02"], prompts=PROMPTS)
+    env.join()
+    statuses = {d.device: d.status for d in env.history.devices(started["job_id"])}
+    assert statuses == {"sa-as01": DeviceStatus.NO_CHANGES, "sa-as02": DeviceStatus.READY}
+    request = approve(env.history, load_workspace(env.root), started["job_id"], approved_by="t")
+    assert list(request.limit) == ["sa-as02"] and set(request.approved_hashes) == {"sa-as02"}
+
+
+@pytest.mark.parametrize(
+    ("diff", "render", "changes"),
+    [
+        ("", "! step 1: vlan\nvlan 30\n", False),
+        ("+ vlan 30", "! step 1: vlan\nvlan 30\n", True),
+        ("- ntp server 192.0.2.9", "! step 1: ntp\nntp server 192.0.2.1\n", False),  # extras stay
+        ("", "! step 1: save\nexec: write memory\n", True),  # exec steps never show in a diff
+        ("", "! step 1: aaa\n key ********\n", True),  # a rotated secret cannot be seen
+    ],
+)
+def test_would_change(diff, render, changes):
+    from types import SimpleNamespace
+
+    from tsunami.core.approvals import would_change
+
+    assert would_change(SimpleNamespace(diff_redacted=diff, render_masked=render)) is changes

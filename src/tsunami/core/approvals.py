@@ -16,9 +16,10 @@ from pathlib import Path
 from typing import Any
 
 from tsunami.core.issues import TsunamiError
-from tsunami.core.models.jobs import Actor, JobStatus
+from tsunami.core.models.jobs import Actor, DeviceStatus, JobStatus
 from tsunami.core.models.play import RunMode
 from tsunami.core.redact import supplied_values
+from tsunami.core.render.secret_refs import MASK
 from tsunami.core.runner import RunRequest, play_hash
 
 PLAY_CHANGED = "play-changed"  # never equals a real render hash
@@ -32,7 +33,8 @@ def approve(history: Any, workspace: Any, job_id: str, *, approved_by: str) -> R
     path = workspace.root / Path(job.play_path)
     if not path.is_file():
         raise TsunamiError(f"the play {job.play_path} no longer exists")
-    devices = history.devices(job_id)
+    # Only the devices that would change: no_changes devices are already as rendered.
+    devices = [d for d in history.devices(job_id) if d.status != DeviceStatus.NO_CHANGES]
     hashes = {d.device: d.render_hash or "" for d in devices}
     if play_hash(path) != job.play_hash:
         hashes = dict.fromkeys(hashes, PLAY_CHANGED)
@@ -48,6 +50,32 @@ def approve(history: Any, workspace: Any, job_id: str, *, approved_by: str) -> R
         approved_hashes=hashes,
         exact_exempt=frozenset(supplied_values(dict(job.prompts))),  # Claude's own input
     )
+
+
+def would_change(record: Any) -> bool:
+    """Whether applying would do anything to the device, from its check-mode result.
+
+    New config lines would. So would exec steps (write memory and the like), which a
+    config diff never shows, and lines carrying a secret, which the diff compares only
+    up to the secret and so cannot tell current from rotated.
+    """
+    diff = (record.diff_redacted or "").split("\n")
+    render = (record.render_masked or "").split("\n")
+    return (
+        any(line.startswith("+ ") for line in diff)
+        or any(line.startswith("exec: ") for line in render)
+        or any(MASK in line for line in render)
+    )
+
+
+def classify_request(history: Any, job_id: str) -> JobStatus | None:
+    """After an approval request's check-mode diff: ready for approval, or no_changes."""
+    if history.get_job(job_id).status != JobStatus.COMPLETED:
+        return None  # the check failed or was cancelled; nothing to offer
+    ready, unchanged = [], []
+    for record in history.devices(job_id):
+        (ready if would_change(record) else unchanged).append(record.device)
+    return history.mark_ready_for_approval(job_id, ready=ready, unchanged=unchanged)
 
 
 def deny(history: Any, job_id: str, *, denied_by: str) -> None:

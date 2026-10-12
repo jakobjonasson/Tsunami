@@ -197,10 +197,10 @@ def test_ready_devices_of_an_expired_request_are_cancelled(hist: History, clock:
     hist.add_devices(job_id, ["sw1", "sw2"])
     hist.update_device(job_id, "sw1", status=DeviceStatus.SUCCESS)
     hist.update_device(job_id, "sw2", status=DeviceStatus.SUCCESS)
-    assert hist.mark_ready_for_approval(job_id)
+    assert hist.mark_ready_for_approval(job_id, ready=["sw1", "sw2"], unchanged=[])
     assert hist.get_job(job_id).status is JobStatus.AWAITING_APPROVAL
     assert {d.status for d in hist.devices(job_id)} == {DeviceStatus.READY}
-    assert not hist.mark_ready_for_approval(job_id)  # only from completed
+    assert hist.mark_ready_for_approval(job_id, ready=["sw1"], unchanged=[]) is None  # only once
     clock.advance(30 * 60)
     hist.expire_approvals(older_than_minutes=15)
     assert {d.status for d in hist.devices(job_id)} == {DeviceStatus.CANCELLED}

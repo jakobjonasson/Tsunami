@@ -63,6 +63,7 @@ from tsunami.gui.widgets.masked_text import MaskedTextView
 _ICONS = {
     DeviceStatus.PENDING: "circle-outline",
     DeviceStatus.READY: "eye",
+    DeviceStatus.NO_CHANGES: "pass",
     DeviceStatus.CONNECTING: "sync",
     DeviceStatus.RUNNING: "sync",
     DeviceStatus.SUCCESS: "check",
@@ -89,6 +90,7 @@ _ORANGE = {DeviceStatus.ROLLED_BACK, DeviceStatus.UNREACHABLE}
 _ACCENT = {DeviceStatus.RUNNING, DeviceStatus.CONNECTING}
 _MUTED = {
     DeviceStatus.PENDING,
+    DeviceStatus.NO_CHANGES,
     DeviceStatus.SKIPPED_PRECHECK,
     DeviceStatus.SKIPPED_MAXFAIL,
     DeviceStatus.DEVICE_BUSY,

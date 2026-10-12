@@ -25,6 +25,7 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     PAUSED = "paused"
     COMPLETED = "completed"
+    NO_CHANGES = "no_changes"  # an approval request whose diff would change nothing
     FAILED = "failed"
     INTERRUPTED = "interrupted"
     CANCELLED = "cancelled"
@@ -33,6 +34,7 @@ class JobStatus(StrEnum):
 class DeviceStatus(StrEnum):
     PENDING = "pending"
     READY = "ready"  # diffed for an approval request; nothing applied yet
+    NO_CHANGES = "no_changes"  # diffed for an approval request; already as rendered
     CONNECTING = "connecting"
     RUNNING = "running"
     SUCCESS = "success"
@@ -58,6 +60,7 @@ ALARM_DEVICE_STATUSES = frozenset({DeviceStatus.ROLLBACK_FAILED, DeviceStatus.IN
 TERMINAL_DEVICE_STATUSES = frozenset(
     {
         DeviceStatus.SUCCESS,
+        DeviceStatus.NO_CHANGES,
         DeviceStatus.FAILED,
         DeviceStatus.ROLLED_BACK,
         DeviceStatus.ROLLBACK_FAILED,

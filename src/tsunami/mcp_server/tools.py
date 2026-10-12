@@ -22,6 +22,7 @@ import threading
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from tsunami.core.approvals import classify_request
 from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
 from tsunami.core.models.jobs import Actor, JobStatus
@@ -605,7 +606,7 @@ class Tools:
         thread.start()
 
     def _await_approval(self, job_id: str) -> None:
-        self.app.history.mark_ready_for_approval(job_id)  # only if the check completed
+        classify_request(self.app.history, job_id)  # ready for approval, or no_changes
 
     def _jump(self, cust) -> JumpTarget | None:
         jh = cust.config.jump_host

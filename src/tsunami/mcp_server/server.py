@@ -163,7 +163,7 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=requests,
-        description="Request a change: renders and diffs each target, then waits for a person to approve it in the Tsunami GUI (lab customers may run directly if policy allows). Show the user the diff from get_job. Devices read ready (diffed, nothing applied) until a person approves; the approved run uses exactly the renders that were diffed: each device's render hash is stored, and a device whose play or render changed before the run fails with render_changed. Plays only, not drafts, except for lab customers when allowed.",
+        description="Request a change: renders and diffs each target, then waits for a person to approve it in the Tsunami GUI (lab customers may run directly if policy allows). Show the user the diff from get_job. Devices read ready (diffed, nothing applied) until a person approves, or no_changes when already as rendered; if no device would change, the job ends no_changes without asking for approval. the approved run uses exactly the renders that were diffed: each device's render hash is stored, and a device whose play or render changed before the run fails with render_changed. Plays only, not drafts, except for lab customers when allowed.",
     )
     def request_run(
         path: str,

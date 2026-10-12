@@ -541,7 +541,7 @@ The commands below are the IOS driver's. Each platform driver supplies its own e
 10. **Failure.** With `on_failure`, run `configure replace flash:tsunami-<jobid>.cfg force`, then confirm the device is still reachable. With `revert_timer`, run `configure revert now`. Mark `rolled_back`, or `rollback_failed` if any of that fails. `rollback_failed` is shown in red at the top of the job view and never auto-dismissed.
 11. Disconnect.
 
-Device statuses: `pending`, `ready` (diffed for an approval request; nothing applied), `connecting`, `running`, `success`, `failed`, `rolled_back`, `rollback_failed`, `skipped_precheck`, `skipped_maxfail`, `unreachable`, `hostkey_mismatch`, `render_changed`, `device_busy`, `interrupted`, `cancelled`.
+Device statuses: `pending`, `ready` (diffed for an approval request; nothing applied), `no_changes` (diffed for an approval request; already as rendered), `connecting`, `running`, `success`, `failed`, `rolled_back`, `rollback_failed`, `skipped_precheck`, `skipped_maxfail`, `unreachable`, `hostkey_mismatch`, `render_changed`, `device_busy`, `interrupted`, `cancelled`.
 
 ### Error detection
 
@@ -795,7 +795,7 @@ Mark tier 0 and tier 1 read tools with `readOnlyHint`. Treat annotations as hint
 ### Approval flow
 
 1. Claude calls `request_run` with an approved play (not a draft), targets, prompt values, and an optional tag filter.
-2. The server validates the play and creates the job as `pending` with the play hash. It renders all targets and runs a check-mode diff in the background, storing each device's masked render, render hash and diff. When the check completes the job becomes `awaiting_approval` and its devices `ready`, not `success`, so nothing reads as applied before it is. If any device fails the check, the job ends `failed` and is never offered for approval. A denied, expired or cancelled request turns its `ready` devices `cancelled`.
+2. The server validates the play and creates the job as `pending` with the play hash. It renders all targets and runs a check-mode diff in the background, storing each device's masked render, render hash and diff. When the check completes, each device that would change becomes `ready` (not `success`, so nothing reads as applied before it is) and the rest `no_changes`. A device would change if its diff has new lines, its render has exec steps (a config diff never shows them), or its render carries a secret (the diff compares secret lines only up to the secret, so a rotation is invisible). With at least one `ready` device the job becomes `awaiting_approval`, and the approved run covers only the `ready` devices; with none, the job ends `no_changes` and nobody is asked to approve. If any device fails the check, the job ends `failed` and is never offered for approval. A denied, expired or cancelled request turns its `ready` devices `cancelled`.
 3. The GUI polls the database every 2 seconds, shows a badge and tray notification, and opens an approval card: play, customer, targets, prompts, and per-device masked render and diff.
 4. The person approves or denies. Approval records the Windows username and time.
 5. The GUI runs the job through the normal pipeline, including canary, backups, and rollback.

@@ -325,29 +325,47 @@ class History:
                 self._cancel_ready(conn, job_id)
         return ids
 
-    def mark_ready_for_approval(self, job_id: str) -> bool:
-        """After an approval request's check-mode diff: its devices become ready (not
-        success, which would read as applied) and the job waits for a person."""
+    def mark_ready_for_approval(
+        self, job_id: str, *, ready: list[str], unchanged: list[str]
+    ) -> JobStatus | None:
+        """After an approval request's check-mode diff (see approvals.classify_request):
+        devices that would change become ready (not success, which would read as applied),
+        the rest no_changes. With nothing to change, the job ends no_changes and nobody is
+        asked to approve. None if the check did not complete."""
+        status = JobStatus.AWAITING_APPROVAL if ready else JobStatus.NO_CHANGES
         with self._tx() as conn:
+            fields = {"status": _cell(status)}
+            if status == JobStatus.NO_CHANGES:
+                fields["finished_at"] = self._now()
+            sets = ", ".join(f"{k} = ?" for k in fields)
             updated = conn.execute(
-                "UPDATE jobs SET status = ? WHERE id = ? AND status = ?",
-                (_cell(JobStatus.AWAITING_APPROVAL), job_id, _cell(JobStatus.COMPLETED)),
+                f"UPDATE jobs SET {sets} WHERE id = ? AND status = ?",
+                (*fields.values(), job_id, _cell(JobStatus.COMPLETED)),
             ).rowcount
             if not updated:
-                return False
-            conn.execute(
-                "UPDATE job_devices SET status = ? WHERE job_id = ? AND status = ?",
-                (_cell(DeviceStatus.READY), job_id, _cell(DeviceStatus.SUCCESS)),
-            )
-            ready = conn.execute(
-                "SELECT COUNT(*) FROM job_devices WHERE job_id = ? AND status = ?",
-                (job_id, _cell(DeviceStatus.READY)),
-            ).fetchone()[0]
+                return None
+            for names, device_status in (
+                (ready, DeviceStatus.READY),
+                (unchanged, DeviceStatus.NO_CHANGES),
+            ):
+                for name in names:
+                    conn.execute(
+                        "UPDATE job_devices SET status = ? WHERE job_id = ? AND device = ?",
+                        (_cell(device_status), job_id, name),
+                    )
+            counts = {
+                str(s): n
+                for s, n in (
+                    (DeviceStatus.READY, len(ready)),
+                    (DeviceStatus.NO_CHANGES, len(unchanged)),
+                )
+                if n
+            }
             conn.execute(
                 "UPDATE jobs SET summary_json = ? WHERE id = ?",
-                (_dumps({"counts": {str(DeviceStatus.READY): ready}}), job_id),
+                (_dumps({"counts": counts}), job_id),
             )
-        return True
+        return status
 
     def cancel_ready_devices(self, job_id: str) -> None:
         """A denied, expired or cancelled request: its ready devices were never touched."""
