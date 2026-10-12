@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–3 are done, except the lab work (3.8, 3.11), which is deferred until hardware and CML are available. Phase 4 (GUI) is done. Phase 5 (MCP server) is done except the MCP Inspector pass in 5.5. Phase 6: the frozen build and installer are produced and tested in CI (6.1, 6.2, 6.4); signing needs a certificate, and 6.3 and 6.5 need hands-on checks.
+**Status:** Phases 0–6 are built and tested against simulated devices, and CI produces the installer. Not yet done: real-device and CML testing (3.8, 3.11), code signing, and hands-on checks (5.5, 6.3, 6.5). See Open items, and After the plan for work added since.
 
 ---
 
@@ -20,20 +20,34 @@ This file goes with [design.md](design.md), which is the spec. The spec says *wh
 | GUI layout | VS Code-style: activity bar, side bar, tabbed editor area, bottom panel, status bar, command palette. Qt `windows11` style, following the Windows light or dark setting. |
 | Phase 1 spec items | Approved: initial plays may set `site`, `role` and `platform` in play vars, and the day-0 prompt form asks in two stages. |
 
-## Open questions
+## Open items
 
-1. **Catalog verification.** Netmiko device types and the AOS-CX console baud were checked against sources. Platform assignments, lifecycle, end-of-sale years, example SKUs and `show_version_model` patterns have not been checked yet. That happens in work package 1.9.
-2. **Test hardware.** Still to confirm:
-   - that the CML lab is reachable
-   - who downloads the AOS-CX Switch Simulator (it needs an HPE support-portal login)
-   - a physical AOS-S switch for the bench
-   - which physical models get staged over console
-3. **Git workflow.** Decided: commit straight to `main`.
-4. **Aruba facts still marked *verify* in the spec**, all to be confirmed on a device in 3.10:
+What is left, roughly in priority order. Check the user's wishes before starting any of them.
+
+1. **Real-device testing.** Everything so far ran against MockTransport and local SSH servers. Not yet proven on hardware or CML: the SHA-1 fallback on older switches, serial day-0 staging, AOS-CX checkpoint and AOS-S `cfg-restore` rollback, and the Aruba facts still marked *verify* in design.md, Platform drivers:
    - the AOS-CX auto-checkpoint behavior after a dropped session
    - how AOS-CX's revert-now path interacts with a running auto-checkpoint timer
    - the AOS-S first-login prompt text
    - whether `cfg-restore` leaves flash-stored credentials alone
+   Work packages 3.8 (CML suite) and 3.11 (Aruba lab) cover this.
+2. **Code signing.** `packaging/sign.ps1` is ready; it needs a certificate (an internal CA if the tool stays in-house, else an OV certificate with cloud signing) and EDR allowlisting.
+3. **Version bump.** Everything still ships as 0.1.0 (`src/tsunami/__init__.py`). Bump it per release so installers can be told apart.
+4. **MCP Inspector pass** (5.5) and a Claude Desktop check after each MCP change. The Store build of Claude Desktop keeps its config under `%LOCALAPPDATA%\Packages\Claude_*`; `core/registration.py` handles both locations.
+5. **Ideas raised but not built:** a "Trust host keys" bulk probe for a customer or site (records keys without logging in, flags changes); import of known host keys from MobaXterm; reloading the workspace automatically when files change; generating `no` commands to remove compliance extras; listing "inventory only" devices (APs, controllers on unsupported platforms).
+6. **Catalog verification** (1.9): lifecycle, end-of-sale years, example SKUs and model patterns in `core/data/hardware.yml` are unverified against vendor sources.
+7. **Accepted residuals** (design.md, Redaction): a secret also stored in plain text in workspace variables can be confirmed by a whole-value guess; a secret the device wraps over two lines is not exact-redacted. Both are strict xfails in `tests/unit/test_mcp_leaks.py`.
+
+## After the plan
+
+Built after Phase 6 at the user's request, each with tests and a design.md revision note:
+
+- Device types (core, distribution, access, wlc, ap, router) as built-in roles; logins per device and per site (`site_credentials`), falling back to the customer's.
+- Inventory editing from the GUI (`core/inventory_edit.py`, `gui/screens/inventory_dialogs.py`); a device list per customer or site with type filters, and running a play on selected devices (`gui/screens/device_list.py`); context menus for plays.
+- SHA-1 SSH fallback (`core/transports/legacy_ssh.py`), on by default, Settings switch to turn it off.
+- The Tsunami password (`core/vault.py`, `gui/lock.py`): encrypted Credential Manager entries, auto-lock, change and reset; entries saved with local-machine persistence.
+- The MCP relay (`mcp_server/bridge.py`): tsunami-mcp.exe holds no credentials; the GUI runs the tools only while unlocked (403 locked, 503 closed). MCP policy option `trust_new_host_keys`.
+- Approval requests mark devices `ready` (not `success`) and end `no_changes` without asking for approval when nothing would change.
+- GUI polish: teal-blue accent, welcome page, app icon in title bars and tray, refresh button and F5 on every side bar view.
 
 ---
 
