@@ -479,3 +479,13 @@ def test_audit_rows_redact_secrets_the_caller_supplied(env):
     env.tools.render(PLAY, device="sa-as01", prompts={**PROMPTS, "vlan_name": TACACS})
     row = env.audit()[-1]
     assert row["tool"] == "render" and TACACS not in row["args_redacted_json"]
+
+
+def test_policy_can_let_claude_make_first_contact(env):
+    env.tools.show("acme", "sa-as01", "show version")
+    assert env.recorder.targets[-1].allow_new_host_key is False  # the default
+    env.policy(trust_new_host_keys=True)
+    env.tools.show("acme", "sa-as01", "show version")
+    env.tools.check(PLAY, prompts=PROMPTS)
+    env.join()
+    assert all(t.allow_new_host_key for t in env.recorder.targets[1:])

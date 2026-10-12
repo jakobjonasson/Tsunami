@@ -349,7 +349,7 @@ class Tools:
                 method=ConnectionMethod.SSH,
                 credential=self.app.secrets.get_login(cust.credential_for(dev)),
                 jump=self._jump(cust),
-                allow_new_host_key=False,
+                allow_new_host_key=policy.trust_new_host_keys,
             )
             transport = self.app.transport()
             session = transport.open(target)
@@ -461,7 +461,7 @@ class Tools:
                         limit=targets,
                         actor=Actor.MCP,
                         job_id=job_id,
-                        allow_new_host_key=False,
+                        allow_new_host_key=policy.trust_new_host_keys,
                         exact_exempt=self._exempt(entry, prompts),
                     )
                 )
@@ -479,7 +479,7 @@ class Tools:
                     limit=targets,
                     actor=Actor.MCP,
                     job_id=job_id,
-                    allow_new_host_key=False,
+                    allow_new_host_key=policy.trust_new_host_keys,
                     exact_exempt=self._exempt(entry, prompts),
                 ),
                 after=lambda: self._await_approval(job_id),
@@ -538,7 +538,7 @@ class Tools:
                     limit=targets,
                     actor=Actor.MCP,
                     job_id=job_id,
-                    allow_new_host_key=False,
+                    allow_new_host_key=policy.trust_new_host_keys,
                     exact_exempt=self._exempt(entry, prompts),
                 )
             )

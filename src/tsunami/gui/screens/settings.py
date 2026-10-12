@@ -278,6 +278,13 @@ class SettingsTab(QScrollArea):
         self.apply_combo.addItems(["never", "lab_only"])
         self.apply_combo.setCurrentText(policy.apply)
         form.addRow("Apply mode", self.apply_combo)
+        self.trust_keys = QCheckBox("Claude may connect to devices whose host key is not on file")
+        self.trust_keys.setChecked(policy.trust_new_host_keys)
+        self.trust_keys.setToolTip(
+            "The key is recorded on first contact, as the window's own runs do. A device "
+            "whose key has changed is always refused."
+        )
+        form.addRow("Host keys", self.trust_keys)
         self.lab_drafts = QCheckBox("Lab customers may receive draft plays")
         self.lab_drafts.setChecked(policy.lab_allow_drafts)
         form.addRow(self.lab_drafts)
@@ -322,6 +329,7 @@ class SettingsTab(QScrollArea):
                     "enabled": self.mcp_enabled.isChecked(),
                     "apply": self.apply_combo.currentText(),
                     "lab_allow_drafts": self.lab_drafts.isChecked(),
+                    "trust_new_host_keys": self.trust_keys.isChecked(),
                     "customers_blocked": [
                         s for s, b in self.blocked_boxes.items() if b.isChecked()
                     ],

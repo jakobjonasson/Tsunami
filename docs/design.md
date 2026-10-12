@@ -759,7 +759,7 @@ Accepted residual: if a secret is also stored in plain text somewhere the exact 
 - A separate console-subsystem exe in the same install. Do not route MCP through the windowed GUI exe; it is not a reliable stdio process.
 - Stdout belongs to the protocol. Configure logging to `logs\mcp.log` before importing anything that logs. Send Netmiko session logs to files. No `print()` anywhere reachable from the MCP entry point.
 - Built on the official MCP Python SDK 2.x, `mcp.server.mcpserver.MCPServer` (FastMCP in 1.x). Tools return structured JSON.
-- Every device connection an MCP tool makes, for `show`, checks and lab runs, refuses an unknown or changed host key. Trusting a new key is a GUI action.
+- Every device connection an MCP tool makes, for `show`, checks and lab runs, refuses a changed host key. An unknown key (first contact) is refused too, unless the policy sets `trust_new_host_keys: true`; then it is recorded, as the GUI's runs do. Accepting a changed key is always a GUI action.
 - The tools run in the GUI process, behind the relay described under Process model.
 - The process may start with an undefined working directory. Find all paths through `%APPDATA%` and `%LOCALAPPDATA%`, never relative paths.
 - The policy file is re-read on every tool call, so changes made in the GUI apply without a restart.
@@ -813,6 +813,7 @@ The policy file is `%APPDATA%\Tsunami\mcp-policy.yml`. It is edited only through
 enabled: true
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
+trust_new_host_keys: false  # true: Claude may make first contact with a device
 customers_blocked: []      # hidden from MCP entirely
 show_allowlist:           # per platform family
   ios:

@@ -4,6 +4,7 @@
 enabled: false             # MCP stays off until you turn it on
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
+trust_new_host_keys: false  # true: Claude may make first contact with a device
 customers_blocked: []      # hidden from MCP entirely
 show_allowlist:            # per platform family
   ios:

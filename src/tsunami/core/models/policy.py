@@ -63,6 +63,9 @@ class McpPolicy(StrictModel):
     enabled: bool = False
     apply: Literal["never", "lab_only"] = "lab_only"
     lab_allow_drafts: bool = True
+    # Claude's connections record a device's host key on first contact, as the GUI's runs
+    # do. Off: a person makes first contact. A changed key is refused either way.
+    trust_new_host_keys: bool = False
     customers_blocked: list[Slug] = []
     show_allowlist: dict[PlatformFamily, list[AllowEntry]] = Field(
         default_factory=default_show_allowlist
