@@ -230,6 +230,11 @@ class OnSuccess(StrictModel):
     add_to_inventory: bool = Field(False, description="Initial plays only.")
 
 
+# A play for no customer in particular: it is bound to the customer it runs for
+# (services.play_entry), and writes secrets as secret('name') for that customer's.
+GLOBAL_CUSTOMER = "global"
+
+
 class Play(StrictModel):
     name: str = Field(min_length=1)
     description: str | None = None

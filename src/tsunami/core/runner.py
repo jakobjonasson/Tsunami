@@ -82,6 +82,7 @@ class RunRequest:
     # MCP jobs: text Claude supplied (prompt values, a draft's content). It is left out of
     # the exact-value layer where echoed; redacting a correct guess would confirm it.
     exact_exempt: frozenset[str] = frozenset()
+    customer: str | None = None  # the customer a global play runs for
 
 
 @dataclass(frozen=True)
@@ -123,7 +124,7 @@ class Runner:
 
     def run(self, request: RunRequest) -> str:
         """Run one play. Returns the job id; problems are recorded on the job, not raised."""
-        entry = play_entry(self.workspace, request.play_path)
+        entry = play_entry(self.workspace, request.play_path, request.customer)
         play = entry.play
         job_id = request.job_id or self.history.create_job(
             actor=request.actor,

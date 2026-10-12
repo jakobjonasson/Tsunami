@@ -571,3 +571,22 @@ def test_would_change(diff, render, changes):
     from tsunami.core.approvals import would_change
 
     assert would_change(SimpleNamespace(diff_redacted=diff, render_masked=render)) is changes
+
+
+def test_global_play_needs_a_customer_and_respects_blocking(env):
+    text = (
+        (env.root / PLAY).read_text(encoding="utf-8").replace("customer: acme", "customer: global")
+    )
+    (env.root / "plays/push/any-vlan.yml").write_text(text, encoding="utf-8")
+    path = "plays/push/any-vlan.yml"
+    with pytest.raises(ToolRefused, match="choose the customer"):
+        env.tools.render(path, device="sa-as01", prompts=PROMPTS)
+    rendered = env.tools.render(path, device="sa-as01", prompts=PROMPTS, customer="acme")
+    assert "vlan 30" in rendered["lines"]
+    started = env.tools.check(path, prompts=PROMPTS, customer="acme")
+    env.join()
+    job = env.history.get_job(started["job_id"])
+    assert job.customer == "acme" and job.status == JobStatus.COMPLETED
+    env.policy(customers_blocked=["acme"])
+    with pytest.raises(ToolRefused, match="unknown customer"):
+        env.tools.render(path, device="sa-as01", prompts=PROMPTS, customer="acme")

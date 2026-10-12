@@ -292,6 +292,9 @@ on_success:
 - `description`: string. Optional.
 - `type`: `initial`, `push`, or `baseline`. Required.
 - `customer`: customer slug. Required for every type. One run touches exactly one customer and one credential set.
+- `customer: global` makes a global play: a generic play that runs for any customer. It is bound to the customer chosen at run time (the GUI asks; MCP tools take a `customer` argument), and the job belongs to that customer. Its secrets are written `secret('name')`, which resolves to the bound customer's secret, so one customer's secret never reaches another's run. At load it is checked for schema and target roles only; targets, snippets and renders are checked against the customer when it runs. `global` is reserved: no customer folder may use it.
+- In any play, `secret('name')` means the play's own customer, the same as `secret('<customer>/name')`.
+- A play can be copied to another customer (GUI: Copy to customer). The copy is a new file beside the original with `customer` changed and `secret('<old>/name')` rewritten to `secret('name')`; snippets are not copied.
 - `connection`: see below.
 - `targets`: see below.
 - `prompts`: map of variable name to prompt definition.
@@ -1382,6 +1385,7 @@ Changes since the original draft, with reasons:
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.
 - The MCP SDK 2.x renamed FastMCP to `MCPServer`. MCP device connections never accept a new host key, and a change request is `pending` while its check-mode diff runs.
+- Global plays (`customer: global`), bound to a customer at run time; `secret('name')` for the play's own customer; copying a play to another customer.
 - Added the Tsunami password: stored values are encrypted under it, and the MCP server became a relay to the unlocked GUI, so tsunami-mcp.exe never holds credentials. Credential Manager entries use local-machine persistence.
 - SHA-1 SSH algorithms are offered last on every connection, because Paramiko 5 dropped them and many devices in service offer nothing newer.
 - Device types (core, distribution, access, wlc, ap, router) are built-in roles; devices may name their own login and sites may set a default (`site_credentials`), because one customer login did not fit sites or devices with different credentials.

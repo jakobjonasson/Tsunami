@@ -30,7 +30,13 @@ from tsunami.core.models.common import (
     PlatformFamily,
 )
 from tsunami.core.models.inventory import DEVICE_TYPES, CustomerFile, Device, VarsFile
-from tsunami.core.models.play import Play, PlayType, PromptType, play_findings
+from tsunami.core.models.play import (
+    GLOBAL_CUSTOMER,
+    Play,
+    PlayType,
+    PromptType,
+    play_findings,
+)
 from tsunami.core.models.workspace import SCHEMA_VERSION, WorkspaceFile
 from tsunami.core.prompts import PromptContext, PromptValueError, coerce
 from tsunami.core.render.lookup import find_snippet, snippet_paths
@@ -337,6 +343,14 @@ class _Loader:
 
     def load_customer(self, folder: Path, roles: Mapping[str, Any]) -> CustomerInventory | None:
         slug = self.slug_name(folder, "customer folder")
+        if slug == GLOBAL_CUSTOMER:
+            self.add(
+                Severity.ERROR,
+                "inventory.reserved_customer",
+                "'global' is reserved for plays that run for any customer; rename this folder",
+                self.rel(folder),
+            )
+            return None
         customer_path = folder / "customer.yml"
         if not customer_path.is_file():
             self.add(
@@ -488,6 +502,20 @@ class _Loader:
     def check_play_against_workspace(self, entry: PlayEntry, doc: YamlDoc, ws: Workspace) -> None:
         play = entry.play
         assert play is not None
+        if play.customer == GLOBAL_CUSTOMER:
+            # Bound to a customer when it runs, and checked against that customer then.
+            all_sites = {s for c in ws.customers.values() for s in c.sites}
+            result = resolve_targets(play.targets, [], sites=all_sites, roles=ws.roles.keys())
+            self.findings(
+                doc,
+                [
+                    f
+                    for f in result.findings
+                    if f.code in ("targets.empty", "targets.unknown_role")
+                    and play.type != PlayType.INITIAL
+                ],
+            )
+            return
         cust = ws.customers.get(play.customer)
         if cust is None:
             self.at(

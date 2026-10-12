@@ -20,6 +20,7 @@ from tsunami.core.platforms.base import PlatformDriver
 
 MASK = "********"
 _REF_RE = re.compile(r"(?P<customer>[a-z0-9][a-z0-9-]*)/(?P<name>[a-z0-9][a-z0-9-]*)")
+_NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 
 
 class SecretRefError(TsunamiError):
@@ -41,9 +42,11 @@ class SecretCollector:
         return f"SecretCollector({self.customer!r}, {len(self.refs)} refs)"
 
     def __call__(self, ref: object) -> str:
+        if isinstance(ref, str) and _NAME_RE.fullmatch(ref):
+            ref = f"{self.customer}/{ref}"  # secret('name'): this play's customer (global plays)
         match = _REF_RE.fullmatch(ref) if isinstance(ref, str) else None
         if match is None:
-            raise SecretRefError(f"secret() takes 'customer/name' slugs, got {ref!r}")
+            raise SecretRefError(f"secret() takes 'name' or 'customer/name' slugs, got {ref!r}")
         if match["customer"] != self.customer:
             raise SecretRefError(
                 f"secret({ref!r}) belongs to another customer; this play is for {self.customer!r}"

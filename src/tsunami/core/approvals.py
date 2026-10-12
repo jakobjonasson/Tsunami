@@ -48,6 +48,7 @@ def approve(history: Any, workspace: Any, job_id: str, *, approved_by: str) -> R
         actor=Actor.MCP,
         job_id=job_id,
         approved_hashes=hashes,
+        customer=job.customer,  # binds a global play again
         exact_exempt=frozenset(supplied_values(dict(job.prompts))),  # Claude's own input
     )
 

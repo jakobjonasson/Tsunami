@@ -14,7 +14,7 @@ from typing import Any
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform
-from tsunami.core.models.play import PromptType
+from tsunami.core.models.play import GLOBAL_CUSTOMER, PromptType
 from tsunami.core.models.settings import AppSettings
 from tsunami.core.prompts import PromptContext, PromptValueError, coerce
 from tsunami.core.render.environment import (
@@ -31,13 +31,28 @@ FIRST_STAGE = (PromptType.MODEL, PromptType.SITE, PromptType.ROLE)
 _ENV = make_environment()  # for Jinja-expression prompt defaults
 
 
-def play_entry(workspace: Workspace, play_path: Path | str) -> PlayEntry:
+def play_entry(
+    workspace: Workspace, play_path: Path | str, customer: str | None = None
+) -> PlayEntry:
+    """The play at play_path. A global play is bound to customer: everything downstream
+    (rendering, targets, secrets, the job's customer) then sees that customer."""
     entry = workspace.plays.get(Path(play_path))
     if entry is None:
         raise TsunamiError(f"no play at {Path(play_path).as_posix()}")
     if entry.play is None:
         raise TsunamiError(f"{Path(play_path).as_posix()} failed validation")
-    return entry
+    if entry.play.customer != GLOBAL_CUSTOMER:
+        if customer is not None and customer != entry.play.customer:
+            raise TsunamiError(f"{Path(play_path).as_posix()} is for {entry.play.customer!r}")
+        return entry
+    if customer is None:
+        raise TsunamiError(
+            f"{Path(play_path).as_posix()} is a global play: choose the customer to run it for"
+        )
+    if customer not in workspace.customers:
+        raise TsunamiError(f"unknown customer {customer!r}")
+    bound = entry.play.model_copy(update={"customer": customer})
+    return PlayEntry(path=entry.path, draft=entry.draft, play=bound)
 
 
 def collect_prompts(
@@ -131,9 +146,11 @@ def render_play(
     prompts: Mapping[str, Any] | None = None,
     tags: Collection[str] | None = None,
     settings: AppSettings | None = None,
+    customer: str | None = None,
 ) -> Rendering:
-    """Render one play for one device (or a new device, for initial plays), masked."""
-    entry = play_entry(workspace, play_path)
+    """Render one play for one device (or a new device, for initial plays), masked.
+    customer binds a global play."""
+    entry = play_entry(workspace, play_path, customer)
     values = collect_prompts(workspace, entry, prompts or {}, device=device)
     return Renderer(workspace, settings).render(
         entry, device=device, prompt_values=values, tags=tags

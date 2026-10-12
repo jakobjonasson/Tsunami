@@ -26,7 +26,7 @@ from tsunami.core.approvals import classify_request
 from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
 from tsunami.core.models.jobs import Actor, JobStatus
-from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
+from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
 from tsunami.core.policy import PolicyError, check_show_command
 from tsunami.core.redact import supplied_values
@@ -260,13 +260,21 @@ class Tools:
         known += [content] if content is not None else []  # args hold only a prefix
         return self.app.call("validate", 0, args, run, customer=customer, known=known)
 
-    def render(self, path: str, device: str | None = None, prompts: dict | None = None):
+    def render(
+        self,
+        path: str,
+        device: str | None = None,
+        prompts: dict | None = None,
+        customer: str | None = None,
+    ):
         def run(policy):
             ws = self.app.workspace()
             real = resolve_read(ws.root, path, allowed=PLAY_DIRS)
             rel = _rel(ws.root, real)
-            self._check_play_customer(policy, ws, _read_text(real))
-            rendering = render_play(ws, rel, device=device, prompts=prompts or {})
+            self._check_play_customer(policy, ws, _read_text(real), customer)
+            rendering = render_play(
+                ws, rel, device=device, prompts=prompts or {}, customer=customer
+            )
             return {
                 "path": rel,
                 "device": device,
@@ -277,9 +285,9 @@ class Tools:
                 "render_hash": rendering.render_hash(),
             }
 
-        args = {"path": path, "device": device, "prompts": prompts}
-        customer, known = self._customer_of(path), self._drafts_for(path)
-        return self.app.call("render", 0, args, run, customer=customer, known=known)
+        args = {"path": path, "device": device, "prompts": prompts, "customer": customer}
+        bound, known = self._customer_of(path, customer=customer), self._drafts_for(path)
+        return self.app.call("render", 0, args, run, customer=bound, known=known)
 
     def write_draft(self, path: str, content: str):
         def run(policy):
@@ -321,11 +329,17 @@ class Tools:
 
     # == tier 1: read-only device access =================================================
 
-    def check(self, path: str, targets: list[str] | None = None, prompts: dict | None = None):
-        return self._read_only_job("check", RunMode.CHECK, path, targets, prompts)
+    def check(
+        self,
+        path: str,
+        targets: list[str] | None = None,
+        prompts: dict | None = None,
+        customer: str | None = None,
+    ):
+        return self._read_only_job("check", RunMode.CHECK, path, targets, prompts, customer)
 
-    def compliance(self, path: str):
-        return self._read_only_job("compliance", RunMode.COMPLIANCE, path, None, None)
+    def compliance(self, path: str, customer: str | None = None):
+        return self._read_only_job("compliance", RunMode.COMPLIANCE, path, None, None, customer)
 
     def show(self, customer: str, device: str, command: str):
         def run(policy):
@@ -433,10 +447,11 @@ class Tools:
         targets: list[str],
         prompts: dict | None = None,
         tags: list[str] | None = None,
+        customer: str | None = None,
     ):
         def run(policy):
             ws = self.app.workspace()
-            entry = self._entry(ws, path)
+            entry = self._entry(ws, path, customer)
             play = entry.play
             cust = self.app.visible_customer(policy, ws, play.customer)
             if play.type == PlayType.INITIAL:
@@ -464,6 +479,7 @@ class Tools:
                         job_id=job_id,
                         allow_new_host_key=policy.trust_new_host_keys,
                         exact_exempt=self._exempt(entry, prompts),
+                        customer=entry.play.customer,
                     )
                 )
                 return {
@@ -482,6 +498,7 @@ class Tools:
                     job_id=job_id,
                     allow_new_host_key=policy.trust_new_host_keys,
                     exact_exempt=self._exempt(entry, prompts),
+                    customer=entry.play.customer,
                 ),
                 after=lambda: self._await_approval(job_id),
             )
@@ -493,7 +510,9 @@ class Tools:
             }
 
         args = {"path": path, "targets": targets, "prompts": prompts, "tags": tags}
-        return self.app.call("request_run", 2, args, run, customer=self._customer_of(path))
+        args["customer"] = customer
+        bound = self._customer_of(path, customer=customer)
+        return self.app.call("request_run", 2, args, run, customer=bound)
 
     def cancel_job(self, job_id: str):
         def run(policy):
@@ -516,10 +535,10 @@ class Tools:
 
     # == helpers ===========================================================================
 
-    def _read_only_job(self, tool, mode, path, targets, prompts):
+    def _read_only_job(self, tool, mode, path, targets, prompts, customer=None):
         def run(policy):
             ws = self.app.workspace()
-            entry = self._entry(ws, path)
+            entry = self._entry(ws, path, customer)
             play = entry.play
             cust = self.app.visible_customer(policy, ws, play.customer)
             if play.type == PlayType.INITIAL:
@@ -542,16 +561,20 @@ class Tools:
                     job_id=job_id,
                     allow_new_host_key=policy.trust_new_host_keys,
                     exact_exempt=self._exempt(entry, prompts),
+                    customer=entry.play.customer,
                 )
             )
             return {"job_id": job_id, "status": "running", "devices": len(devices)}
 
-        args = {"path": path, "targets": targets, "prompts": prompts}
-        return self.app.call(tool, 1, args, run, customer=self._customer_of(path))
+        args = {"path": path, "targets": targets, "prompts": prompts, "customer": customer}
+        return self.app.call(
+            tool, 1, args, run, customer=self._customer_of(path, customer=customer)
+        )
 
-    def _entry(self, ws, path: str):
+    def _entry(self, ws, path: str, customer: str | None = None):
+        """The play, bound to customer if it is a global play."""
         real = resolve_read(ws.root, path, allowed=PLAY_DIRS)
-        return play_entry(ws, _rel(ws.root, real))
+        return play_entry(ws, _rel(ws.root, real), customer)
 
     def _check_targets(self, ws, cust, play, targets):
         result = resolve_targets(
@@ -668,22 +691,29 @@ class Tools:
             out += [rel, file.stem, data.decode("utf-8-sig", errors="replace")]
         return out
 
-    def _check_play_customer(self, policy, ws, text: str) -> None:
-        customer = _yaml_customer(text)
-        if customer is not None:
-            self.app.visible_customer(policy, ws, customer)
+    def _check_play_customer(self, policy, ws, text: str, customer: str | None = None) -> None:
+        """Refuse a blocked customer: the play's, or for a global play the one it runs for."""
+        named = _yaml_customer(text)
+        target = customer if named == GLOBAL_CUSTOMER else named
+        if target is not None:
+            self.app.visible_customer(policy, ws, target)
 
-    def _customer_of(self, path: str | None, content: str | None = None) -> str | None:
-        """The play's customer, for exact-value redaction; None if it cannot be read."""
+    def _customer_of(
+        self, path: str | None, content: str | None = None, customer: str | None = None
+    ) -> str | None:
+        """The customer a call concerns (a global play's is the one it runs for); None if
+        it cannot be read."""
         try:
             if content is not None:
-                return _yaml_customer(content)
-            if path is None:
+                named = _yaml_customer(content)
+            elif path is None:
                 return None
-            ws_root = Path(self.app.settings().workspace or "")
-            return _yaml_customer(_read_text(resolve_read(ws_root, path, allowed=PLAY_DIRS)))
+            else:
+                ws_root = Path(self.app.settings().workspace or "")
+                named = _yaml_customer(_read_text(resolve_read(ws_root, path, allowed=PLAY_DIRS)))
         except Exception:  # noqa: BLE001
             return None
+        return customer if named == GLOBAL_CUSTOMER else named
 
 
 class LocalBackend:
