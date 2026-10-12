@@ -400,3 +400,27 @@ def test_compliance(hist: History, clock: FakeClock):
     assert rows[1]["details"] == {"m": ["x"]} and rows[1]["device"] == "sw1"
     assert len(hist.compliance_history("acme", limit=1)) == 1
     assert hist.compliance_history("nobody") == []
+
+
+def test_reads_do_not_wait_for_a_writer(hist: History):
+    """The GUI thread reads while run workers write: it must never queue behind them."""
+    import threading
+    import time
+
+    make_job(hist)
+    holding, release = threading.Event(), threading.Event()
+
+    def writer() -> None:
+        with hist._tx():
+            holding.set()
+            release.wait(5)
+
+    thread = threading.Thread(target=writer)
+    thread.start()
+    holding.wait(5)
+    start = time.monotonic()
+    jobs = hist.list_jobs()
+    elapsed = time.monotonic() - start
+    release.set()
+    thread.join()
+    assert len(jobs) == 1 and elapsed < 0.5

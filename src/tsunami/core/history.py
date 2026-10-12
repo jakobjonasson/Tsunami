@@ -123,16 +123,27 @@ class History:
         self._conn.row_factory = sqlite3.Row
         try:
             self._conn.execute("PRAGMA journal_mode=WAL")
+            # WAL with NORMAL syncs at checkpoints, not on every commit: a run's hundreds of
+            # small writes stop holding the lock through an fsync each. A crash keeps the
+            # database intact; only a power loss can drop the last commits.
+            self._conn.execute("PRAGMA synchronous=NORMAL")
             self._conn.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
             self._conn.execute("PRAGMA foreign_keys=ON")
             self._migrate()
         except BaseException:
             self._conn.close()
             raise
+        # Reads get their own connection: in WAL mode they never wait for a writer, so the
+        # GUI thread's queries do not queue behind a run's worker threads.
+        self._read_lock = threading.Lock()
+        self._reader = sqlite3.connect(db_path, check_same_thread=False, isolation_level=None)
+        self._reader.row_factory = sqlite3.Row
+        self._reader.execute(f"PRAGMA busy_timeout={BUSY_TIMEOUT_MS}")
 
     def close(self) -> None:
-        with self._lock:
+        with self._lock, self._read_lock:
             self._conn.close()
+            self._reader.close()
 
     # --- plumbing ---
 
@@ -160,8 +171,8 @@ class History:
             return self._conn.execute(sql, tuple(params))
 
     def _query(self, sql: str, params: Iterable[Any] = ()) -> list[sqlite3.Row]:
-        with self._lock:
-            return self._conn.execute(sql, tuple(params)).fetchall()
+        with self._read_lock:
+            return self._reader.execute(sql, tuple(params)).fetchall()
 
     def _migrate(self) -> None:
         versions = sorted(
