@@ -26,7 +26,7 @@ def main(argv: list[str] | None = None) -> int:
     from tsunami.core.models.settings import AppSettings, load_settings
     from tsunami.core.paths import AppPaths
     from tsunami.core.secret_store import KeyringSecretStore
-    from tsunami.gui import icons, theme
+    from tsunami.gui import icons, theme, wheel
     from tsunami.gui.context import AppContext
     from tsunami.gui.lock import LockManager
     from tsunami.gui.main_window import MainWindow
@@ -35,6 +35,7 @@ def main(argv: list[str] | None = None) -> int:
     app = QApplication([sys.argv[0], *argv])
     app.setApplicationName("Tsunami")
     app.setOrganizationName("Tsunami")
+    wheel.install(app)
     app.setWindowIcon(icons.app_icon())  # title bars; the exe resource is not used by Qt
 
     paths = AppPaths.from_env()

@@ -11,8 +11,13 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
+    QComboBox,
+    QDialog,
+    QDialogButtonBox,
+    QFormLayout,
     QHBoxLayout,
     QLabel,
+    QLineEdit,
     QListWidget,
     QListWidgetItem,
     QMenu,
@@ -25,7 +30,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tsunami.core.issues import Severity
+from tsunami.core.issues import Severity, TsunamiError
+from tsunami.core.models.play import GLOBAL_CUSTOMER
+from tsunami.core.play_edit import copy_play
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
@@ -33,6 +40,83 @@ from tsunami.gui.shell import ActivityItem, Shell
 
 _PATH_ROLE = Qt.ItemDataRole.UserRole
 _GROUPS = (("initial", "Initial"), ("push", "Push"), ("baseline", "Baseline"))
+
+
+def run_dialog(dialog: QDialog) -> bool:
+    """Show a dialog modally. True if accepted. Tests replace this."""
+    return dialog.exec() == QDialog.DialogCode.Accepted
+
+
+class CopyPlayDialog(QDialog):
+    """Copy a live play for another customer. Snippets are not copied."""
+
+    def __init__(self, ctx: AppContext, path: Path, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.ctx = ctx
+        self.path = path
+        self.new_path: Path | None = None
+        self.setWindowTitle(f"Copy {path.stem} to customer")
+        self.setMinimumWidth(440)
+        ws = ctx.workspace
+        entry = ws.plays.get(path) if ws else None
+        own = entry.play.customer if entry and entry.play else None
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 16, 16, 16)
+        layout.setSpacing(10)
+        layout.addWidget(QLabel(f"Copy {path.as_posix()} for another customer."))
+        form = QFormLayout()
+        self.customer_combo = QComboBox()
+        for name in sorted(ws.customers if ws else ()):
+            if name != own:
+                self.customer_combo.addItem(name, name)
+        form.addRow("Customer", self.customer_combo)
+        self.name_edit = QLineEdit()
+        form.addRow("File name", self.name_edit)
+        layout.addLayout(form)
+        note = QLabel(
+            "Snippets are not copied: customer-level snippets the play uses must already "
+            "exist for the new customer."
+        )
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        layout.addWidget(note)
+        self.error_label = QLabel("")
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet(f"color: {theme.current().error};")
+        self.error_label.setVisible(False)
+        layout.addWidget(self.error_label)
+        self.buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        ok = self.buttons.button(QDialogButtonBox.StandardButton.Ok)
+        ok.setText("Copy")
+        ok.setProperty("primary", True)
+        ok.setEnabled(self.customer_combo.count() > 0)
+        self.buttons.accepted.connect(self.accept)
+        self.buttons.rejected.connect(self.reject)
+        layout.addWidget(self.buttons)
+        self.customer_combo.currentIndexChanged.connect(self._customer_changed)
+        self._customer_changed()
+
+    def _customer_changed(self, _index: int = 0) -> None:
+        customer = self.customer_combo.currentData()
+        if customer:
+            self.name_edit.setText(f"{self.path.stem}-{customer}")
+
+    def accept(self) -> None:
+        root = self.ctx.workspace.root if self.ctx.workspace else Path()
+        try:
+            self.new_path = copy_play(
+                root,
+                self.path,
+                self.customer_combo.currentData(),
+                self.name_edit.text().strip() or None,
+            )
+        except TsunamiError as exc:
+            self.error_label.setText(str(exc))
+            self.error_label.setVisible(True)
+            return
+        super().accept()
 
 
 def _status_icon(ctx: AppContext, path: Path) -> QIcon:
@@ -170,10 +254,18 @@ class PlaysView(QWidget):
                 if not e.draft
                 and (str(e.play.type) if e.play else (e.path.parts[1:2] or ("",))[0]) == type_id
             ]
-            for entry in sorted(entries, key=lambda e: (e.play.customer if e.play else "", e.path)):
+            for entry in sorted(
+                entries,
+                key=lambda e: (
+                    e.play.customer != GLOBAL_CUSTOMER if e.play else True,
+                    e.play.customer if e.play else "",
+                    e.path,
+                ),
+            ):
                 customer = entry.play.customer if entry.play else "(invalid)"
                 if customer not in customers:
-                    customers[customer] = QTreeWidgetItem(group, [customer])
+                    label = "Global" if customer == GLOBAL_CUSTOMER else customer
+                    customers[customer] = QTreeWidgetItem(group, [label])
                 name = entry.play.name if entry.play else entry.path.stem
                 item = QTreeWidgetItem(customers[customer], [name])
                 item.setIcon(0, _status_icon(self.ctx, entry.path))
@@ -217,6 +309,7 @@ class PlaysView(QWidget):
         add("Open", "play", lambda p: open_play(self.ctx, self.shell, p))
         add("Edit in VS Code", "edit", self.edit_in_vscode)
         add("Run…", "play", self.run_play, runnable)
+        add("Copy to customer…", "copy", self.copy_to_customer, entry is not None)
         menu.addSeparator()
         add("Delete…", "trash", self.delete_play)
         return menu
@@ -232,6 +325,17 @@ class PlaysView(QWidget):
         from tsunami.gui.screens.run_wizard import open_run_wizard
 
         open_run_wizard(self.ctx, self.shell, path)
+
+    def copy_to_customer(self, path: Path) -> None:
+        dialog = CopyPlayDialog(self.ctx, path, self)
+        if dialog.customer_combo.count() == 0:
+            self.shell.notify("There is no other customer to copy the play to.", "warning")
+            return
+        if not run_dialog(dialog) or dialog.new_path is None:
+            return
+        self.shell.refresh_all()
+        open_play(self.ctx, self.shell, dialog.new_path)
+        self.shell.notify(f"Copied to {dialog.new_path.as_posix()}.")
 
     def delete_play(self, path: Path) -> None:
         from tsunami.core import inventory_edit

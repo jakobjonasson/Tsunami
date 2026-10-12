@@ -27,7 +27,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.models.inventory import DEVICE_TYPES
-from tsunami.core.models.play import PlayType
+from tsunami.core.models.play import GLOBAL_CUSTOMER, PlayType
 from tsunami.core.targets import resolve_targets
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
@@ -56,7 +56,7 @@ def run_picker(dialog: QDialog) -> bool:
 
 
 class PlayPickerDialog(QDialog):
-    """Lists the customer's plays that target every selected device."""
+    """Lists the customer's plays, and global plays, that target every selected device."""
 
     def __init__(
         self, ctx: AppContext, customer: str, devices: list[str], parent: QWidget | None = None
@@ -116,7 +116,10 @@ class PlayPickerDialog(QDialog):
         out = []
         for entry in ws.plays.values():
             play = entry.play
-            if entry.draft or play is None or play.customer != customer:
+            if entry.draft or play is None:
+                continue
+            is_global = play.customer == GLOBAL_CUSTOMER
+            if play.customer != customer and not is_global:
                 continue
             if play.type == PlayType.INITIAL:
                 continue
@@ -128,7 +131,8 @@ class PlayPickerDialog(QDialog):
                 limit=self.devices,
             )
             if result.ok:
-                out.append((entry.path, play.name, str(play.type)))
+                name = f"{play.name} (global)" if is_global else play.name
+                out.append((entry.path, name, str(play.type)))
         return sorted(out, key=lambda r: (r[1], r[0]))
 
     def offered_paths(self) -> list[Path]:
@@ -165,7 +169,7 @@ def pick_play_and_run(
         return False
     from tsunami.gui.screens.run_wizard import open_run_wizard
 
-    open_run_wizard(ctx, shell, path, devices=devices)
+    open_run_wizard(ctx, shell, path, devices=devices, customer=customer)
     return True
 
 

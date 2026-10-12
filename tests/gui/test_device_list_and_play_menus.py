@@ -179,7 +179,7 @@ def test_plays_menu_actions(main_window, gui_ctx, monkeypatch):
     view = _plays(main_window)
     item = _play_item(view, ADD_VLAN)
     actions = _actions(view.menu_for(item))
-    assert list(actions) == ["Open", "Edit in VS Code", "Run…", "Delete…"]
+    assert list(actions) == ["Open", "Edit in VS Code", "Run…", "Copy to customer…", "Delete…"]
     actions["Open"].trigger()
     assert f"play:{ADD_VLAN.as_posix()}" in main_window._tabs
 

@@ -23,6 +23,14 @@ LOGIN_PASSWORD = "Login-Pass-1234"
 TACACS_SECRET = "Real-Tacacs-Key-77"
 
 
+@pytest.fixture(autouse=True)
+def wheel_guard(qapp):
+    """The app-wide wheel filter, as app.py installs it."""
+    from tsunami.gui import wheel
+
+    return wheel.install(qapp)
+
+
 @pytest.fixture
 def workspace_root(tmp_path) -> Path:
     root = tmp_path / "ws"

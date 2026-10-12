@@ -38,7 +38,7 @@ from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
 from tsunami.core.models.inventory import Device
-from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
+from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
 from tsunami.core.prompts import PromptContext, PromptValueError, coerce
 from tsunami.core.render.renderer import Renderer
 from tsunami.core.runner import RunRequest
@@ -64,8 +64,10 @@ def open_run_wizard(
     shell: Shell,
     play_path: Path | str,
     devices: list[str] | None = None,
+    customer: str | None = None,
 ) -> QWidget | None:
-    """Open (or focus) the run wizard tab for a play. With devices, only those start ticked."""
+    """Open (or focus) the run wizard tab for a play. With devices, only those start ticked.
+    For a global play, customer preselects the Customer dropdown."""
     if ctx.workspace is None:
         shell.notify("Open a workspace first.", "warning")
         return None
@@ -75,18 +77,31 @@ def open_run_wizard(
             path = path.relative_to(ctx.workspace_path)
         except ValueError:
             pass
-    try:
-        entry = play_entry(ctx.workspace, path)
-    except TsunamiError as exc:
-        shell.notify(str(exc), "error")
+    raw = ctx.workspace.plays.get(path)
+    if raw is None or raw.play is None:
+        shell.notify(
+            f"{path.as_posix()} failed validation" if raw else f"no play at {path.as_posix()}",
+            "error",
+        )
         return None
-    assert entry.play is not None
+    if raw.play.customer == GLOBAL_CUSTOMER:
+        if customer is not None and customer not in ctx.workspace.customers:
+            customer = None
+    else:
+        customer = None
+        try:
+            play_entry(ctx.workspace, path)
+        except TsunamiError as exc:
+            shell.notify(str(exc), "error")
+            return None
     tab = shell.open_tab(
         f"run-wizard:{path.as_posix()}",
-        f"Run: {entry.play.name}",
-        lambda: RunWizard(ctx, shell, path),
+        f"Run: {raw.play.name}",
+        lambda: RunWizard(ctx, shell, path, customer),
         "play",
     )
+    if customer is not None and isinstance(tab, RunWizard):
+        tab.set_customer(customer)
     if devices is not None and isinstance(tab, RunWizard):
         tab.preselect_devices(devices)
     return tab
@@ -104,17 +119,24 @@ def _card(title: str) -> tuple[QFrame, QVBoxLayout]:
 
 
 class RunWizard(QWidget):
-    def __init__(self, ctx: AppContext, shell: Shell, play_path: Path) -> None:
+    def __init__(
+        self, ctx: AppContext, shell: Shell, play_path: Path, customer: str | None = None
+    ) -> None:
         super().__init__()
         assert ctx.workspace is not None
         self.ctx = ctx
         self.shell = shell
         self.path = play_path
-        self.entry = play_entry(ctx.workspace, play_path)
+        raw = ctx.workspace.plays[play_path]
+        assert raw.play is not None
+        self.is_global = raw.play.customer == GLOBAL_CUSTOMER
+        # A global play is unbound until a customer is chosen; then entry/play/cust follow it.
+        self.entry = raw if self.is_global else play_entry(ctx.workspace, play_path)
         play = self.entry.play
         assert play is not None
         self.play = play
-        self.cust = ctx.workspace.customer(play.customer)
+        self.cust: Any = None if self.is_global else ctx.workspace.customer(play.customer)
+        self.customer_combo: QComboBox | None = None
         self.catalog = load_catalog()
         self.initial = play.type == PlayType.INITIAL
         self.devices: tuple[Device, ...] = ()
@@ -128,10 +150,82 @@ class RunWizard(QWidget):
         self._last_stage1: dict[str, Any] | None = None
         self._previewed = False
         self.port_picker: PortPicker | None = None
+        self.target_list = QListWidget()  # replaced by _build_targets once bound
 
         self._build()
-        self._update_stages()
+        if not self.is_global:
+            self._bind_content()
+        elif customer is not None:
+            self.set_customer(customer)
         self._update_buttons()
+
+    def customer_name(self) -> str | None:
+        """The customer the wizard runs for; None while a global play has none chosen."""
+        return None if self.cust is None else self.play.customer
+
+    def set_customer(self, customer: str) -> None:
+        """Choose the customer of a global play (rebinds and reloads everything)."""
+        if self.customer_combo is None:
+            return
+        index = self.customer_combo.findData(customer)
+        if index >= 0:
+            self.customer_combo.setCurrentIndex(index)
+
+    def _customer_changed(self, _index: int = 0) -> None:
+        assert self.customer_combo is not None and self.ctx.workspace is not None
+        customer = self.customer_combo.currentData()
+        raw = self.ctx.workspace.plays[self.path]
+        if customer is None:
+            self.entry, self.cust = raw, None
+            assert raw.play is not None
+            self.play = raw.play
+        else:
+            try:
+                self.entry = play_entry(self.ctx.workspace, self.path, customer)
+            except TsunamiError as exc:
+                self.shell.notify(str(exc), "error")
+                return
+            assert self.entry.play is not None
+            self.play = self.entry.play
+            self.cust = self.ctx.workspace.customer(customer)
+        self._bind_content()
+        self._update_buttons()
+
+    def _bind_content(self) -> None:
+        """(Re)build targets, prompts, options and preview for the bound customer."""
+        while self._holder_layout.count():
+            child = self._holder_layout.takeAt(0).widget()
+            if child is not None:
+                child.setParent(None)
+                child.deleteLater()
+        self.fields, self.device_fields, self._device_rows = {}, {}, {}
+        self._user_edited = set()
+        self._prefilling = False
+        self._last_stage1 = None
+        self._previewed = False
+        self.devices = ()
+        self.target_error = ""
+        self.port_picker = None
+        self.target_list = QListWidget()
+        self.subtitle.setText(self._subtitle_text())
+        if self.cust is None:
+            hint = QLabel("Choose the customer to run this play for.")
+            hint.setObjectName("Muted")
+            self._holder_layout.addWidget(hint)
+            return
+        self._holder_layout.addWidget(self._build_targets())
+        self._holder_layout.addWidget(self._build_prompts())
+        self._holder_layout.addWidget(self._build_options())
+        self._holder_layout.addWidget(self._build_preview())
+        self._update_stages()
+
+    def _subtitle_text(self) -> str:
+        play = self.play
+        who = "any customer" if self.cust is None else play.customer
+        text = f"{play.type} play for {who}"
+        if self.is_global and self.cust is not None:
+            text += " (global play)"
+        return text + (f" - {play.description}" if play.description else "")
 
     # -- construction ---------------------------------------------------------------
 
@@ -152,18 +246,27 @@ class RunWizard(QWidget):
         title = QLabel(play.name)
         title.setObjectName("Title")
         col.addWidget(title)
-        subtitle = QLabel(
-            f"{play.type} play for {play.customer}"
-            + (f" - {play.description}" if play.description else "")
-        )
-        subtitle.setObjectName("Muted")
-        subtitle.setWordWrap(True)
-        col.addWidget(subtitle)
+        self.subtitle = QLabel(self._subtitle_text())
+        self.subtitle.setObjectName("Muted")
+        self.subtitle.setWordWrap(True)
+        col.addWidget(self.subtitle)
 
-        col.addWidget(self._build_targets())
-        col.addWidget(self._build_prompts())
-        col.addWidget(self._build_options())
-        col.addWidget(self._build_preview())
+        if self.is_global:
+            frame, card = _card("Customer")
+            self.customer_combo = QComboBox()
+            self.customer_combo.setObjectName("Customer")
+            self.customer_combo.addItem("Choose a customer…", None)
+            for name in sorted(self.ctx.workspace.customers):  # type: ignore[union-attr]
+                self.customer_combo.addItem(name, name)
+            self.customer_combo.currentIndexChanged.connect(self._customer_changed)
+            card.addWidget(self.customer_combo)
+            col.addWidget(frame)
+
+        holder = QWidget()
+        self._holder_layout = QVBoxLayout(holder)
+        self._holder_layout.setContentsMargins(0, 0, 0, 0)
+        self._holder_layout.setSpacing(12)
+        col.addWidget(holder)
         col.addStretch(1)
 
         bar = QFrame()
@@ -544,7 +647,9 @@ class RunWizard(QWidget):
 
     def _update_buttons(self) -> None:
         self.start_button.setEnabled(self._previewed)
-        self.preview_button.setEnabled(self.initial or bool(self.devices))
+        self.preview_button.setEnabled(
+            self.cust is not None and (self.initial or bool(self.devices))
+        )
         if self._previewed:
             self.status_label.setText("Preview is up to date. Ready to start.")
         else:
@@ -578,6 +683,9 @@ class RunWizard(QWidget):
     def preview(self) -> bool:
         """Validate, render every selected device and show the masked result."""
         self._previewed = False
+        if self.cust is None:
+            self._update_buttons()
+            return False
         self._clear_preview()
         if self.target_error:
             self._show_error(self.target_error)
@@ -638,10 +746,11 @@ class RunWizard(QWidget):
             tags=self.selected_tags(),
             limit=self._limit(),
             serial_port=self.port_picker.port() if self.port_picker else None,
+            customer=self.customer_name() if self.is_global else None,
         )
 
     def start(self) -> None:
-        if not self._previewed:
+        if not self._previewed or self.cust is None:
             return
         if self.port_picker is not None and not self.port_picker.port():
             self.shell.notify("Choose a serial port first.", "warning")
