@@ -360,3 +360,15 @@ def test_each_device_logs_in_with_its_own_credential(ws_root, history, secrets, 
     assert used == {"sa-as01": "siteadmin", "sa-as02": "as02admin"}
     stored = repr([vars(d) for d in history.devices(job_id)]) + repr(events)
     assert "Site-Pass-5151" not in stored and "Dev-Pass-6262" not in stored
+
+
+def test_some_devices_failing_makes_the_job_partial(ws_root, history, secrets, app_paths):
+    mock = mock_for(["sa-as01", "sa-as02"])
+    mock.device("sa-as02").reject_lines.append(r"^name Cameras$")  # sa-as01 is the canary
+    runner, _ = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(ADD_VLAN, RunMode.APPLY, prompts=VLAN))
+    assert statuses(history, job_id) == {
+        "sa-as01": DeviceStatus.SUCCESS,
+        "sa-as02": DeviceStatus.ROLLED_BACK,
+    }
+    assert history.get_job(job_id).status == JobStatus.PARTIAL

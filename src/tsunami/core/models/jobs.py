@@ -25,6 +25,7 @@ class JobStatus(StrEnum):
     RUNNING = "running"
     PAUSED = "paused"
     COMPLETED = "completed"
+    PARTIAL = "partial"  # some devices succeeded, some failed
     NO_CHANGES = "no_changes"  # an approval request whose diff would change nothing
     FAILED = "failed"
     INTERRUPTED = "interrupted"

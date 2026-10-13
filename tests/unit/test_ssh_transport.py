@@ -241,9 +241,14 @@ def test_jump_host_channels_are_capped_at_ten(app_paths):
     ssh, calls = transport(app_paths, jump_factory=lambda t, s: jump)
     via = JumpTarget("198.51.100.5", 22, LoginCredential("jump", "Jump-Pass"))
 
+    full = threading.Event()
+
     def one(i):
         session = ssh.open(target(host=f"203.0.113.{i + 1}", jump=via))
-        time.sleep(0.02)
+        if jump.active >= 10:
+            full.set()
+        full.wait(5)  # hold the channel until the cap is reached, however slow the runner
+        time.sleep(0.01)
         session.close()
 
     threads = [threading.Thread(target=one, args=(i,)) for i in range(25)]

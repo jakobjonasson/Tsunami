@@ -412,7 +412,9 @@ class Runner:
         if self.cancel.is_set() or DeviceStatus.CANCELLED in results.values():
             status = JobStatus.CANCELLED
         elif any(s in FAILURE_STATUSES for s in results.values()):
-            status = JobStatus.FAILED
+            # Partial tells an operator at a glance that some devices did run.
+            done = any(s == DeviceStatus.SUCCESS for s in results.values())
+            status = JobStatus.PARTIAL if done else JobStatus.FAILED
         else:
             status = JobStatus.COMPLETED
         self.history.set_job_status(job_id, status, finished_at=_now(), summary={"counts": counts})

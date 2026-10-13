@@ -56,8 +56,10 @@ def detect_platform(show_version: str) -> Platform | None:
     text = show_version or ""
     if re.search(r"AOS-CX|ArubaOS-CX", text, re.I):
         return Platform.AOS_CX
-    # XE is checked before IOS: a 3850/3650 on 16.x prints both banners.
-    if re.search(r"IOS[ -]XE", text, re.I):
+    # XE is checked before IOS: a 3850/3650 on 16.x prints both banners, IOS-XE 3.x prints
+    # "IOS-XE Software" next to a 15.x-style version, and IOL prints "[IOSXE]". The banner
+    # is the marker; the version number never decides (3.x reports 15.5(3)S and the like).
+    if re.search(r"IOS[ -]?XE", text, re.I):
         return Platform.IOS_XE
     if re.search(r"Cisco IOS Software|Cisco Internetwork Operating System", text):
         return Platform.IOS

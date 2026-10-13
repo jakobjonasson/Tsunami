@@ -160,3 +160,46 @@ def test_as_dict():
         "platform": "ios-xe",
     }
     assert Facts(None, None, None, None, None).as_dict()["platform"] == ""
+
+
+@pytest.mark.parametrize(
+    ("banner", "platform"),
+    [
+        # IOL in CML: IOS-XE 17.x code with a classic-looking banner
+        (
+            "Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX-ADVENTERPRISEK9-M), "
+            "Version 17.18.2, RELEASE SOFTWARE (fc3)",
+            Platform.IOS_XE,
+        ),
+        ("Cisco IOS XE Software, Version 17.09.04a", Platform.IOS_XE),
+        # IOS-XE 3.x (older 3850s, ISR 4000s): a 15.x-style version, IOS-XE in the banner
+        (
+            "Cisco IOS Software, IOS-XE Software, Catalyst L3 Switch Software "
+            "(CAT3K_CAA-UNIVERSALK9-M), Version 03.06.06E RELEASE SOFTWARE (fc1)",
+            Platform.IOS_XE,
+        ),
+        (
+            "Cisco IOS XE Software, Version 03.16.05.S - Extended Support Release\n"
+            "Cisco IOS Software, ISR Software (X86_64_LINUX_IOSD-UNIVERSALK9-M), "
+            "Version 15.5(3)S5, RELEASE SOFTWARE (fc2)",
+            Platform.IOS_XE,
+        ),
+        # classic IOS, even with a 15.x version
+        (
+            "Cisco IOS Software, C2960 Software (C2960-LANBASEK9-M), Version 15.0(2)SE11, "
+            "RELEASE SOFTWARE (fc3)",
+            Platform.IOS,
+        ),
+    ],
+)
+def test_detect_ios_xe_by_banner_not_version(banner, platform):
+    assert detect_platform(banner) is platform
+
+
+def test_iol_version_is_parsed():
+    out = (
+        "Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX-ADVENTERPRISEK9-M), "
+        "Version 17.18.2, RELEASE SOFTWARE (fc3)\n"
+    )
+    facts = parse_facts("ios", {"show version": out})
+    assert facts.platform is Platform.IOS_XE and facts.version == "17.18.2"

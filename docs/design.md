@@ -968,7 +968,7 @@ SQLite in WAL mode with a `schema_version` table and forward-only migrations.
 - **compliance_results**: `job_id`, `device`, `missing_count`, `extra_count`, `details_json`.
 - **device_leases**: `customer`, `device`, `job_id`, `acquired_at`. Primary key (`customer`, `device`). A lease is live while its job's heartbeat is.
 
-Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `running`, `paused`, `completed`, `failed`, `interrupted`, `cancelled`.
+Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `running`, `paused`, `completed`, `partial` (some devices succeeded, some failed), `no_changes`, `failed`, `interrupted`, `cancelled`.
 
 ### known_hosts
 
@@ -1385,6 +1385,7 @@ Changes since the original draft, with reasons:
 - Catalog keys `family` and `show_version_model` are renamed `label` and `model_pattern`: `family` now means a CLI family, and Aruba models come from `show system` and `show modules`, not `show version`.
 - The GUI follows a VS Code-style layout: activity bar, side bar, tabbed editor area, bottom panel, status bar, and command palette.
 - The MCP SDK 2.x renamed FastMCP to `MCPServer`. MCP device connections never accept a new host key, and a change request is `pending` while its check-mode diff runs.
+- Platform detection treats `IOS XE`, `IOS-XE` and `[IOSXE]` (IOL) in `show version` as ios-xe and never guesses from the version number, since IOS-XE 3.x reports 15.x-style versions. Jobs with some successes and some failures end `partial`.
 - Global plays (`customer: global`), bound to a customer at run time; `secret('name')` for the play's own customer; copying a play to another customer.
 - Added the Tsunami password: stored values are encrypted under it, and the MCP server became a relay to the unlocked GUI, so tsunami-mcp.exe never holds credentials. Credential Manager entries use local-machine persistence.
 - SHA-1 SSH algorithms are offered last on every connection, because Paramiko 5 dropped them and many devices in service offer nothing newer.
