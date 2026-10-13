@@ -159,6 +159,7 @@ QToolTip {{ background: {p.editor}; color: {p.text}; border: 1px solid {p.border
 #ActivityBar QToolButton:checked {{ border-left: 2px solid {p.accent}; background: {p.sidebar}; }}
 
 #SideBar {{ background: {p.sidebar}; }}
+#SideScroll, #SideScroll > QWidget#qt_scrollarea_viewport {{ background: {p.sidebar}; border: none; }}
 #SideBarHeader {{ color: {p.muted}; font-weight: 600; letter-spacing: 1px; padding: 10px 12px 6px 12px; }}
 #SideBarAction {{ border: none; border-radius: 4px; padding: 3px; margin-top: 4px; }}
 #SideBarAction:hover {{ background: {p.hover}; }}

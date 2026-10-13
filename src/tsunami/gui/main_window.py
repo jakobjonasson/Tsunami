@@ -29,6 +29,7 @@ from PySide6.QtWidgets import (
     QMainWindow,
     QMessageBox,
     QPushButton,
+    QScrollArea,
     QSplitter,
     QStackedWidget,
     QSystemTrayIcon,
@@ -243,7 +244,14 @@ class MainWindow(QMainWindow):
             page_layout.setSpacing(0)
             page_layout.addWidget(self._side_header(item.title))
             view = item.factory(self.ctx, self)
-            page_layout.addWidget(view, 1)
+            # A stack is as wide as its widest page, shown or not: a view with a wide row
+            # (History's filters) would stop the splitter for every view. Each view scrolls
+            # sideways instead when the side bar is narrower than it.
+            scroll = QScrollArea(objectName="SideScroll")
+            scroll.setWidget(view)
+            scroll.setWidgetResizable(True)
+            scroll.setFrameShape(QFrame.Shape.NoFrame)
+            page_layout.addWidget(scroll, 1)
             self.side_stack.addWidget(page)
             self._views[item.view_id] = page
             page.setProperty("activity_button", item_button)
@@ -276,6 +284,8 @@ class MainWindow(QMainWindow):
         self.horizontal.addWidget(self.side_stack)
         self.horizontal.addWidget(self.vertical)
         self.horizontal.setStretchFactor(1, 1)
+        self.side_stack.setMinimumWidth(180)
+        self.horizontal.setCollapsible(0, False)  # Ctrl+B hides the side bar instead
         self.horizontal.setSizes([300, 1000])
 
         root.addWidget(self.activity)
