@@ -11,7 +11,6 @@ from typing import Any
 from PySide6.QtCore import Qt
 from PySide6.QtGui import QIcon
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -33,7 +32,7 @@ from PySide6.QtWidgets import (
 from tsunami.core.issues import Severity, TsunamiError
 from tsunami.core.models.play import GLOBAL_CUSTOMER
 from tsunami.core.play_edit import copy_play
-from tsunami.gui import theme
+from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
 from tsunami.gui.shell import ActivityItem, Shell
@@ -65,7 +64,7 @@ class CopyPlayDialog(QDialog):
         layout.setSpacing(10)
         layout.addWidget(QLabel(f"Copy {path.as_posix()} for another customer."))
         form = QFormLayout()
-        self.customer_combo = QComboBox()
+        self.customer_combo = wheel.ComboBox()
         for name in sorted(ws.customers if ws else ()):
             if name != own:
                 self.customer_combo.addItem(name, name)

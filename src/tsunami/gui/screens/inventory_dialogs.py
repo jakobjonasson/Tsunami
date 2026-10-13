@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QLineEdit,
     QPlainTextEdit,
     QPushButton,
-    QSpinBox,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
@@ -43,7 +42,7 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import Platform
 from tsunami.core.models.inventory import DEVICE_TYPES, Device, JumpHost
 from tsunami.core.yamlio import load_yaml_text
-from tsunami.gui import theme
+from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
 from tsunami.gui.screens.credentials import prompt_new_login
@@ -145,7 +144,7 @@ class LoginPicker(QWidget):
         self.ctx = ctx
         self.default_label = default_label
         self.load_error: str | None = None
-        self.combo = QComboBox()
+        self.combo = wheel.ComboBox()
         self.combo.setSizeAdjustPolicy(
             QComboBox.SizeAdjustPolicy.AdjustToMinimumContentsLengthWithIcon
         )
@@ -271,17 +270,17 @@ class DeviceDialog(_EditDialog):
         self.name_edit.setPlaceholderText("e.g. sa-as01")
         self.host_edit = QLineEdit(str(device.host) if device else "")
         self.host_edit.setPlaceholderText("IP address or DNS name")
-        self.port_spin = QSpinBox()
+        self.port_spin = wheel.SpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setFixedWidth(96)
         self.port_spin.setValue(device.port if device else 22)
-        self.site_combo = QComboBox()
+        self.site_combo = wheel.ComboBox()
         for name in sorted(inv.sites) if inv else []:
             self.site_combo.addItem(name, name)
         wanted_site = device.site if device else site
         if wanted_site and self.site_combo.findData(wanted_site) >= 0:
             self.site_combo.setCurrentIndex(self.site_combo.findData(wanted_site))
-        self.type_combo = QComboBox()
+        self.type_combo = wheel.ComboBox()
         for slug, label in DEVICE_TYPES.items():
             self.type_combo.addItem(label, slug)
         for slug in sorted(ws.roles if ws is not None else ()):
@@ -291,12 +290,12 @@ class DeviceDialog(_EditDialog):
         if self.type_combo.findData(wanted_type) < 0:
             self.type_combo.addItem(wanted_type, wanted_type)
         self.type_combo.setCurrentIndex(self.type_combo.findData(wanted_type))
-        self.platform_combo = QComboBox()
+        self.platform_combo = wheel.ComboBox()
         for platform in Platform:
             self.platform_combo.addItem(str(platform), str(platform))
         if device:
             self.platform_combo.setCurrentIndex(self.platform_combo.findData(str(device.platform)))
-        self.model_combo = QComboBox()
+        self.model_combo = wheel.ComboBox()
         self._fill_models(device.model if device else None)
         self.platform_combo.currentIndexChanged.connect(lambda _=0: self._fill_models(None))
         self.login = LoginPicker(
@@ -503,7 +502,7 @@ class CustomerDialog(_EditDialog):
         jump_form.setVerticalSpacing(10)
         self.jump_host_edit = QLineEdit(str(jump.host) if jump else "")
         self.jump_host_edit.setPlaceholderText("IP address or DNS name")
-        self.jump_port = QSpinBox()
+        self.jump_port = wheel.SpinBox()
         self.jump_port.setRange(1, 65535)
         self.jump_port.setFixedWidth(96)
         self.jump_port.setValue(jump.port if jump else 22)

@@ -44,7 +44,7 @@ from tsunami.core.render.renderer import Renderer
 from tsunami.core.runner import RunRequest
 from tsunami.core.services import FIRST_STAGE, collect_prompts, play_entry
 from tsunami.core.targets import resolve_targets
-from tsunami.gui import theme
+from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import Shell
 from tsunami.gui.widgets.masked_text import MaskedTextView
@@ -253,7 +253,7 @@ class RunWizard(QWidget):
 
         if self.is_global:
             frame, card = _card("Customer")
-            self.customer_combo = QComboBox()
+            self.customer_combo = wheel.ComboBox()
             self.customer_combo.setObjectName("Customer")
             self.customer_combo.addItem("Choose a customer…", None)
             for name in sorted(self.ctx.workspace.customers):  # type: ignore[union-attr]
@@ -386,7 +386,7 @@ class RunWizard(QWidget):
         frame, layout = _card("Options")
         form = QFormLayout()
         form.setContentsMargins(0, 0, 0, 0)
-        self.mode_combo = QComboBox()
+        self.mode_combo = wheel.ComboBox()
         modes = [RunMode.CHECK, RunMode.APPLY, RunMode.RENDER]
         if self.play.type == PlayType.BASELINE:
             modes.append(RunMode.COMPLIANCE)

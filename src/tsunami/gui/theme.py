@@ -16,8 +16,6 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
-from tsunami.gui import wheel
-
 UI_FONTS = ("Segoe UI Variable Text", "Segoe UI", "Inter", "Arial")
 MONO_FONTS = ("Cascadia Mono", "Cascadia Code", "Consolas", "Courier New")
 
@@ -114,7 +112,7 @@ def mono_font(point_size: float = 9.5) -> QFont:
 
 
 def apply(app: QApplication, palette: Palette) -> None:
-    app.setStyle(wheel.style())  # Fusion, with dropdowns ignoring the mouse wheel
+    app.setStyle("Fusion")
     qp = QPalette()
     roles = {
         QPalette.ColorRole.Window: palette.sidebar,
@@ -198,7 +196,7 @@ QLineEdit, QSpinBox, QComboBox, QPlainTextEdit[editable="true"] {{
     background: {p.input}; border: 1px solid {p.border}; border-radius: 4px; padding: 4px 6px; }}
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid {p.accent}; }}
 /* A styled spin box loses Fusion's arrows (they draw as empty boxes); numbers are typed,
-   and the arrow keys and mouse wheel still step them. */
+   and the arrow keys still step them (the wheel scrolls the page: gui/wheel.py). */
 QAbstractSpinBox::up-button, QAbstractSpinBox::down-button {{ width: 0; border: none; }}
 QLineEdit[invalid="true"] {{ border: 1px solid {p.error}; }}
 

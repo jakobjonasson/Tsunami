@@ -225,8 +225,11 @@ class ApprovalsView(QWidget):
         self.refresh_button.clicked.connect(self.refresh)
         self.list.itemClicked.connect(self._open)
         self.list.itemActivated.connect(self._open)
-        ctx.approvals_changed.connect(lambda _n: self.refresh())
+        ctx.approvals_changed.connect(self._on_approvals_changed)
         ctx.jobs_changed.connect(self.refresh)
+        self.refresh()
+
+    def _on_approvals_changed(self, _count: int) -> None:
         self.refresh()
 
     def refresh(self) -> None:

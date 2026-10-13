@@ -10,11 +10,6 @@ from PySide6.QtCore import QPoint, QPointF, Qt
 from PySide6.QtGui import QWheelEvent
 from PySide6.QtWidgets import (
     QApplication,
-    QComboBox,
-    QScrollArea,
-    QSpinBox,
-    QVBoxLayout,
-    QWidget,
 )
 
 from tsunami.core.models.play import RunMode
@@ -160,25 +155,17 @@ def test_copy_to_customer(qtbot, main_window, gui_ctx, workspace_root, monkeypat
     assert f"play:{new.as_posix()}" in main_window._tabs
 
 
-def test_wheel_does_not_change_spin_box_but_scrolls_page(qtbot):
-    page = QWidget()
-    col = QVBoxLayout(page)
-    spin = QSpinBox()  # guarded by the style when polished
+def test_wheel_never_changes_a_number_box_or_dropdown(qtbot):
+    """The boxes leave the wheel unhandled, so Qt scrolls the page with it. (Qt 6 passes
+    only real, spontaneous wheel events up to the parent, so the scroll itself is Qt's.)"""
+    from tsunami.gui.wheel import ComboBox, SpinBox
+
+    spin = SpinBox()
     spin.setValue(5)
-    combo = QComboBox()
+    combo = ComboBox()
     combo.addItems(["a", "b", "c"])
-    col.addWidget(spin)
-    col.addWidget(combo)
-    col.addSpacing(2000)
-    area = QScrollArea()
-    area.setWidgetResizable(True)
-    area.setWidget(page)
-    area.resize(300, 200)
-    qtbot.addWidget(area)
-    area.show()
-    qtbot.waitExposed(area)
-    bar = area.verticalScrollBar()
-    assert bar.maximum() > 0 and bar.value() == 0
+    for widget in (spin, combo):
+        qtbot.addWidget(widget)
 
     def wheel(target, delta):
         pos = QPointF(target.width() / 2, target.height() / 2)
@@ -193,13 +180,9 @@ def test_wheel_does_not_change_spin_box_but_scrolls_page(qtbot):
             False,
         )
         QApplication.sendEvent(target, event)
+        return event.isAccepted()
 
-    wheel(spin, -120)
-    assert spin.value() == 5
-    assert bar.value() > 0
-    before = bar.value()
-    wheel(combo, 120)
-    assert combo.currentIndex() == 0
-    assert bar.value() < before
+    assert wheel(spin, -120) is False and spin.value() == 5
+    assert wheel(combo, -120) is False and combo.currentIndex() == 0
     qtbot.keyClick(spin, Qt.Key.Key_Up)  # keys still work
     assert spin.value() == 6

@@ -23,14 +23,6 @@ LOGIN_PASSWORD = "Login-Pass-1234"
 TACACS_SECRET = "Real-Tacacs-Key-77"
 
 
-@pytest.fixture(autouse=True)
-def wheel_guard(qapp):
-    """The no-wheel style, as app.py and theme.apply set it."""
-    from tsunami.gui import wheel
-
-    return wheel.install(qapp)
-
-
 @pytest.fixture
 def workspace_root(tmp_path) -> Path:
     root = tmp_path / "ws"
@@ -81,6 +73,14 @@ def main_window(qtbot, gui_ctx):
     qtbot.addWidget(window)
     yield window
     window.poller.stop()
+    # A run thread or workspace load that outlives its window crashes the next test
+    # (Qt destroys a running QThread, or a late signal reaches a deleted widget).
+    for thread in list(window._threads):
+        thread.cancel()
+        thread.wait(15000)
+    from PySide6.QtCore import QThreadPool
+
+    QThreadPool.globalInstance().waitForDone(15000)
 
 
 def all_widget_text(widget) -> str:

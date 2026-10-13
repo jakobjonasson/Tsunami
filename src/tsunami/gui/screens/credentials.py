@@ -13,7 +13,6 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
 from PySide6.QtWidgets import (
-    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -34,6 +33,7 @@ from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports import DeviceTransport
 from tsunami.core.transports.base import ConnectTarget
+from tsunami.gui import wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import ActivityItem, Shell
 
@@ -171,7 +171,7 @@ class CredentialsView(QWidget):
 
         secrets = QGroupBox("Template secrets")
         box = QVBoxLayout(secrets)
-        self.customer_combo = QComboBox()
+        self.customer_combo = wheel.ComboBox()
         self.customer_combo.currentIndexChanged.connect(lambda _=0: self.refresh_secrets())
         box.addWidget(self.customer_combo)
         self.secret_list = QListWidget()

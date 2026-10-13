@@ -19,7 +19,6 @@ from PySide6.QtWidgets import (
     QComboBox,
     QLabel,
     QLineEdit,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -28,7 +27,7 @@ from tsunami.core.catalog import load_catalog
 from tsunami.core.models.common import Platform
 from tsunami.core.models.play import Prompt, PromptType
 from tsunami.core.prompts import PromptContext
-from tsunami.gui import theme
+from tsunami.gui import theme, wheel
 
 VENDOR_TITLES = {"cisco": "Cisco", "aruba": "Aruba"}
 _COMBO_TYPES = {PromptType.CHOICE, PromptType.SITE, PromptType.ROLE, PromptType.MODEL}
@@ -116,7 +115,7 @@ def _default(prompt: Prompt) -> Any:
 
 def model_combo(platforms: Collection[Platform] | None = None) -> QComboBox:
     """Catalog models grouped by vendor. Unsupported platforms are listed but disabled."""
-    combo = QComboBox()
+    combo = wheel.ComboBox()
     combo.addItem("", "")
     for vendor, entries in load_catalog().by_vendor().items():
         shown = [e for e in entries if platforms is None or e.platform in platforms]
@@ -147,7 +146,7 @@ def _combo_field(
     combo: QComboBox | None = None,
 ) -> tuple[QComboBox, Callable[[], Any], Callable[[Any], None]]:
     if combo is None:
-        combo = QComboBox()
+        combo = wheel.ComboBox()
         combo.addItem("", "")
         for text, data in items:
             combo.addItem(text, data)
@@ -173,7 +172,7 @@ def make_prompt_widget(
     """The editor for one prompt. `platforms` limits the model dropdown."""
     ptype = prompt.type
     if ptype in (PromptType.VLAN, PromptType.INT):
-        spin = QSpinBox()
+        spin = wheel.SpinBox()
         if ptype == PromptType.VLAN:
             spin.setRange(1, 4094)
         else:

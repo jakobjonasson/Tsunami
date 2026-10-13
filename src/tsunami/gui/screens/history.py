@@ -22,7 +22,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.models.jobs import ALARM_DEVICE_STATUSES, JobRecord
-from tsunami.gui import theme
+from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
 from tsunami.gui.shell import ActivityItem, Shell
@@ -93,7 +93,7 @@ class HistoryView(QWidget):
         comp_page = QWidget()
         comp_layout = QVBoxLayout(comp_page)
         comp_layout.setContentsMargins(8, 8, 8, 8)
-        self.compliance_customer = QComboBox()
+        self.compliance_customer = wheel.ComboBox()
         self.compliance_customer.currentIndexChanged.connect(self._render_compliance)
         comp_layout.addWidget(self.compliance_customer)
         self.compliance_table = _table(["Time", "Device", "Missing", "Extra"])
@@ -107,7 +107,7 @@ class HistoryView(QWidget):
 
     @staticmethod
     def _combo(tooltip: str) -> QComboBox:
-        combo = QComboBox()
+        combo = wheel.ComboBox()
         combo.addItem(ALL)
         combo.setToolTip(tooltip)
         return combo

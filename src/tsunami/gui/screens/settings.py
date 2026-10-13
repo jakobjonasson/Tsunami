@@ -16,7 +16,6 @@ from pydantic import ValidationError
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
-    QComboBox,
     QFileDialog,
     QFormLayout,
     QGroupBox,
@@ -28,7 +27,6 @@ from PySide6.QtWidgets import (
     QPlainTextEdit,
     QPushButton,
     QScrollArea,
-    QSpinBox,
     QVBoxLayout,
     QWidget,
 )
@@ -39,6 +37,7 @@ from tsunami.core.models.common import PlatformFamily
 from tsunami.core.models.policy import McpPolicy
 from tsunami.core.models.settings import AppSettings
 from tsunami.core.policy import PolicyError, load_policy, save_policy
+from tsunami.gui import wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import ActivityItem, Shell
 
@@ -161,15 +160,15 @@ class SettingsTab(QScrollArea):
         row.addWidget(self.workspace_edit, 1)
         row.addWidget(browse)
         form.addRow("Workspace", row)
-        self.theme_combo = QComboBox()
+        self.theme_combo = wheel.ComboBox()
         self.theme_combo.addItems(["system", "light", "dark"])
         self.theme_combo.setCurrentText(s.theme)
         form.addRow("Theme", self.theme_combo)
-        self.log_combo = QComboBox()
+        self.log_combo = wheel.ComboBox()
         self.log_combo.addItems(["DEBUG", "INFO", "WARNING", "ERROR"])
         self.log_combo.setCurrentText(s.log_level)
         form.addRow("Log level", self.log_combo)
-        self.retention_spin = QSpinBox()
+        self.retention_spin = wheel.SpinBox()
         self.retention_spin.setRange(1, 1000)
         self.retention_spin.setValue(s.backup_retention)
         form.addRow("Backup retention", self.retention_spin)
@@ -181,7 +180,7 @@ class SettingsTab(QScrollArea):
         )
         form.addRow("SSH", self.legacy_ssh_check)
         lock_row = QHBoxLayout()
-        self.auto_lock_spin = QSpinBox()
+        self.auto_lock_spin = wheel.SpinBox()
         self.auto_lock_spin.setRange(0, 480)
         self.auto_lock_spin.setSuffix(" min")
         self.auto_lock_spin.setSpecialValueText("never")
@@ -274,7 +273,7 @@ class SettingsTab(QScrollArea):
         self.mcp_enabled = QCheckBox("MCP server enabled")
         self.mcp_enabled.setChecked(policy.enabled)
         form.addRow(self.mcp_enabled)
-        self.apply_combo = QComboBox()
+        self.apply_combo = wheel.ComboBox()
         self.apply_combo.addItems(["never", "lab_only"])
         self.apply_combo.setCurrentText(policy.apply)
         form.addRow("Apply mode", self.apply_combo)
@@ -307,15 +306,15 @@ class SettingsTab(QScrollArea):
         layout.addWidget(self.pipe_lines)
 
         limits = QFormLayout()
-        self.max_targets = QSpinBox()
+        self.max_targets = wheel.SpinBox()
         self.max_targets.setRange(1, 200)
         self.max_targets.setValue(policy.max_check_targets)
         limits.addRow("Max check targets", self.max_targets)
-        self.rate_limit = QSpinBox()
+        self.rate_limit = wheel.SpinBox()
         self.rate_limit.setRange(1, 600)
         self.rate_limit.setValue(policy.rate_limit_per_minute)
         limits.addRow("Rate limit per minute", self.rate_limit)
-        self.expiry = QSpinBox()
+        self.expiry = wheel.SpinBox()
         self.expiry.setRange(1, 1440)
         self.expiry.setValue(policy.approval_expiry_minutes)
         limits.addRow("Approval expiry (minutes)", self.expiry)
