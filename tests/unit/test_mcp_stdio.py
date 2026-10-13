@@ -10,6 +10,8 @@ import asyncio
 import os
 import shutil
 import sys
+import threading
+from multiprocessing.connection import Client
 from pathlib import Path
 
 import pytest
@@ -19,7 +21,7 @@ from tsunami.core.models.policy import McpPolicy
 from tsunami.core.models.settings import AppSettings, save_settings
 from tsunami.core.policy import save_policy
 from tsunami.core.secret_store import KeyringSecretStore
-from tsunami.mcp_server.bridge import BridgeServer, token_path
+from tsunami.mcp_server.bridge import BridgeServer, pipe_address, token_path
 from tsunami.mcp_server.enforcement import McpApp
 from tsunami.mcp_server.tools import Tools
 
@@ -86,3 +88,21 @@ def test_closed_tsunami_answers_503(app_paths):
     names, result = run_session()
     assert len(names) == 18  # the server still starts and lists its tools
     assert result.is_error and "503 Tsunami is not running" in str(result.content)
+
+
+def test_stop_returns_when_the_serve_thread_left_before_accept(app_paths):
+    """The race that hung CI: the serve thread sees the stop flag and leaves before it
+    reaches accept(), so nobody answers stop()'s wake-up connection. stop() must return."""
+    server = BridgeServer(app_paths, lambda tool, args: {}, is_unlocked=lambda: True)
+    server.start()
+    server._stopped.set()  # let the serve thread leave, as it would mid-race
+    Client(pipe_address(app_paths), family="AF_PIPE", authkey=server._token).close()
+    server._thread.join(timeout=10)
+    assert not server._thread.is_alive()
+    server._stopped.clear()
+
+    stopper = threading.Thread(target=server.stop, daemon=True)
+    stopper.start()
+    stopper.join(timeout=30)
+    assert not stopper.is_alive(), "stop() hung waiting for a serve thread that had left"
+    assert not token_path(app_paths).exists()

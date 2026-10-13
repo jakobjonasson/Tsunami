@@ -77,12 +77,23 @@ class BridgeServer:
         if self._listener is None or self._stopped.is_set():
             return
         self._stopped.set()
-        try:  # accept() on a pipe does not wake when closed; a connection wakes it
-            Client(pipe_address(self.paths), family="AF_PIPE", authkey=self._token).close()
-        except OSError:
-            pass
+        # accept() on a pipe does not wake when the listener closes; a connection wakes it.
+        # Connect from a helper thread: if the serve thread saw the flag and left before
+        # reaching accept(), nobody answers the handshake, and stop() must not wait for it.
+        # Closing the listener then breaks that pipe, so the helper ends either way.
+        waker = threading.Thread(target=self._wake, name="mcp-bridge-wake", daemon=True)
+        waker.start()
+        if self._thread is not None:
+            self._thread.join(timeout=5)
         self._listener.close()
+        waker.join(timeout=5)
         token_path(self.paths).unlink(missing_ok=True)
+
+    def _wake(self) -> None:
+        try:
+            Client(pipe_address(self.paths), family="AF_PIPE", authkey=self._token).close()
+        except (OSError, EOFError, AuthenticationError):
+            pass
 
     def _serve(self) -> None:
         assert self._listener is not None

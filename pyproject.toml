@@ -55,6 +55,8 @@ select = ["E", "F", "W", "I", "UP", "B", "T20"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 addopts = "-ra --strict-markers --import-mode=importlib"
+# A test stuck this long prints every thread's stack (CI also has a job time limit).
+faulthandler_timeout = 300
 markers = [
     "cml: integration tests against a CML lab (run with TSUNAMI_CML=1)",
     "serial: tests that need a real or virtual COM port (run with TSUNAMI_SERIAL=1)",
