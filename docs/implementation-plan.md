@@ -12,7 +12,7 @@ This file goes with [design.md](design.md), which is the spec. The spec says *wh
 |---|---|
 | Product and package name | `tsunami`. Exes: `tsunami.exe` and `tsunami-mcp.exe`. Keyring service: `tsunami`. Data folders: `%LOCALAPPDATA%\Tsunami` and `%APPDATA%\Tsunami`. |
 | Repo location | `C:\dev\tsunami`, outside OneDrive. Git is the backup. |
-| Remote | Private GitHub repo `jakobjonasson/Tsunami`. |
+| Remote | Public GitHub repo `jakobjonasson/Tsunami`. |
 | Real names | No real customer or employer names in anything committed. The spec and fixtures use placeholders (`acme`) and RFC 5737 addresses. A local `pre-commit` and `commit-msg` hook blocks the terms listed in `.git/info/denylist`. The hook and the list are deliberately not versioned. |
 | Spec fixes | Agreed and applied: per-customer host keys, no username in exact-value redaction, the `add_to_inventory` mapping, and job heartbeats with device leases. See design.md, Revision notes. |
 | Switch model dropdown | A hardware catalog of common Cisco and Aruba switch families (`core/data/hardware.yml`), chosen through a new `model` prompt type. See design.md, Hardware catalog. |
