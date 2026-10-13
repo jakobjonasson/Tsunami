@@ -25,7 +25,7 @@ TACACS_SECRET = "Real-Tacacs-Key-77"
 
 @pytest.fixture(autouse=True)
 def wheel_guard(qapp):
-    """The app-wide wheel filter, as app.py installs it."""
+    """The no-wheel style, as app.py and theme.apply set it."""
     from tsunami.gui import wheel
 
     return wheel.install(qapp)

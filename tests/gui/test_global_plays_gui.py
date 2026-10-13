@@ -163,7 +163,7 @@ def test_copy_to_customer(qtbot, main_window, gui_ctx, workspace_root, monkeypat
 def test_wheel_does_not_change_spin_box_but_scrolls_page(qtbot):
     page = QWidget()
     col = QVBoxLayout(page)
-    spin = QSpinBox()
+    spin = QSpinBox()  # guarded by the style when polished
     spin.setValue(5)
     combo = QComboBox()
     combo.addItems(["a", "b", "c"])

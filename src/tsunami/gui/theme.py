@@ -16,6 +16,8 @@ from PySide6.QtCore import Qt
 from PySide6.QtGui import QColor, QFont, QPalette
 from PySide6.QtWidgets import QApplication
 
+from tsunami.gui import wheel
+
 UI_FONTS = ("Segoe UI Variable Text", "Segoe UI", "Inter", "Arial")
 MONO_FONTS = ("Cascadia Mono", "Cascadia Code", "Consolas", "Courier New")
 
@@ -112,7 +114,7 @@ def mono_font(point_size: float = 9.5) -> QFont:
 
 
 def apply(app: QApplication, palette: Palette) -> None:
-    app.setStyle("Fusion")
+    app.setStyle(wheel.style())  # Fusion, with dropdowns ignoring the mouse wheel
     qp = QPalette()
     roles = {
         QPalette.ColorRole.Window: palette.sidebar,
