@@ -34,12 +34,17 @@ per BMP character, i.e. 1,280 characters), not UTF-8.
 
 Errors raised here never include a secret value, and keyring backend exception
 text is discarded (only the exception class name is reported).
+
+Every write and delete is logged (app.log) with the entry name and the code that asked
+for it, never the value, so an entry that goes missing can be traced.
 """
 
 from __future__ import annotations
 
 import json
+import logging
 import os
+import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -51,6 +56,8 @@ import keyring.errors
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
 from tsunami.core.vault import TOKEN_PREFIX, LockedCipher, VaultLocked
+
+log = logging.getLogger(__name__)
 
 SERVICE = "tsunami"
 TEST_SERVICE = "tsunami-test"
@@ -298,8 +305,10 @@ class KeyringSecretStore:
         except Exception as exc:  # noqa: BLE001
             raise self._backend_error("writing", label, exc) from None
         self._index_add(key)
+        log.info("credential store: wrote %s (%s, from %s)", key, self._service, _caller())
 
     def _delete(self, key: str, label: str) -> None:
+        log.info("credential store: deleting %s (%s, from %s)", key, self._service, _caller())
         try:
             keyring.delete_password(self._service, key)
         except keyring.errors.PasswordDeleteError:
@@ -357,3 +366,13 @@ class KeyringSecretStore:
     def _index_remove(self, key: str) -> None:
         if self._use_index():
             self._index_write([n for n in self._index_read() if n != key])
+
+
+def _caller() -> str:
+    """The first function outside this module on the stack: who asked for the change."""
+    frame = sys._getframe(1)
+    while frame is not None and frame.f_globals.get("__name__") == __name__:
+        frame = frame.f_back
+    if frame is None:
+        return "unknown"
+    return f"{frame.f_globals.get('__name__', '?')}.{frame.f_code.co_name}"

@@ -34,6 +34,8 @@ from tsunami.gui.context import AppContext
 from tsunami.gui.shell import Shell
 
 COLUMNS = ("Name", "Type", "Platform", "Model", "Host", "Site", "Login")
+_STRETCH_COLUMNS = ("Model", "Login")
+RUN_DISABLED_TIP = "Select one or more devices to run a play"
 _NAME_ROLE = Qt.ItemDataRole.UserRole
 _ROLE_ROLE = Qt.ItemDataRole.UserRole + 1
 
@@ -225,11 +227,18 @@ class DeviceListView(QWidget):
         self.table.setShowGrid(False)
         self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
-        header.setSectionResizeMode(QHeaderView.ResizeMode.Interactive)
-        header.setStretchLastSection(True)
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        for col, width in enumerate((150, 170, 90, 110, 120, 90)):
-            self.table.setColumnWidth(col, width)
+        header.setMinimumSectionSize(60)
+        # Short columns size to their contents; Model and Login share what is left, so the
+        # table fits without a horizontal scroll bar until the contents alone outgrow it.
+        header.setStretchLastSection(False)
+        for col, name in enumerate(COLUMNS):
+            mode = (
+                QHeaderView.ResizeMode.Stretch
+                if name in _STRETCH_COLUMNS
+                else QHeaderView.ResizeMode.ResizeToContents
+            )
+            header.setSectionResizeMode(col, mode)
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.cellDoubleClicked.connect(self._open_row)
         layout.addWidget(self.table, 1)
@@ -344,7 +353,9 @@ class DeviceListView(QWidget):
                 self.table.selectRow(row)
 
     def _update_buttons(self) -> None:
-        self.run_button.setEnabled(bool(self.selected_names()))
+        has_selection = bool(self.selected_names())
+        self.run_button.setEnabled(has_selection)
+        self.run_button.setToolTip("" if has_selection else RUN_DISABLED_TIP)
         self.select_all_button.setEnabled(bool(self.visible_names()))
 
     def _open_row(self, row: int, _col: int) -> None:

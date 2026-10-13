@@ -6,7 +6,7 @@ from PySide6.QtCore import Qt
 from PySide6.QtWidgets import QTreeWidgetItem
 
 from tsunami.core.models.jobs import Actor, DeviceStatus, JobStatus
-from tsunami.gui.screens.history import HistoryView
+from tsunami.gui.screens.history import HistoryTab
 from tsunami.gui.screens.inventory import DeviceView, InventoryView
 from tsunami.gui.screens.plays import PlaysView, PlayView
 from tsunami.gui.screens.workspace import WorkspaceView
@@ -141,8 +141,13 @@ def test_plays_tree_and_tab(main_window):
     assert tab.run_button.property("primary") == "true"
 
 
+def _history_tab(window) -> HistoryTab:
+    window.run_command("history.open")
+    return window._tabs["history"]
+
+
 def test_history_updates_and_filters(main_window, gui_ctx):
-    view = _view(main_window, HistoryView)
+    view = _history_tab(main_window)
     assert view.jobs_table.rowCount() == 0
     first = _make_job(gui_ctx)
     other = _make_job(gui_ctx, customer="globex", play="plays/push/other.yml", actor=Actor.MCP)
@@ -165,7 +170,7 @@ def test_history_updates_and_filters(main_window, gui_ctx):
 
 
 def test_history_alarm_and_open(main_window, gui_ctx):
-    view = _view(main_window, HistoryView)
+    view = _history_tab(main_window)
     ok = _make_job(gui_ctx)
     bad = _make_job(gui_ctx)
     gui_ctx.history.add_devices(bad, ["sa-as01"])

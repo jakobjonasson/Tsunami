@@ -65,9 +65,13 @@ def open_run_wizard(
     play_path: Path | str,
     devices: list[str] | None = None,
     customer: str | None = None,
+    *,
+    prompts: dict[str, Any] | None = None,
+    mode: RunMode | None = None,
 ) -> QWidget | None:
     """Open (or focus) the run wizard tab for a play. With devices, only those start ticked.
-    For a global play, customer preselects the Customer dropdown."""
+    For a global play, customer preselects the Customer dropdown. prompts and mode fill
+    the form from an earlier job (the job view's fallback when it cannot rebuild one)."""
     if ctx.workspace is None:
         shell.notify("Open a workspace first.", "warning")
         return None
@@ -104,6 +108,10 @@ def open_run_wizard(
         tab.set_customer(customer)
     if devices is not None and isinstance(tab, RunWizard):
         tab.preselect_devices(devices)
+    if prompts and isinstance(tab, RunWizard):
+        tab.fill_prompts(prompts)
+    if mode is not None and isinstance(tab, RunWizard):
+        tab.set_mode(mode)
     return tab
 
 
@@ -464,6 +472,20 @@ class RunWizard(QWidget):
             item = self.target_list.item(i)
             on = item.data(Qt.ItemDataRole.UserRole) in wanted
             item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
+
+    def fill_prompts(self, values: dict[str, Any]) -> None:
+        """Fill shared prompts from an earlier job; a value that no longer fits is skipped."""
+        for name, value in values.items():
+            field = self.fields.get(name)
+            if field is None:
+                continue
+            try:
+                field.set_value(value)
+            except (TypeError, ValueError):
+                try:
+                    field.set_value(int(value))
+                except (TypeError, ValueError):
+                    continue
 
     def set_device_checked(self, name: str, checked: bool) -> None:
         for i in range(self.target_list.count()):

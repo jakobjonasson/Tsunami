@@ -7,6 +7,11 @@ redacted or masked: event text by the runner, history text by the pipeline.
 A device that may be half-configured (rollback_failed, interrupted) raises a red banner
 that only the Acknowledge button dismisses.
 
+A finished job offers to run again (core/rerun.py): Apply changes after a check, pinned
+to the renders the check showed; Retry on the devices that did not complete; Run again
+on all of them. A job that history cannot rebuild (per-device answers, an initial play)
+opens the run wizard filled in instead.
+
 See design.md, GUI: Views (Job view), Behavior rules; Execution engine: Device level.
 """
 
@@ -36,6 +41,8 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tsunami.core import rerun
+from tsunami.core.approvals import would_change
 from tsunami.core.events import (
     BatchFinished,
     CanaryWaiting,
@@ -53,6 +60,8 @@ from tsunami.core.models.jobs import (
     DeviceStatus,
     JobRecord,
 )
+from tsunami.core.models.play import RunMode
+from tsunami.core.runner import RunRequest
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
@@ -96,6 +105,10 @@ _MUTED = {
     DeviceStatus.DEVICE_BUSY,
     DeviceStatus.CANCELLED,
 }
+
+
+CHANGES = "changes to apply"  # a check-mode device an apply would change
+NO_CHANGES = "no changes"
 
 
 def status_color(status: DeviceStatus) -> str:
@@ -209,6 +222,22 @@ class JobView(QWidget):
         titles.addWidget(self.title_label)
         titles.addWidget(self.meta_label)
         head.addLayout(titles, 1)
+        self.apply_button = QPushButton("Apply changes…")
+        self.apply_button.setProperty("primary", True)
+        self.apply_button.setToolTip(
+            "Apply what this check found, on the devices it would change. A device whose "
+            "config would now render differently is stopped instead."
+        )
+        self.apply_button.clicked.connect(self.apply_checked)
+        self.retry_button = QPushButton("Retry failed")
+        self.retry_button.setToolTip("Run this job again on the devices that did not complete")
+        self.retry_button.clicked.connect(self.retry_failed)
+        self.again_button = QPushButton("Run again")
+        self.again_button.setToolTip("Run this job again on all its devices, with the same answers")
+        self.again_button.clicked.connect(self.run_again)
+        for button in (self.apply_button, self.retry_button, self.again_button):
+            button.setVisible(False)
+            head.addWidget(button)
         self.copy_button = QPushButton("Copy summary")
         self.copy_button.clicked.connect(self.copy_summary)
         self.cancel_button = QPushButton("Cancel run")
@@ -426,6 +455,82 @@ class JobView(QWidget):
         self._acknowledged = True
         self.alarm_banner.setVisible(False)
 
+    def apply_checked(self) -> None:
+        if self.job_id is None:
+            return
+        devices = rerun.changed_devices(self.ctx.history, self.job_id)
+        if not devices:
+            return
+        more = f" and {len(devices) - 10} more" if len(devices) > 10 else ""
+        n = len(devices)
+        if not _confirm(
+            self,
+            "Apply changes",
+            f"Apply '{self._play_name()}' to {n} device{'s' if n != 1 else ''}: "
+            f"{', '.join(devices[:10])}{more}?\n\n"
+            "This changes the device configuration. Only the config this check showed is "
+            "pushed: a device whose config would now render differently is stopped.",
+        ):
+            return
+        self._rerun(rerun.apply_checked_request, RunMode.APPLY, devices)
+
+    def retry_failed(self) -> None:
+        if self.job_id is None:
+            return
+        devices = rerun.retry_devices(self.ctx.history, self.job_id)
+        if devices and self._confirm_rerun("Retry failed", devices):
+            self._rerun(rerun.retry_request, None, devices)
+
+    def run_again(self) -> None:
+        if self.job_id is None:
+            return
+        devices = [d.device for d in self.ctx.history.devices(self.job_id)]
+        if self._confirm_rerun("Run again", devices):
+            self._rerun(rerun.again_request, None, devices)
+
+    def _confirm_rerun(self, title: str, devices: list[str]) -> bool:
+        if self._mode() != str(RunMode.APPLY):
+            return True  # check, render and compliance change nothing
+        n = len(devices)
+        return _confirm(
+            self,
+            title,
+            f"Apply '{self._play_name()}' again to {n} device{'s' if n != 1 else ''}? "
+            "This changes the device configuration.",
+        )
+
+    def _rerun(self, build: Any, mode: RunMode | None, devices: list[str]) -> None:
+        """Run the rebuilt request, or open the run wizard filled in if it cannot be."""
+        workspace, job = self.ctx.workspace, self._job
+        if workspace is None or job is None or self.job_id is None:
+            self.shell.notify("Open a workspace first.", "warning")
+            return
+        problem = rerun.rebuild_problem(workspace, job)
+        if problem is not None:
+            entry = workspace.plays.get(Path(job.play_path))
+            if entry is None or entry.play is None:
+                self.shell.notify(f"Can't run this again: {problem}.", "error")
+                return
+            from tsunami.gui.screens.run_wizard import open_run_wizard
+
+            self.shell.notify(f"Check the run wizard: {problem}.", "info")
+            open_run_wizard(
+                self.ctx,
+                self.shell,
+                job.play_path,
+                devices=devices,
+                customer=job.customer,
+                prompts=dict(job.prompts),
+                mode=mode or RunMode(job.mode),
+            )
+            return
+        try:
+            request: RunRequest = build(self.ctx.history, workspace, self.job_id)
+        except TsunamiError as exc:
+            self.shell.notify(str(exc), "error")
+            return
+        self.shell.start_run(request, f"{self._play_name()} ({request.mode})")
+
     def copy_summary(self) -> None:
         QApplication.clipboard().setText(self.summary_markdown())
         self.shell.notify("Summary copied to the clipboard.", "info")
@@ -474,7 +579,7 @@ class JobView(QWidget):
         return Counter(str(s) for s in self._status.values())
 
     def _counts_text(self) -> str:
-        counts = self.counts()
+        counts = self._labels()
         total = sum(counts.values())
         if not total:
             return "no devices yet"
@@ -493,9 +598,39 @@ class JobView(QWidget):
         self.meta_label.setText(" | ".join(b for b in bits if b))
         self.copy_button.setEnabled(self.job_id is not None)
         self.cancel_button.setEnabled(self._thread is not None and not self._finished)
+        self._refresh_rerun_buttons()
         self._refresh_table()
         self._refresh_alarm()
         self._refresh_detail()
+
+    def _refresh_rerun_buttons(self) -> None:
+        changed: list[str] = []
+        retry: list[str] = []
+        done = self._finished and self.job_id is not None and self.ctx.workspace is not None
+        if done:
+            try:
+                changed = rerun.changed_devices(self.ctx.history, self.job_id)
+                retry = rerun.retry_devices(self.ctx.history, self.job_id)
+            except TsunamiError:
+                done = False
+        self.apply_button.setVisible(bool(changed))
+        self.apply_button.setText(f"Apply changes ({len(changed)})…")
+        self.retry_button.setVisible(bool(retry))
+        self.retry_button.setText(f"Retry failed ({len(retry)})")
+        self.again_button.setVisible(done)
+
+    def label(self, name: str) -> str:
+        """What the status column says: in a check, whether an apply would change it."""
+        status = self._status.get(name, DeviceStatus.PENDING)
+        if status != DeviceStatus.SUCCESS or self._mode() != str(RunMode.CHECK):
+            return str(status)
+        rec = self._records.get(name)
+        if rec is not None and (rec.diff_redacted is not None or rec.render_masked):
+            return CHANGES if would_change(rec) else NO_CHANGES
+        return CHANGES if self._detail.get(name, "").startswith(CHANGES) else NO_CHANGES
+
+    def _labels(self) -> Counter[str]:
+        return Counter(self.label(name) for name in self._status)
 
     def _elapsed(self, name: str) -> str:
         rec = self._records.get(name)
@@ -511,10 +646,16 @@ class JobView(QWidget):
     def _refresh_table(self) -> None:
         for name, row in self._rows.items():
             status = self._status.get(name, DeviceStatus.PENDING)
+            label = self.label(name)
             color = status_color(status)
+            glyph = _ICONS.get(status, "circle-outline")
+            if label == CHANGES:
+                color, glyph = theme.current().info, "diff"
+            elif label == NO_CHANGES:
+                color, glyph = theme.current().muted, "pass"
             status_item = self.table.item(row, 1)
-            status_item.setText(str(status))
-            status_item.setIcon(icon(_ICONS.get(status, "circle-outline"), color))
+            status_item.setText(label)
+            status_item.setIcon(icon(glyph, color))
             status_item.setForeground(QColor(color))
             self.table.item(row, 2).setText(self._elapsed(name))
             rec = self._records.get(name)
@@ -598,10 +739,11 @@ class JobView(QWidget):
             "| Status | Devices |",
             "| --- | --- |",
         ]
-        for status, n in sorted(self.counts().items(), key=lambda kv: -kv[1]):
+        for status, n in sorted(self._labels().items(), key=lambda kv: -kv[1]):
             lines.append(f"| {status} | {n} |")
         lines += ["", "| Device | Status | Error |", "| --- | --- | --- |"]
-        for name, status in self._status.items():
+        for name in self._status:
+            status = self.label(name)
             rec = self._records.get(name)
             error = ""
             if rec is not None:
@@ -612,3 +754,15 @@ class JobView(QWidget):
                     error = f"{error} [rollback: {rec.rollback_status}]".strip()
             lines.append(f"| {_cell(name)} | {status} | {_cell(error)} |")
         return "\n".join(lines) + "\n"
+
+
+def _confirm(parent: QWidget, title: str, text: str) -> bool:
+    """Yes/No through QMessageBox.question, so tests answer every confirmation one way."""
+    answer = QMessageBox.question(
+        parent,
+        title,
+        text,
+        QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
+        QMessageBox.StandardButton.No,
+    )
+    return answer == QMessageBox.StandardButton.Yes

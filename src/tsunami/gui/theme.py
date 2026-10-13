@@ -188,6 +188,7 @@ QTreeView, QListView, QTableView, QPlainTextEdit, QTextEdit {{
     selection-color: {p.text}; outline: 0; }}
 #SideBar QTreeView, #SideBar QListView {{ background: {p.sidebar}; }}
 QTreeView::item, QListView::item {{ padding: 3px 2px; }}
+QTableView::item {{ padding: 3px 6px; }}
 QTreeView::item:hover, QListView::item:hover {{ background: {p.hover}; }}
 QHeaderView::section {{ background: {p.sidebar}; color: {p.muted}; border: none;
                         border-bottom: 1px solid {p.border}; padding: 4px 6px; }}
@@ -203,10 +204,13 @@ QLineEdit[invalid="true"] {{ border: 1px solid {p.error}; }}
 QPushButton {{ background: {p.hover}; border: 1px solid {p.border}; border-radius: 4px;
                padding: 5px 14px; }}
 QPushButton:hover {{ border-color: {p.accent}; }}
-QPushButton[primary="true"] {{ background: {p.accent}; color: {p.accent_text}; border: none;
-                               font-weight: 600; }}
+QPushButton[primary="true"] {{ background: {p.accent}; color: {p.accent_text};
+                               border: 1px solid {p.accent}; font-weight: 600; }}
 QPushButton[danger="true"] {{ color: {p.error}; }}
 QPushButton:disabled {{ color: {p.muted}; border-color: {p.border}; }}
+/* A disabled primary button drops the accent fill: muted text on teal is unreadable. */
+QPushButton[primary="true"]:disabled {{ background: {p.hover}; color: {p.muted};
+                                        border: 1px solid {p.border}; font-weight: normal; }}
 
 #Banner[level="error"] {{ background: {p.error}; color: #ffffff; padding: 8px; font-weight: 600; }}
 #Banner[level="warning"] {{ background: {p.warning}; color: #1a1917; padding: 8px; }}

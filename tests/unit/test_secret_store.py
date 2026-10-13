@@ -11,6 +11,7 @@ from keyring.backend import KeyringBackend
 from tsunami.core.issues import TsunamiError
 from tsunami.core.secret_store import (
     MAX_VALUE_BYTES,
+    SERVICE,
     TEST_SERVICE,
     KeyringSecretStore,
     LoginCredential,
@@ -225,3 +226,26 @@ def test_real_vault_round_trip_and_listing():
             except Exception:  # noqa: BLE001, S110
                 pass
         keyring.set_keyring(previous)
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Credential Manager only")
+def test_tests_can_never_change_the_real_tsunami_entries():
+    """conftest guards the real store for the whole run (a lost login was traced here)."""
+    from keyring.backends.Windows import WinVaultKeyring
+
+    backend = WinVaultKeyring()
+    with pytest.raises(RuntimeError, match="real Credential Manager"):
+        backend.set_password(SERVICE, "cred/guard-probe", "x")
+    with pytest.raises(RuntimeError, match="real Credential Manager"):
+        backend._delete_password(f"cred/guard-probe@{SERVICE}")
+
+
+def test_writes_and_deletes_are_logged_by_name_never_value(tmp_path, caplog):
+    store = KeyringSecretStore(index_path=tmp_path / "idx.json")
+    with caplog.at_level("INFO", logger="tsunami.core.secret_store"):
+        store.set_login("lab", LoginCredential("u", "Pw-Secret-99"))
+        store.delete_login("lab")
+    text = caplog.text
+    assert "wrote cred/lab" in text and "deleting cred/lab" in text
+    assert "test_secret_store.test_writes_and_deletes_are_logged_by_name_never_value" in text
+    assert "Pw-Secret-99" not in text

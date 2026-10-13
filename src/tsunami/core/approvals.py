@@ -18,8 +18,8 @@ from typing import Any
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.jobs import Actor, DeviceStatus, JobStatus
 from tsunami.core.models.play import RunMode
+from tsunami.core.pipeline import changes_device
 from tsunami.core.redact import supplied_values
-from tsunami.core.render.secret_refs import MASK
 from tsunami.core.runner import RunRequest, play_hash
 
 PLAY_CHANGED = "play-changed"  # never equals a real render hash
@@ -54,19 +54,8 @@ def approve(history: Any, workspace: Any, job_id: str, *, approved_by: str) -> R
 
 
 def would_change(record: Any) -> bool:
-    """Whether applying would do anything to the device, from its check-mode result.
-
-    New config lines would. So would exec steps (write memory and the like), which a
-    config diff never shows, and lines carrying a secret, which the diff compares only
-    up to the secret and so cannot tell current from rotated.
-    """
-    diff = (record.diff_redacted or "").split("\n")
-    render = (record.render_masked or "").split("\n")
-    return (
-        any(line.startswith("+ ") for line in diff)
-        or any(line.startswith("exec: ") for line in render)
-        or any(MASK in line for line in render)
-    )
+    """Whether applying would do anything to the device, from its check-mode record."""
+    return changes_device(record.diff_redacted, record.render_masked)
 
 
 def classify_request(history: Any, job_id: str) -> JobStatus | None:

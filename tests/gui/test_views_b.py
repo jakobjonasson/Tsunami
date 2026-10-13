@@ -154,7 +154,7 @@ def test_push_wizard_preview_and_check_run(main_window, gui_ctx, qtbot):
     _wait_done(qtbot, view)
     qtbot.waitUntil(lambda: view.counts().get("success") == 2, timeout=20000)
     assert view.table.rowCount() == 2
-    assert [view.table.item(r, 1).text() for r in range(2)] == ["success", "success"]
+    assert [view.table.item(r, 1).text() for r in range(2)] == ["changes to apply"] * 2
     assert view.log.toPlainText().count("-> success") == 2
     view.select_device("sa-as01")
     qtbot.waitUntil(lambda: "+ vlan 30" in view.diff_view.toPlainText(), timeout=20000)

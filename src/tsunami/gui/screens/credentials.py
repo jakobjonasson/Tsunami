@@ -1,4 +1,4 @@
-"""Credentials screen: names only; create, overwrite, delete, test. Values never shown.
+"""Credentials: a compact side bar list of names (actions in right-click menus) and a full tab.
 
 Values are write-only: a dialog collects one, the view hands it straight to the store's
 set_login or set_secret, and the dialog fields are cleared. Nothing here displays,
@@ -11,7 +11,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from PySide6.QtCore import QObject, QRunnable, QThreadPool, Signal
+from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QDialog,
     QDialogButtonBox,
@@ -22,8 +22,12 @@ from PySide6.QtWidgets import (
     QLabel,
     QLineEdit,
     QListWidget,
+    QListWidgetItem,
+    QMenu,
     QMessageBox,
     QPushButton,
+    QTreeWidget,
+    QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
@@ -33,8 +37,10 @@ from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports import DeviceTransport
 from tsunami.core.transports.base import ConnectTarget
-from tsunami.gui import wheel
+from tsunami.core.workspace import Workspace
+from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
+from tsunami.gui.icons import icon
 from tsunami.gui.shell import ActivityItem, Shell
 
 
@@ -42,6 +48,62 @@ def _password_edit() -> QLineEdit:
     edit = QLineEdit()
     edit.setEchoMode(QLineEdit.EchoMode.Password)
     return edit
+
+
+def run_dialog(dialog: QDialog) -> bool:
+    """Show a dialog modally. True if accepted. Tests replace this."""
+    return dialog.exec() == QDialog.DialogCode.Accepted
+
+
+CREDENTIALS_TAB_KEY = "credentials"
+_KIND_ROLE = Qt.ItemDataRole.UserRole
+LOGIN, SECRET = "login", "secret"
+
+
+class _StoreChanges(QObject):
+    """Tells every open Credentials view (side bar and tab) that the store changed."""
+
+    changed = Signal()
+
+
+_CHANGES = _StoreChanges()
+
+
+def credential_usage(workspace: Workspace | None, name: str) -> list[tuple[str, str]]:
+    """Where a login is referenced: (kind, label) with kind Customer, Site, Device or Jump host.
+
+    Only direct references (`customer.credential`, `site_credentials`, `device.credential`,
+    the jump host's login), not devices that merely inherit it."""
+    if workspace is None:
+        return []
+    found: list[tuple[str, str]] = []
+    for slug, inv in sorted(workspace.customers.items()):
+        if inv.config.credential == name:
+            found.append(("Customer", slug))
+        if inv.config.jump_host is not None and inv.config.jump_host.credential == name:
+            found.append(("Jump host", slug))
+        found.extend(
+            ("Site", f"{slug}/{site}")
+            for site, cred in sorted(inv.config.site_credentials.items())
+            if cred == name
+        )
+        found.extend(("Device", f"{slug}/{d.name}") for d in inv.devices if d.credential == name)
+    return found
+
+
+def usage_summary(usage: list[tuple[str, str]]) -> str:
+    """e.g. "1 customer, 2 devices"; "" when unused."""
+    parts = []
+    for kind, plural in (
+        ("Customer", "customers"),
+        ("Jump host", "jump hosts"),
+        ("Site", "sites"),
+        ("Device", "devices"),
+    ):
+        count = sum(1 for k, _ in usage if k == kind)
+        if count:
+            parts.append(f"{count} {kind.lower() if count == 1 else plural}")
+    return ", ".join(parts)
 
 
 class _ValueDialog(QDialog):
@@ -90,7 +152,7 @@ def prompt_new_login(ctx: AppContext, parent: QWidget | None) -> str | None:
     write-only: they go straight to set_login and the dialog fields are cleared."""
     dialog = _ValueDialog("New login", login=True, name=None, parent=parent)
     try:
-        if dialog.exec() != QDialog.DialogCode.Accepted:
+        if not run_dialog(dialog):
             return None
         name = dialog.name_edit.text().strip()
         username, password = dialog.username_edit.text(), dialog.value_edit.text()
@@ -104,6 +166,7 @@ def prompt_new_login(ctx: AppContext, parent: QWidget | None) -> str | None:
         except TsunamiError as exc:
             QMessageBox.warning(parent, "New login", str(exc))
             return None
+        _CHANGES.changed.emit()
         return name
     finally:
         dialog.clear_values()
@@ -138,7 +201,19 @@ class _TestTask(QRunnable):
         self.signals.done.emit(self.name, *result)
 
 
-class CredentialsView(QWidget):
+def _section_label(text: str) -> QLabel:
+    label = QLabel(text)
+    label.setProperty("section", True)
+    font = label.font()
+    font.setBold(True)
+    label.setFont(font)
+    return label
+
+
+class _CredentialsBase(QWidget):
+    """Lists, store operations, dialogs and context menus shared by the side bar view and
+    the full Credentials tab. Subclasses lay the widgets out."""
+
     def __init__(self, ctx: AppContext, shell: Shell) -> None:
         super().__init__()
         self.ctx, self.shell = ctx, shell
@@ -146,50 +221,59 @@ class CredentialsView(QWidget):
         self._test_signals.done.connect(self._test_done)
         self.last_test_result: tuple[str, bool, str] | None = None
 
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(8, 8, 8, 8)
-
-        logins = QGroupBox("Device logins")
-        box = QVBoxLayout(logins)
-        self.login_list = QListWidget()
-        box.addWidget(self.login_list)
-        row = QHBoxLayout()
-        for text, slot in (
-            ("New…", self.new_login),
-            ("Overwrite…", self.overwrite_login),
-            ("Delete", self.delete_login),
-            ("Test", self.test_login),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(lambda _=False, s=slot: s())
-            row.addWidget(button)
-        box.addLayout(row)
-        self.test_label = QLabel("")
-        self.test_label.setWordWrap(True)
-        box.addWidget(self.test_label)
-        layout.addWidget(logins, 1)
-
-        secrets = QGroupBox("Template secrets")
-        box = QVBoxLayout(secrets)
+        self.login_list = self._make_list(LOGIN)
         self.customer_combo = wheel.ComboBox()
         self.customer_combo.currentIndexChanged.connect(lambda _=0: self.refresh_secrets())
-        box.addWidget(self.customer_combo)
-        self.secret_list = QListWidget()
-        box.addWidget(self.secret_list)
-        row = QHBoxLayout()
-        for text, slot in (
-            ("New…", self.new_secret),
-            ("Overwrite…", self.overwrite_secret),
-            ("Delete", self.delete_secret),
-        ):
-            button = QPushButton(text)
-            button.clicked.connect(lambda _=False, s=slot: s())
-            row.addWidget(button)
-        box.addLayout(row)
-        layout.addWidget(secrets, 1)
+        self.secret_list = self._make_list(SECRET)
+        self.test_label = QLabel("")
+        self.test_label.setWordWrap(True)
 
         ctx.workspace_changed.connect(self.refresh)
-        self.refresh()
+        _CHANGES.changed.connect(self._store_changed)
+
+    def _make_list(self, kind: str) -> QListWidget:
+        widget = QListWidget()
+        widget.setProperty("kind", kind)
+        widget.setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        widget.customContextMenuRequested.connect(
+            lambda pos, w=widget, k=kind: self._show_menu(w, k, pos)
+        )
+        return widget
+
+    # -- context menus -----------------------------------------------------------------
+
+    def _show_menu(self, widget: QListWidget, kind: str, pos: Any) -> None:
+        item = widget.itemAt(pos)
+        if item is not None:
+            widget.setCurrentItem(item)
+        self.menu_for(item, kind).exec(widget.viewport().mapToGlobal(pos))
+
+    def menu_for(self, item: QListWidgetItem | None, kind: str = LOGIN) -> QMenu:
+        """The context menu for a login or secret item, with the same actions as the
+        buttons in the tab. On empty space (item None) only New… is offered; kind says
+        which list it is."""
+        menu = QMenu(self)
+        colors = theme.current()
+        if item is not None:
+            kind = item.data(_KIND_ROLE) or kind
+        name = item.text() if item is not None else None
+        new, overwrite, delete = (
+            (self.new_login, self.overwrite_login, self.delete_login)
+            if kind == LOGIN
+            else (self.new_secret, self.overwrite_secret, self.delete_secret)
+        )
+
+        def add(text: str, icon_name: str, slot: Any) -> None:
+            action = menu.addAction(icon(icon_name, colors.text), text)
+            action.triggered.connect(lambda _=False: slot())
+
+        add("New…", "add", new)
+        if name is not None:
+            add("Overwrite…", "edit", lambda: overwrite(name))
+            add("Delete", "trash", lambda: delete(name))
+            if kind == LOGIN:
+                add("Test", "debug-start", lambda: self.test_login(name))
+        return menu
 
     # -- refresh -----------------------------------------------------------------
 
@@ -205,22 +289,45 @@ class CredentialsView(QWidget):
         self.customer_combo.blockSignals(False)
         self.refresh_secrets()
 
+    def _store_changed(self) -> None:
+        self.refresh_logins()
+        self.refresh_secrets()
+
+    def _fill(self, widget: QListWidget, kind: str, names: list[str]) -> None:
+        current = widget.currentItem().text() if widget.currentItem() else None
+        widget.clear()
+        for name in names:
+            item = QListWidgetItem(name)
+            item.setData(_KIND_ROLE, kind)
+            self._decorate(item, kind)
+            widget.addItem(item)
+            if name == current:
+                widget.setCurrentItem(item)
+
+    def _decorate(self, item: QListWidgetItem, kind: str) -> None:
+        """Hook for subclasses to add an icon or tooltip."""
+
     def refresh_logins(self) -> None:
-        self.login_list.clear()
         try:
-            self.login_list.addItems(self.ctx.secrets.list_logins())
+            names = self.ctx.secrets.list_logins()
         except TsunamiError as exc:
+            self.login_list.clear()
             self.shell.notify(str(exc), "error")
+            return
+        self._fill(self.login_list, LOGIN, names)
 
     def refresh_secrets(self) -> None:
-        self.secret_list.clear()
         customer = self.customer_combo.currentText()
         if not customer:
+            self.secret_list.clear()
             return
         try:
-            self.secret_list.addItems(self.ctx.secrets.list_secrets(customer))
+            names = self.ctx.secrets.list_secrets(customer)
         except TsunamiError as exc:
+            self.secret_list.clear()
             self.shell.notify(str(exc), "error")
+            return
+        self._fill(self.secret_list, SECRET, names)
 
     # -- store operations (values go only to set_login / set_secret) ----------------
 
@@ -233,7 +340,7 @@ class CredentialsView(QWidget):
         except TsunamiError as exc:
             self.shell.notify(str(exc), "error")
             return False
-        self.refresh_logins()
+        _CHANGES.changed.emit()
         self.shell.notify(f"Saved login {name}.")
         return True
 
@@ -249,7 +356,7 @@ class CredentialsView(QWidget):
         except TsunamiError as exc:
             self.shell.notify(str(exc), "error")
             return False
-        self.refresh_secrets()
+        _CHANGES.changed.emit()
         self.shell.notify(f"Saved secret {customer}/{name}.")
         return True
 
@@ -259,7 +366,7 @@ class CredentialsView(QWidget):
         except TsunamiError as exc:
             self.shell.notify(str(exc), "error")
             return False
-        self.refresh_logins()
+        _CHANGES.changed.emit()
         return True
 
     def remove_secret(self, customer: str, name: str) -> bool:
@@ -268,16 +375,16 @@ class CredentialsView(QWidget):
         except TsunamiError as exc:
             self.shell.notify(str(exc), "error")
             return False
-        self.refresh_secrets()
+        _CHANGES.changed.emit()
         return True
 
-    # -- button handlers --------------------------------------------------------------
+    # -- action handlers (name defaults to the selected item) ---------------------------
 
     def _login_dialog(self, name: str | None) -> None:
         title = "New login" if name is None else f"Overwrite login {name}"
         dialog = _ValueDialog(title, login=True, name=name, parent=self)
         try:
-            if dialog.exec() != QDialog.DialogCode.Accepted:
+            if not run_dialog(dialog):
                 return
             self.save_login(
                 name or dialog.name_edit.text().strip(),
@@ -293,47 +400,60 @@ class CredentialsView(QWidget):
         title = "New secret" if name is None else f"Overwrite secret {name}"
         dialog = _ValueDialog(title, login=False, name=name, parent=self)
         try:
-            if dialog.exec() != QDialog.DialogCode.Accepted:
+            if not run_dialog(dialog):
                 return
             secret_name = name or dialog.name_edit.text().strip()
             self.save_secret(customer, secret_name, dialog.value_edit.text())
         finally:
             dialog.clear_values()
 
+    @staticmethod
+    def _selected(widget: QListWidget, name: str | None) -> str | None:
+        if name is not None:
+            return name
+        item = widget.currentItem()
+        return item.text() if item is not None else None
+
     def new_login(self) -> None:
         self._login_dialog(None)
 
-    def overwrite_login(self) -> None:
-        item = self.login_list.currentItem()
-        if item is not None:
-            self._login_dialog(item.text())
+    def overwrite_login(self, name: str | None = None) -> None:
+        name = self._selected(self.login_list, name)
+        if name is not None:
+            self._login_dialog(name)
 
-    def delete_login(self) -> None:
-        item = self.login_list.currentItem()
-        if item is None:
+    def delete_login(self, name: str | None = None) -> None:
+        name = self._selected(self.login_list, name)
+        if name is None:
             return
-        answer = QMessageBox.question(self, "Delete login", f"Delete login {item.text()}?")
-        if answer == QMessageBox.StandardButton.Yes:
-            self.remove_login(item.text())
+        text = f"Delete login {name}?"
+        used = usage_summary(self.logins_used_by(name))
+        if used:
+            text += f"\n\nIt is still used by {used}; they will not be able to log in."
+        if QMessageBox.question(self, "Delete login", text) == QMessageBox.StandardButton.Yes:
+            self.remove_login(name)
 
     def new_secret(self) -> None:
         self._secret_dialog(None)
 
-    def overwrite_secret(self) -> None:
-        item = self.secret_list.currentItem()
-        if item is not None:
-            self._secret_dialog(item.text())
+    def overwrite_secret(self, name: str | None = None) -> None:
+        name = self._selected(self.secret_list, name)
+        if name is not None:
+            self._secret_dialog(name)
 
-    def delete_secret(self) -> None:
-        item = self.secret_list.currentItem()
-        if item is None:
+    def delete_secret(self, name: str | None = None) -> None:
+        name = self._selected(self.secret_list, name)
+        if name is None:
             return
         customer = self.customer_combo.currentText()
-        text = f"Delete secret {customer}/{item.text()}?"
+        text = f"Delete secret {customer}/{name}?"
         if QMessageBox.question(self, "Delete secret", text) == QMessageBox.StandardButton.Yes:
-            self.remove_secret(customer, item.text())
+            self.remove_secret(customer, name)
 
-    # -- test -------------------------------------------------------------------------
+    # -- usage and test -------------------------------------------------------------------
+
+    def logins_used_by(self, name: str) -> list[tuple[str, str]]:
+        return credential_usage(self.ctx.workspace, name)
 
     def devices_using(self, credential: str) -> list[tuple[str, str]]:
         workspace = self.ctx.workspace
@@ -346,19 +466,19 @@ class CredentialsView(QWidget):
             if inv.credential_for(device) == credential  # own, site default, or customer's
         ]
 
-    def test_login(self) -> None:
-        item = self.login_list.currentItem()
-        if item is None:
+    def test_login(self, name: str | None = None) -> None:
+        name = self._selected(self.login_list, name)
+        if name is None:
             return
-        choices = self.devices_using(item.text())
+        choices = self.devices_using(name)
         if not choices:
-            self.shell.notify(f"No device in the workspace uses {item.text()}.", "warning")
+            self.shell.notify(f"No device in the workspace uses {name}.", "warning")
             return
         labels = [f"{c}/{d}" for c, d in choices]
         label, ok = QInputDialog.getItem(self, "Test login", "Device", labels, 0, False)
         if ok:
             customer, device = choices[labels.index(label)]
-            self.start_test(item.text(), customer, device)
+            self.start_test(name, customer, device)
 
     def start_test(self, name: str, customer: str, device_name: str) -> bool:
         workspace = self.ctx.workspace
@@ -390,6 +510,144 @@ class CredentialsView(QWidget):
         self.test_label.setText(f"{'Success' if ok else 'Failed'} ({name}): {message}")
         if not ok:
             self.shell.notify(f"Login test failed: {message}", "warning")
+
+
+class CredentialsView(_CredentialsBase):
+    """The side bar: compact lists of login and secret names. Actions are in the
+    right-click menus; Manage credentials opens the full tab."""
+
+    def __init__(self, ctx: AppContext, shell: Shell) -> None:
+        super().__init__(ctx, shell)
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(8, 8, 8, 8)
+        self.manage_button = QPushButton("Manage credentials")
+        self.manage_button.setProperty("primary", True)
+        self.manage_button.setToolTip("Buttons, and where each login is used, in a tab")
+        self.manage_button.clicked.connect(lambda _=False: open_credentials(self.ctx, self.shell))
+        layout.addWidget(self.manage_button)
+
+        layout.addWidget(_section_label("Device logins"))
+        layout.addWidget(self.login_list, 1)
+        layout.addWidget(_section_label("Template secrets"))
+        layout.addWidget(self.customer_combo)
+        layout.addWidget(self.secret_list, 1)
+        hint = QLabel("Right-click a name for New, Overwrite, Delete and Test.")
+        hint.setWordWrap(True)
+        hint.setProperty("hint", True)
+        layout.addWidget(hint)
+        layout.addWidget(self.test_label)
+        for widget in (self.login_list, self.secret_list):
+            widget.setFrameShape(QListWidget.Shape.NoFrame)
+        self.refresh()
+
+    def _decorate(self, item: QListWidgetItem, kind: str) -> None:
+        item.setIcon(icon("key" if kind == LOGIN else "lock", theme.current().muted))
+
+
+class CredentialsTab(_CredentialsBase):
+    """The full Credentials tab: button rows that fit, and where each login is used."""
+
+    def __init__(self, ctx: AppContext, shell: Shell) -> None:
+        super().__init__(ctx, shell)
+        layout = QHBoxLayout(self)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(12)
+
+        logins = QGroupBox("Device logins")
+        box = QVBoxLayout(logins)
+        box.addWidget(self.login_list, 2)
+        box.addLayout(self._buttons(LOGIN))
+        self.used_by_label = _section_label("Used by")
+        box.addWidget(self.used_by_label)
+        self.used_by_tree = QTreeWidget()
+        self.used_by_tree.setHeaderHidden(True)
+        self.used_by_tree.setFrameShape(QTreeWidget.Shape.NoFrame)
+        self.used_by_tree.setSelectionMode(QTreeWidget.SelectionMode.NoSelection)
+        box.addWidget(self.used_by_tree, 2)
+        box.addWidget(self.test_label)
+        layout.addWidget(logins, 1)
+
+        secrets = QGroupBox("Template secrets")
+        box = QVBoxLayout(secrets)
+        box.addWidget(QLabel("Customer"))
+        box.addWidget(self.customer_combo)
+        box.addWidget(self.secret_list, 1)
+        box.addLayout(self._buttons(SECRET))
+        layout.addWidget(secrets, 1)
+
+        self.login_list.currentItemChanged.connect(lambda *_: self._show_usage())
+        self.refresh()
+
+    def _buttons(self, kind: str) -> QHBoxLayout:
+        specs = (
+            (("New…", self.new_login), ("Overwrite…", self.overwrite_login))
+            + (("Delete", self.delete_login), ("Test", self.test_login))
+            if kind == LOGIN
+            else (
+                ("New…", self.new_secret),
+                ("Overwrite…", self.overwrite_secret),
+                ("Delete", self.delete_secret),
+            )
+        )
+        row = QHBoxLayout()
+        for text, slot in specs:
+            button = QPushButton(text)
+            button.clicked.connect(lambda _=False, s=slot: s())
+            row.addWidget(button)
+        return row
+
+    def _decorate(self, item: QListWidgetItem, kind: str) -> None:
+        item.setIcon(icon("key" if kind == LOGIN else "lock", theme.current().muted))
+        if kind == LOGIN:
+            summary = usage_summary(self.logins_used_by(item.text()))
+            item.setToolTip(f"Used by {summary}" if summary else "Not used by anything")
+
+    def refresh_logins(self) -> None:
+        super().refresh_logins()
+        self._show_usage()
+
+    def _show_usage(self) -> None:
+        """List the customers, jump hosts, sites and devices that reference the selected
+        login, so a delete's effect is visible first."""
+        tree = self.used_by_tree
+        tree.clear()
+        item = self.login_list.currentItem()
+        if item is None:
+            self.used_by_label.setText("Used by")
+            return
+        name = item.text()
+        usage = self.logins_used_by(name)
+        self.used_by_label.setText(f"Used by {name}")
+        if not usage:
+            tree.addTopLevelItem(QTreeWidgetItem(["Nothing in the workspace uses this login."]))
+            return
+        for kind, plural in (
+            ("Customer", "Customers"),
+            ("Jump host", "Jump hosts"),
+            ("Site", "Sites"),
+            ("Device", "Devices"),
+        ):
+            labels = [label for k, label in usage if k == kind]
+            if not labels:
+                continue
+            group = QTreeWidgetItem([f"{plural} ({len(labels)})"])
+            for label in labels:
+                group.addChild(QTreeWidgetItem([label]))
+            tree.addTopLevelItem(group)
+            group.setExpanded(True)
+
+
+def open_credentials(ctx: AppContext, shell: Shell) -> None:
+    """Open (or focus) the one Credentials tab."""
+    shell.open_tab(CREDENTIALS_TAB_KEY, "Credentials", lambda: CredentialsTab(ctx, shell), "key")
+
+
+def register(shell: Shell) -> None:
+    shell.register_command(
+        "credentials.open",
+        "Credentials: Manage credentials",
+        lambda: open_credentials(shell.ctx, shell),
+    )
 
 
 def _factory(ctx: AppContext, shell: Any) -> QWidget:

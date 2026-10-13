@@ -27,6 +27,7 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QMainWindow,
+    QMenu,
     QMessageBox,
     QPushButton,
     QScrollArea,
@@ -263,6 +264,8 @@ class MainWindow(QMainWindow):
         self.editor.setMovable(True)
         self.editor.setDocumentMode(True)
         self.editor.tabCloseRequested.connect(self._close_tab_index)
+        self.editor.tabBar().setContextMenuPolicy(Qt.ContextMenuPolicy.CustomContextMenu)
+        self.editor.tabBar().customContextMenuRequested.connect(self._show_tab_menu)
         self.welcome = WelcomePage(self)
 
         self.panel = QTabWidget(objectName="Panel")
@@ -451,6 +454,7 @@ class MainWindow(QMainWindow):
         )
         self.register_command("view.problems", "View: Problems", self.show_problems, "Ctrl+Shift+M")
         self.register_command("tab.close", "Close tab", self._close_current_tab, "Ctrl+W")
+        self.register_command("tab.close_all", "Close all tabs", self._close_all_tabs)
         for item in self._view_items:
             self.register_command(
                 f"view.{item.view_id}",
@@ -538,6 +542,37 @@ class MainWindow(QMainWindow):
         widget = self.editor.widget(index)
         if widget is not None:
             self.close_tab(widget.property("tab_key"))
+
+    def _close_tab_indexes(self, indexes: Sequence[int]) -> None:
+        """Close the tabs at these indexes. Resolves keys first: indexes shift on removal."""
+        keys = [w.property("tab_key") for i in indexes if (w := self.editor.widget(i)) is not None]
+        for key in keys:
+            self.close_tab(key)
+
+    def _close_all_tabs(self) -> None:
+        self._close_tab_indexes(range(self.editor.count()))
+
+    def _show_tab_menu(self, pos: Any) -> None:
+        index = self.editor.tabBar().tabAt(pos)
+        if index >= 0:
+            self.menu_for_tab(index).exec(self.editor.tabBar().mapToGlobal(pos))
+
+    def menu_for_tab(self, index: int) -> QMenu:
+        """The context menu for the editor tab at this index."""
+        menu = QMenu(self)
+        count = self.editor.count()
+        menu.addAction("Close").triggered.connect(lambda _=False: self._close_tab_index(index))
+        others = menu.addAction("Close others")
+        others.setEnabled(count > 1)
+        others.triggered.connect(
+            lambda _=False: self._close_tab_indexes([i for i in range(count) if i != index])
+        )
+        right = menu.addAction("Close to the right")
+        right.setEnabled(index < count - 1)
+        right.triggered.connect(lambda _=False: self._close_tab_indexes(range(index + 1, count)))
+        menu.addSeparator()
+        menu.addAction("Close all").triggered.connect(lambda _=False: self._close_all_tabs())
+        return menu
 
     # -- state updates ------------------------------------------------------------------
 

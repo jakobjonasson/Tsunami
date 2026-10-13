@@ -57,6 +57,10 @@ class MockDeviceState:
     reject_lines: list[str] = field(default_factory=list)
     exec_responses: dict[str, str] = field(default_factory=dict)  # "re:" prefix = regex
     flash: dict[str, list[str]] = field(default_factory=dict)
+    # IOS default file system and its free bytes, for `show file systems` and the
+    # rollback copy; a copy to any other prefix fails as on a real device.
+    filesystem: str = "flash:"
+    fs_free: int | None = 500_000_000
     checkpoints: dict[str, list[str]] = field(default_factory=dict)
     sent: list[tuple[str, str]] = field(default_factory=list)  # ("config"|"exec", text)
     # A session raises MockError on its (N+1)th send (config or exec); counted per session.
@@ -159,13 +163,23 @@ class MockSession:
             return ExecResult(command=command, output=self._exec(st, command.strip()))
 
     def _exec(self, st: MockDeviceState, cmd: str) -> str:
-        if m := re.fullmatch(r"copy running-config flash:(\S+)", cmd):
-            st.flash[m[1]] = list(st.running)
-            return f"Destination filename [{m[1]}]\n{len(st.running)} lines copied"
-        if m := re.fullmatch(r"configure replace flash:(\S+) force", cmd):
-            if m[1] not in st.flash:
-                return f"% Error: flash:{m[1]}: no such file"
-            st.running[:] = st.flash[m[1]]
+        if cmd == "show file systems":
+            free = "-" if st.fs_free is None else str(st.fs_free)
+            return (
+                "File Systems:\n\n     Size(b)     Free(b)      Type  Flags  Prefixes\n"
+                f"*  1000000000  {free}  disk  rw   {st.filesystem}\n"
+                "           -           -    opaque     rw   system:\n"
+                f"{st.name}#"
+            )
+        if m := re.fullmatch(r"copy running-config ([\w-]+:)(\S+)", cmd):
+            if m[1] != st.filesystem:
+                return f"%Error opening {m[1]}{m[2]} (Invalid argument)\n{st.name}#"
+            st.flash[m[2]] = list(st.running)
+            return f"Destination filename [{m[2]}]\n{len(st.running)} lines copied"
+        if m := re.fullmatch(r"configure replace ([\w-]+:)(\S+) force", cmd):
+            if m[1] != st.filesystem or m[2] not in st.flash:
+                return f"% Error: {m[1]}{m[2]}: no such file"
+            st.running[:] = st.flash[m[2]]
             return "The rollback configlet from the last pass is listed below:"
         if cmd == "write memory":
             st.startup[:] = st.running
@@ -192,7 +206,11 @@ class MockSession:
             return f"Successfully applied configuration '{m[1]}' to running configuration."
         if cmd == "show cfg-restore status":
             return "Status : Success"
-        if m := re.fullmatch(r"(?:delete (?:/force )?flash:|erase config )(\S+)", cmd):
+        if m := re.fullmatch(r"delete (?:/force )?([\w-]+:)(\S+)", cmd):
+            if m[1] != st.filesystem or st.flash.pop(m[2], None) is None:
+                return f"%Error deleting {m[1]}{m[2]} (No such file or directory)"
+            return ""
+        if m := re.fullmatch(r"erase config (\S+)", cmd):
             if st.flash.pop(m[1], None) is None:
                 return f"% Error deleting {m[1]} (No such file or directory)"
             return ""

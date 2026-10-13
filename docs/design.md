@@ -536,12 +536,12 @@ The commands below are the IOS driver's. Each platform driver supplies its own e
 2. **Facts.** If `gather_facts`, run `show version` and regex-parse model, software version, serial, and uptime into `facts`. If the detected platform contradicts inventory, fail the device.
 3. **Final render.** Render again with real facts. This is the config that gets sent and the one stored, masked, in the job record.
 4. **Pre-checks.** On failure, mark `skipped_precheck` and disconnect. No changes are made.
-5. **Backup.** If `backup`, save `show running-config` to machine data. If `rollback: on_failure`, also run `copy running-config flash:tsunami-<jobid>.cfg`, answering the destination prompt.
+5. **Backup.** If `backup`, save `show running-config` to machine data. If `rollback: on_failure`, also run `copy running-config <fs>tsunami-<jobid>.cfg`, answering the destination prompt. `<fs>` is the device's default file system: the line marked `*` in `show file systems` (`flash:`, `bootflash:`, `flash-1:` on a stack, `flash0:` on some ISRs, `unix:` on IOL). Its free space must exceed the running config plus 64 KB when the device reports it. Check mode runs the same read-only test, so a device that cannot take the copy fails before anyone approves a change.
 6. **Revert timer.** If `rollback: revert_timer`, first confirm `show archive` reports a configured archive path; if not, fail the device before changing anything. Then enter config mode with `configure terminal revert timer <revert_minutes>` (Netmiko `config_mode_command`).
 7. **Steps.** Run steps in order. Consecutive config lines go through one `send_config_set` with error detection. Exec steps go through `send_command` with expect handling. Stop at the first error.
 8. **Post-checks.** With retries and delay.
-9. **Success.** If revert timer, `configure confirm`. If `save`, `write memory`. Delete the flash rollback file. Mark `success`.
-10. **Failure.** With `on_failure`, run `configure replace flash:tsunami-<jobid>.cfg force`, then confirm the device is still reachable. With `revert_timer`, run `configure revert now`. Mark `rolled_back`, or `rollback_failed` if any of that fails. `rollback_failed` is shown in red at the top of the job view and never auto-dismissed.
+9. **Success.** If revert timer, `configure confirm`. If `save`, `write memory`. Delete the rollback file. A failed delete is a warning on the device, never a reason to roll back. Mark `success`.
+10. **Failure.** With `on_failure`, run `configure replace <fs>tsunami-<jobid>.cfg force`, then confirm the device is still reachable, then delete the rollback file (a failed delete is a warning). With `revert_timer`, run `configure revert now`. Mark `rolled_back`, or `rollback_failed` if any of that fails. `rollback_failed` is shown in red at the top of the job view and never auto-dismissed.
 11. Disconnect.
 
 Device statuses: `pending`, `ready` (diffed for an approval request; nothing applied), `no_changes` (diffed for an approval request; already as rendered), `connecting`, `running`, `success`, `failed`, `rolled_back`, `rollback_failed`, `skipped_precheck`, `skipped_maxfail`, `unreachable`, `hostkey_mismatch`, `render_changed`, `device_busy`, `interrupted`, `cancelled`.
@@ -631,12 +631,12 @@ Each driver supplies an `error_pattern` for Netmiko's `send_config_set` (anchore
 |---|---|---|---|
 |Step|IOS / IOS-XE|AOS-CX|AOS-S|
 |Text backup to machine data|`show running-config`|`show running-config`|`show running-config` (credentials absent by default; see Secrets)|
-|`on_failure` snapshot|`copy running-config flash:tsunami-<id>.cfg`|`copy running-config checkpoint tsunami-<id>`|`cfg-backup running-config config tsunami-<id>`|
-|`on_failure` restore|`configure replace flash:tsunami-<id>.cfg force`|`checkpoint rollback tsunami-<id>`|`cfg-restore flash tsunami-<id>`, then `show cfg-restore status` must report `Success`|
+|`on_failure` snapshot|`copy running-config <fs>tsunami-<id>.cfg` (`<fs>` from `show file systems`)|`copy running-config checkpoint tsunami-<id>`|`cfg-backup running-config config tsunami-<id>`|
+|`on_failure` restore|`configure replace <fs>tsunami-<id>.cfg force`|`checkpoint rollback tsunami-<id>`|`cfg-restore flash tsunami-<id>`, then `show cfg-restore status` must report `Success`|
 |`revert_timer` start|`configure terminal revert timer <m>`|`checkpoint auto <m>` (1 to 60 minutes)|snapshot as above, then `alias` + `job <name> delay <m> <alias> count 1` that runs the restore|
 |`revert_timer` confirm|`configure confirm`|`checkpoint auto confirm`|`no job <name>`, `no alias <name>`|
 |`revert_timer` revert now|`configure revert now`|`checkpoint rollback` to a snapshot taken before `checkpoint auto` (*verify* how this interacts with the running timer)|run the restore directly, then remove the job|
-|Clean up on success|delete the flash file|`erase checkpoint tsunami-<id>`|`erase config tsunami-<id>`|
+|Clean up after success or a revert|`delete /force <fs>tsunami-<id>.cfg`|`erase checkpoint tsunami-<id>`|`erase config tsunami-<id>`|
 |Save|`write memory`|`write memory`|`write memory`|
 
 `<id>` is the first 12 hex characters of the job id: AOS-CX checkpoint names are limited to 32 characters and must not start with `CPC`.
@@ -923,7 +923,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Read-only in v1.|
 |Plays|Plays grouped by type and customer, with validation status, a read-only YAML view, and a Run button.|
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
-|Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary.|
+|Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
 |Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete.|
 |History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
@@ -1391,3 +1391,7 @@ Changes since the original draft, with reasons:
 - SHA-1 SSH algorithms are offered last on every connection, because Paramiko 5 dropped them and many devices in service offer nothing newer.
 - Device types (core, distribution, access, wlc, ap, router) are built-in roles; devices may name their own login and sites may set a default (`site_credentials`), because one customer login did not fit sites or devices with different credentials.
 - From the blind leak review: show pipes run locally on redacted output (a device-side `include` recovered a secret character by character); MCP exact-value redaction covers every customer's secrets but not Claude's own echoed input (redacting it made a guessing oracle); audit rows are fully redacted; altered `secret()` output is a render error; refusal reasons reach the client as MCP tool errors.
+- Apply after a check, Retry failed and Run again in the job view (core/rerun.py). Apply pins each device to the render hash the check recorded, the same guard as an approved MCP request, so a play, inventory or answer changed since stops that device with `render_changed`.
+- The IOS rollback copy goes to the device's default file system from `show file systems`, not a fixed `flash:` (IOL has only `unix:`; IOS-XE uses `bootflash:`), with a free-space check, also run in check mode. Rollback errors quote the device's error lines instead of its prompt. The snapshot is deleted after a successful revert too, and a failed delete after a kept change is a warning instead of a rollback.
+- Credential Manager writes and deletes are logged by entry name and caller (never the value), after a lab login went missing twice with no trace; the test suite refuses any change to the real `tsunami` entries.
+- History and Credentials open as full tabs (the side bars were too narrow for their tables and buttons); the Credentials tab shows where each login is used. Settings has one Save bar, an Advanced section for redaction patterns, and buttons to open settings.json and mcp-policy.yml in VS Code; Tsunami reloads them when they change on disk and keeps the old values if a file is invalid.

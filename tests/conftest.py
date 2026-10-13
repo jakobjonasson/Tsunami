@@ -10,6 +10,7 @@ import pytest
 from keyring.backend import KeyringBackend
 
 from tsunami.core.paths import AppPaths
+from tsunami.core.secret_store import SERVICE
 
 
 class MemoryKeyring(KeyringBackend):
@@ -32,6 +33,33 @@ class MemoryKeyring(KeyringBackend):
             del self.store[(service, username)]
         except KeyError:
             raise keyring.errors.PasswordDeleteError(username) from None
+
+
+def pytest_configure(config) -> None:
+    """Refuse any write or delete of the real "tsunami" entries in Windows Credential
+    Manager for the whole run, even from a thread that outlives its test's in-memory
+    keyring. Real-vault tests use the separate "tsunami-test" service."""
+    try:
+        from keyring.backends.Windows import WinVaultKeyring
+    except Exception:  # noqa: BLE001 - not Windows
+        return
+
+    def refuse(target: str) -> None:
+        if target == SERVICE or target.endswith(f"@{SERVICE}"):
+            raise RuntimeError(f"a test tried to change the real Credential Manager ({target})")
+
+    write, delete = WinVaultKeyring._set_password, WinVaultKeyring._delete_password
+
+    def guarded_write(self, target, username, password):
+        refuse(target)
+        return write(self, target, username, password)
+
+    def guarded_delete(self, target):
+        refuse(target)
+        return delete(self, target)
+
+    WinVaultKeyring._set_password = guarded_write
+    WinVaultKeyring._delete_password = guarded_delete
 
 
 @pytest.fixture(autouse=True)

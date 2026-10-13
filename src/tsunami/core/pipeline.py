@@ -40,6 +40,7 @@ from tsunami.core.models.settings import AppSettings
 from tsunami.core.paths import AppPaths
 from tsunami.core.redact import Redactor, redact_exception
 from tsunami.core.render.renderer import Renderer, RenderError, Rendering
+from tsunami.core.render.secret_refs import MASK
 from tsunami.core.rollback import Prepared, RollbackError, strategy_for
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports.base import (
@@ -103,6 +104,7 @@ class DevicePipeline:
         self.session: Session | None = None
         self.prepared: Prepared | None = None
         self.changed = False  # any config or exec step was sent
+        self.running_size: int | None = None  # bytes of running config, for the snapshot
 
     # -- events and history ------------------------------------------------------
 
@@ -142,7 +144,7 @@ class DevicePipeline:
             facts = self.gather_facts()
             rendering = self.final_render(facts)
             if ctx.mode in (RunMode.CHECK, RunMode.COMPLIANCE):
-                return self.check(rendering)
+                return self.check(rendering, facts)
             return self.apply(rendering, facts)
         except _Stop as stop:
             self.status(
@@ -223,7 +225,9 @@ class DevicePipeline:
                 DeviceStatus.FAILED,
                 f"device reports {facts.platform}, but inventory says {expected}",
             )
-        self.log(f"facts: model={facts.model} version={facts.version}")
+        known = [f"{k}={v}" for k, v in (("model", facts.model), ("version", facts.version)) if v]
+        if known:
+            self.log("facts: " + " ".join(known))
         return facts
 
     def final_render(self, facts: Facts | None) -> Rendering:
@@ -247,10 +251,24 @@ class DevicePipeline:
             raise _Stop(DeviceStatus.RENDER_CHANGED, "the render differs from what was approved")
         return rendering
 
-    def check(self, rendering: Rendering) -> DeviceStatus:
+    def check(self, rendering: Rendering, facts: Facts | None = None) -> DeviceStatus:
         ctx = self.ctx
         assert self.session is not None
         running = self.session.running_config()
+        if ctx.mode == RunMode.CHECK:
+            # What prepare() would fail on during an apply, found before anyone approves it.
+            try:
+                strategy_for(PLATFORM_FAMILY[rendering.platform], ctx.job_id).preflight(
+                    self.session,
+                    ctx.settings.rollback,
+                    facts.version if facts else None,
+                    len(running.encode("utf-8")),
+                )
+            except RollbackError as exc:
+                raise _Stop(
+                    DeviceStatus.FAILED,
+                    f"rollback copy not possible: {redact_exception(exc, ctx.redactor)}",
+                ) from None
         owns = [o for s in ctx.play.steps if s.owns for o in s.owns]
         family = PLATFORM_FAMILY[rendering.platform]
         result = diff_config(
@@ -267,9 +285,16 @@ class DevicePipeline:
                 extra_count=len(result.extra),
                 details={"missing": list(result.missing), "extra": list(result.extra)},
             )
+        if ctx.mode == RunMode.CHECK:
+            if changes_device(diff_text, rendering.masked_text()):
+                detail = "changes to apply"
+            else:
+                detail = "no changes" + (" (device has extra lines)" if result.extra else "")
+        else:
+            detail = "in compliance" if result.clean else "drift found"
         self.status(
             DeviceStatus.SUCCESS,
-            "in compliance" if result.clean else "drift found",
+            detail,
             finished_at=_now(),
             diff_redacted=diff_text,
         )
@@ -293,6 +318,8 @@ class DevicePipeline:
                 raise _Stop(DeviceStatus.SKIPPED_PRECHECK, f"{result.name}: {result.detail}")
 
         backup_path = self.backup() if settings.backup else None
+        if self.running_size is None:
+            self.running_size = len(session.running_config().encode("utf-8"))
         strategy = strategy_for(family, ctx.job_id)
         try:
             self.prepared = strategy.prepare(
@@ -300,9 +327,13 @@ class DevicePipeline:
                 settings.rollback,
                 settings.revert_minutes,
                 facts.version if facts else None,
+                self.running_size,
             )
         except RollbackError as exc:
-            raise _Stop(DeviceStatus.FAILED, f"rollback preparation failed: {exc}") from None
+            raise _Stop(
+                DeviceStatus.FAILED,
+                f"rollback preparation failed: {redact_exception(exc, ctx.redactor)}",
+            ) from None
 
         failure = self.send_steps(rendering, family)
         if failure is None:
@@ -315,7 +346,15 @@ class DevicePipeline:
             except Exception as exc:  # noqa: BLE001 - reported, then rolled back below
                 failure = f"confirm/save failed: {redact_exception(exc, ctx.redactor)}"
             else:
-                self.status(DeviceStatus.SUCCESS, finished_at=_now(), backup_path=backup_path)
+                warning = self.clean_up(strategy)
+                extra = {"error_redacted": ctx.redactor.text(warning)} if warning else {}
+                self.status(
+                    DeviceStatus.SUCCESS,
+                    warning or "",
+                    finished_at=_now(),
+                    backup_path=backup_path,
+                    **extra,
+                )
                 return DeviceStatus.SUCCESS
 
         return self.roll_back(strategy, failure, backup_path)
@@ -403,6 +442,8 @@ class DevicePipeline:
             )
             return DeviceStatus.ROLLBACK_FAILED
         status = DeviceStatus.CANCELLED if cancelled else DeviceStatus.ROLLED_BACK
+        warning = self.clean_up(strategy)
+        failure = f"{failure}; {warning}" if warning else failure
         self.status(
             status,
             f"{failure}; rolled back",
@@ -413,11 +454,28 @@ class DevicePipeline:
         )
         return status
 
+    def clean_up(self, strategy) -> str | None:
+        """Delete the rollback snapshot from the device. A failure is a warning: the
+        change (or the revert) already happened, and a leftover file is harmless."""
+        if self.prepared is None or self.prepared.mode == RollbackMode.NONE:
+            return None
+        try:
+            strategy.cleanup(self.session, self.prepared)
+        except Exception as exc:  # noqa: BLE001 - reported, never rolled back for
+            warning = (
+                f"could not delete the rollback copy {self.prepared.name}: "
+                f"{redact_exception(exc, self.ctx.redactor)}"
+            )
+            self.log(warning)
+            return warning
+        return None
+
     def backup(self) -> str | None:
         """Save running config, unredacted, to machine data (design.md, Backups)."""
         assert self.session is not None and self.device is not None
         ctx = self.ctx
         running = self.session.running_config()
+        self.running_size = len(running.encode("utf-8"))
         folder = ctx.paths.backups_dir / ctx.play.customer / self.device.name
         folder.mkdir(parents=True, exist_ok=True)
         stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
@@ -428,6 +486,22 @@ class DevicePipeline:
 
     def benign(self, family) -> list[str]:
         return list(self.ctx.app_settings.benign_messages.get(family, []))
+
+
+def changes_device(diff_text: str | None, render_masked: str | None) -> bool:
+    """Whether applying would do anything to the device, from its check-mode result.
+
+    New config lines would. So would exec steps (write memory and the like), which a
+    config diff never shows, and lines carrying a secret, which the diff compares only
+    up to the secret and so cannot tell current from rotated.
+    """
+    diff = (diff_text or "").split("\n")
+    render = (render_masked or "").split("\n")
+    return (
+        any(line.startswith("+ ") for line in diff)
+        or any(line.startswith("exec: ") for line in render)
+        or any(MASK in line for line in render)
+    )
 
 
 def _fixed_port(port: str | None) -> str | None:
