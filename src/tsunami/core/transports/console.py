@@ -44,7 +44,11 @@ from tsunami.core.transports.base import (
     ConnectTarget,
     UnreachableError,
 )
-from tsunami.core.transports.netmiko_session import NetmikoSession, aoscx_class
+from tsunami.core.transports.netmiko_session import (
+    NetmikoSession,
+    aoscx_class,
+    procurve_serial_class,
+)
 
 DEFAULT_BAUD = 9600
 _WAKE_AFTER = 5.0  # seconds of silence before sending a bare Enter
@@ -92,19 +96,21 @@ DEFAULT_DIALOGS: dict[PlatformFamily, tuple[DialogRule, ...]] = {
         # sends the two it asks for.
         DialogRule(r"Press <Enter> twice to continue", "\r", "speed sense"),
         DialogRule(r"Press any key to continue", "", "press any key"),
-        # First boot on YA.16.11 asks for a username, then the password twice, to create
-        # the login; on a switch that has one, the same answers just log in. "Username:" is
-        # from a capture; the password prompts' wording is not yet, so those match loosely.
-        # The confirm rule precedes the password rule because "Re-enter password:" also
-        # matches the latter (ties go to rule order).
+        # First boot on YA.16.11 creates the login: "Configure the manager credentials :",
+        # then "Username:", "Password:" and "Re-enter the new password:" (from a run on a
+        # 2530-48G). On a switch that has a login, the same answers just log in. The rules
+        # wait for the colon, so they answer the prompt rather than any line that happens to
+        # end in the word (it arrives in pieces). The confirm rule precedes the password
+        # rule because "Re-enter ... password:" also matches the latter (ties: rule order).
         DialogRule(r"(?i)username:\s*$", CREDENTIAL_USERNAME, "username"),
         DialogRule(
-            r"(?i)(?:re-?type|re-?enter|confirm)\s+(?:new\s+)?(?:manager\s+)?password:?\s*$",
+            r"(?i)(?:re-?type|re-?enter|confirm)\s+(?:the\s+)?(?:new\s+)?(?:manager\s+)?"
+            r"password\s*:\s*$",
             CREDENTIAL_PASSWORD,
             "confirm password",
         ),
         DialogRule(
-            r"(?i)(?:new\s+)?(?:manager\s+)?password:?\s*$", CREDENTIAL_PASSWORD, "password"
+            r"(?i)(?:new\s+)?(?:manager\s+)?password\s*:\s*$", CREDENTIAL_PASSWORD, "password"
         ),
     ),
 }
@@ -145,9 +151,7 @@ def _default_netmiko_factory(**kwargs: Any) -> Any:
     if device_type == "aruba_aoscx_serial":
         return aoscx_class(serial=True)(**kwargs)
     if device_type == "hp_procurve_serial":
-        from netmiko.hp.hp_procurve import HPProcurveSSH
-
-        return HPProcurveSSH(**kwargs)
+        return procurve_serial_class()(**kwargs)
     return ConnectHandler(**kwargs)
 
 

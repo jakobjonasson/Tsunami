@@ -170,3 +170,21 @@ def aoscx_class(serial: bool = False) -> type:
             return super().check_config_mode(check_string=check_string, pattern=pattern)
 
     return TsunamiArubaCx
+
+
+def procurve_serial_class() -> type:
+    """HPProcurveSSH for a console port, recognising the prompt during login.
+
+    Netmiko 4.8 turns on VT100 stripping for ProCurve in session_preparation, which runs
+    after login. Over a console the 2530 follows its prompt with cursor codes
+    (HP-2530-48G# ESC[24;14H), so the login's prompt check (#, then end of line) never
+    matched and Netmiko gave up at a prompt it was looking at. Strip from the start.
+    """
+    from netmiko.hp.hp_procurve import HPProcurveSSH
+
+    class TsunamiProcurveSerial(HPProcurveSSH):
+        def serial_login(self, *args: Any, **kwargs: Any) -> str:
+            self.ansi_escape_codes = True
+            return super().serial_login(*args, **kwargs)
+
+    return TsunamiProcurveSerial

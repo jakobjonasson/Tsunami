@@ -343,16 +343,20 @@ def _replay_2530(cred):
     login = (FIXTURES / "aos-s-2530-48g-login.txt").read_bytes()
     assert b"Press <Enter> twice" in boot and b"\x1b[24;1HUsername: " in login
     # After the username the switch asks for the password twice, then shows its prompt.
-    # Not in the capture: the wording below is a reconstruction in the same style.
-    password = b"\r\n\x1b[24;1H\x1b[2KPassword: \x1b[?25h\x1b[24;11H"
-    again = b"\r\n\x1b[24;1H\x1b[2KRe-enter password: \x1b[?25h\x1b[24;20H"
+    # The wording is from a bench run's job log; the escape codes follow the capture's
+    # style, and the prompt arrives in pieces ("Password" before ":"), as it did there.
+    password = b"\r\n\x1b[24;1H\x1b[2KPassword", b": \x1b[?25h\x1b[24;11H"
+    again = b"\r\n\x1b[24;1H\x1b[2KRe-enter the new password: \x1b[?25h\x1b[24;28H"
     prompt = b"\x1b[1;24r\x1b[24;1H\x1b[2K\x1b[24;1H\x1b[?25h\x1b[24;1HHP-2530-48G# \x1b[24;14H"
     ports: list[ChunkedSerial] = []
 
     def serial_factory(**k):
         steps = [(boot, "\r\r"), (login, "ops\r")]
         if cred is not None:
-            steps += [(password, PW + "\r"), (again, PW + "\r"), (prompt, None)]
+            # "Password" and ":" as separate reads, as on the bench: the rule, which waits
+            # for the colon, must still answer once it arrives.
+            steps += [(password[0], None), (password[1], PW + "\r")]
+            steps += [(again, PW + "\r"), (prompt, None)]
         s = ChunkedSerial(steps, **k)
         ports.append(s)
         return s
@@ -442,3 +446,41 @@ def test_a_failed_netmiko_login_logs_what_the_console_last_showed() -> None:
     text = "\n".join(lines)
     assert "Netmiko login failed (NetmikoAuthenticationException); it saw:" in text
     assert "Invalid password" in text and "\x1b" not in text
+
+
+def test_netmiko_recognises_the_2530_prompt_after_tsunami_logged_in() -> None:
+    """Netmiko's own serial login, against a console showing the prompt the way a 2530
+    does (cursor codes after the #). Stock HPProcurveSSH only strips those codes after
+    login, so it gave up at the prompt; Tsunami's class strips them during login."""
+    from netmiko.exceptions import NetmikoAuthenticationException
+    from netmiko.hp.hp_procurve import HPProcurveSSH
+
+    from tsunami.core.transports.netmiko_session import procurve_serial_class
+
+    prompt = "\x1b[24;1H\x1b[2K\x1b[24;1H\x1b[?25h\x1b[24;1HHP-2530-48G# \x1b[24;14H"
+
+    class Channel:
+        def __init__(self) -> None:
+            self.writes: list[str] = []
+
+        def read_channel(self) -> str:
+            return prompt if self.writes else ""
+
+        def write_channel(self, data: str) -> None:
+            self.writes.append(data)
+
+    def login(cls):
+        conn = cls(
+            device_type="hp_procurve_serial",
+            username="ops",
+            password=PW,
+            auto_connect=False,
+            serial_settings={"port": "COM3"},
+        )
+        conn.channel = Channel()
+        conn.remote_conn = SimpleNamespace(close=lambda: None)
+        return conn.serial_login(max_loops=2)
+
+    with pytest.raises(NetmikoAuthenticationException):
+        login(HPProcurveSSH)  # what failed on the bench
+    assert "HP-2530-48G#" in login(procurve_serial_class())
