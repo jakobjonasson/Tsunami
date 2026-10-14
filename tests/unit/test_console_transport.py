@@ -436,16 +436,63 @@ def test_a_failed_netmiko_login_logs_what_the_console_last_showed() -> None:
     lines: list[str] = []
 
     def netmiko_factory(**k):
+        assert k["session_log_record_writes"] is True  # the log shows what Netmiko typed
         k["session_log"].write(b"\x1b[24;1HUsername: ops\r\nPassword: \r\nInvalid password\r\n")
-        raise NetmikoAuthenticationException("auth failed")
+        raise NetmikoAuthenticationException(f"auth failed for {PW}")  # never logged as is
 
     t, target, _, _ = make(Platform.AOS_S, [("\nsw1# ", None)])
     t._netmiko_factory = netmiko_factory
     with pytest.raises(AuthenticationError, match="console login failed"):
         t.open(dataclasses.replace(target, log=lines.append))
     text = "\n".join(lines)
-    assert "Netmiko login failed (NetmikoAuthenticationException); it saw:" in text
+    assert "Netmiko failed (NetmikoAuthenticationException) in" in text
+    assert "auth failed for <password>" in text and PW not in text
+    assert "Netmiko's session ended with:" in text
     assert "Invalid password" in text and "\x1b" not in text
+
+
+def test_netmiko_reads_the_2530_echo_when_codes_split_across_reads(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    """The 2530 echoes a typed command with a cursor code after every character, and at
+    9600 baud reads end mid-code. Stock Netmiko strips each read alone and never sees
+    "terminal width 511" (ReadTimeout in session setup on the bench); Tsunami's class
+    joins a cut-off code to the next read first."""
+    import netmiko.base_connection
+    from netmiko.exceptions import ReadTimeout
+    from netmiko.hp.hp_procurve import HPProcurveSSH
+
+    from tsunami.core.transports.netmiko_session import procurve_serial_class
+
+    monkeypatch.setattr(netmiko.base_connection, "check_serial_port", lambda name: name)
+    echo = "".join(f"{c}\x1b[24;{14 + i}H" for i, c in enumerate("terminal width 511"))
+    echo += "\r\nHP-2530-48G# \x1b[24;14H"
+
+    class Channel:
+        def __init__(self) -> None:
+            self.parts = [echo[i : i + 7] for i in range(0, len(echo), 7)]
+
+        def read_channel(self) -> str:
+            return self.parts.pop(0) if self.parts else ""
+
+        def write_channel(self, data: str) -> None:
+            pass
+
+    def read_echo(cls):
+        conn = cls(
+            device_type="hp_procurve_serial",
+            username="ops",
+            password=PW,
+            auto_connect=False,
+            serial_settings={"port": "COM3"},
+        )
+        conn.channel = Channel()
+        conn.ansi_escape_codes = True  # as after session_preparation turns it on
+        return conn.read_until_pattern(pattern="terminal width 511", read_timeout=1.5)
+
+    with pytest.raises(ReadTimeout):
+        read_echo(HPProcurveSSH)  # what timed out on the bench
+    assert "terminal width 511" in read_echo(procurve_serial_class())
 
 
 def test_netmiko_recognises_the_2530_prompt_after_tsunami_logged_in(

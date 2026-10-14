@@ -172,19 +172,34 @@ def aoscx_class(serial: bool = False) -> type:
     return TsunamiArubaCx
 
 
-def procurve_serial_class() -> type:
-    """HPProcurveSSH for a console port, recognising the prompt during login.
+# An escape sequence cut off at the end of a read: ESC, or ESC [ with parameters so far.
+_PARTIAL_ESCAPE = re.compile(r"\x1b(?:\[[0-?]*[ -/]*)?$")
 
-    Netmiko 4.8 turns on VT100 stripping for ProCurve in session_preparation, which runs
-    after login. Over a console the 2530 follows its prompt with cursor codes
-    (HP-2530-48G# ESC[24;14H), so the login's prompt check (#, then end of line) never
-    matched and Netmiko gave up at a prompt it was looking at. Strip from the start.
+
+def procurve_serial_class() -> type:
+    """HPProcurveSSH for a console port. Two fixes over Netmiko 4.8, both from a 2530:
+
+    - Netmiko turns on VT100 stripping for ProCurve in session_preparation, after login.
+      The 2530 follows its prompt with cursor codes (HP-2530-48G# ESC[24;14H), so the
+      login's prompt check never matched. Strip from the start of the login.
+    - Netmiko strips each read on its own. At 9600 baud a read often ends inside a code,
+      and the switch echoes typed commands with a cursor code after every character, so
+      the echo of "terminal width 511" never appeared whole and session setup timed out.
+      An incomplete code at the end of a read is held back and joined to the next one.
     """
     from netmiko.hp.hp_procurve import HPProcurveSSH
 
     class TsunamiProcurveSerial(HPProcurveSSH):
+        _escape_tail = ""
+
         def serial_login(self, *args: Any, **kwargs: Any) -> str:
             self.ansi_escape_codes = True
             return super().serial_login(*args, **kwargs)
+
+        def strip_ansi_escape_codes(self, string_buffer: str) -> str:
+            data = self._escape_tail + string_buffer
+            partial = _PARTIAL_ESCAPE.search(data)
+            self._escape_tail = data[partial.start() :] if partial else ""
+            return super().strip_ansi_escape_codes(data[: partial.start()] if partial else data)
 
     return TsunamiProcurveSerial

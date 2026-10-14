@@ -204,14 +204,19 @@ class ConsoleTransport:
             "secret": (cred.enable if cred else None) or "",
             "fast_cli": False,
             "conn_timeout": target.connect_timeout,
-            "session_log": io.BytesIO(),  # Netmiko masks the password and secret in it
+            # Netmiko masks the password and secret in its session log, including what it
+            # types (record_writes), so the log shows the commands it sent.
+            "session_log": io.BytesIO(),
+            "session_log_record_writes": True,
         }
         _log(target, f"console: handing over to Netmiko ({kwargs['device_type']}) to log in")
         try:
             conn = self._netmiko_factory(**kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped below; messages carry the type only
             tail = _screen(_session_text(kwargs["session_log"]), _SCREEN_LINES)
-            _log(target, f"console: Netmiko login failed ({type(exc).__name__}); it saw:\n{tail}")
+            detail = _mask(f"{_netmiko_where(exc)}: {exc}".strip(), cred)
+            _log(target, f"console: Netmiko failed ({type(exc).__name__}) in {detail[:400]}")
+            _log(target, f"console: Netmiko's session ended with:\n{_mask(tail, cred)}")
             raise self._map_netmiko_error(exc, port) from None
         _log(target, "console: logged in")
         return NetmikoSession(conn, family, command_timeout=target.command_timeout)
@@ -363,3 +368,25 @@ def _screen(text: str, lines: int) -> str:
 
 def _session_text(buffer: io.BytesIO) -> str:
     return buffer.getvalue().decode("utf-8", errors="replace")
+
+
+def _netmiko_where(exc: BaseException) -> str:
+    """The chain of Netmiko functions an exception came through, outermost first,
+    e.g. "session_preparation > set_terminal_width > read_until_pattern"."""
+    names: list[str] = []
+    tb = exc.__traceback__
+    while tb is not None:
+        code = tb.tb_frame.f_code
+        if "netmiko" in code.co_filename.replace("\\", "/").split("/site-packages/")[-1]:
+            if code.co_name not in ("__init__", "_open", "establish_connection"):
+                names.append(code.co_name)
+        tb = tb.tb_next
+    return " > ".join(names[-5:]) or "Netmiko"
+
+
+def _mask(text: str, cred: Any) -> str:
+    """Belt and braces: never log the login's password or enable secret."""
+    for value in (getattr(cred, "password", None), getattr(cred, "enable", None)):
+        if value:
+            text = text.replace(value, "<password>")
+    return text
