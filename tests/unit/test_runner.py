@@ -372,3 +372,40 @@ def test_some_devices_failing_makes_the_job_partial(ws_root, history, secrets, a
         "sa-as02": DeviceStatus.ROLLED_BACK,
     }
     assert history.get_job(job_id).status == JobStatus.PARTIAL
+
+
+class _CancelledDuringConnect:
+    """A transport that sees Cancel pressed while it connects, like the console wait."""
+
+    def __init__(self, cancel: threading.Event, honour: bool) -> None:
+        self.cancel, self.honour = cancel, honour
+
+    def open(self, target):
+        from tsunami.core.transports.base import ConnectCancelled, UnreachableError
+
+        self.cancel.set()
+        if self.honour and target.cancel is self.cancel:
+            raise ConnectCancelled("COM3: cancelled while waiting for the console")
+        raise UnreachableError("COM3: no console prompt after 300s")
+
+
+def test_cancel_after_a_device_already_timed_out_leaves_the_job_failed(
+    ws_root, history, secrets, app_paths
+):
+    cancel = threading.Event()
+    transport = _CancelledDuringConnect(cancel, honour=False)
+    runner, _ = make_runner(ws_root, transport, history, secrets, app_paths, cancel=cancel)
+    job_id = runner.run(RunRequest(ADD_VLAN, RunMode.CHECK, prompts=VLAN, limit=["sa-as01"]))
+    assert statuses(history, job_id) == {"sa-as01": DeviceStatus.UNREACHABLE}
+    assert history.get_job(job_id).status == JobStatus.FAILED  # not "cancelled"
+
+
+def test_cancel_during_the_connect_marks_device_and_job_cancelled(
+    ws_root, history, secrets, app_paths
+):
+    cancel = threading.Event()
+    transport = _CancelledDuringConnect(cancel, honour=True)
+    runner, _ = make_runner(ws_root, transport, history, secrets, app_paths, cancel=cancel)
+    job_id = runner.run(RunRequest(ADD_VLAN, RunMode.CHECK, prompts=VLAN, limit=["sa-as01"]))
+    assert statuses(history, job_id) == {"sa-as01": DeviceStatus.CANCELLED}
+    assert history.get_job(job_id).status == JobStatus.CANCELLED

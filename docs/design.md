@@ -559,7 +559,7 @@ Network CLIs return no exit codes, so errors come from output text. Each platfor
 
 - **ssh:** Netmiko `ConnectHandler` with the device type from the platform map. The login comes from Credential Manager. Host keys are verified before any credential is sent (see known_hosts). Jump hosts use one paramiko transport per run, with a `direct-tcpip` channel per device passed as Netmiko's `sock`. Keep at most 10 channels per jump host at once, because OpenSSH's `MaxSessions` defaults to 10.
 - **Legacy SSH:** Paramiko 5 removed SHA-1 key exchange and `ssh-rsa` host-key signatures, which older switches still need. Tsunami's transport adds `diffie-hellman-group14-sha1`, `diffie-hellman-group-exchange-sha1`, `diffie-hellman-group1-sha1` and `ssh-rsa` back, after every modern algorithm. SSH uses the first algorithm in the client's list that the server offers, so modern devices still negotiate modern crypto and only a device with nothing newer falls back; a pinned RSA host key asks for SHA-2 signatures first. Host keys are pinned either way, and the exchange hash covers both algorithm lists. The app log notes each device that needed SHA-1. Settings can turn the fallback off (`ssh_legacy_algorithms`).
-- **serial:** `cisco_ios_serial` with `serial_settings` (port, baud). Handle factory-default dialogs: answer `no` to the initial configuration dialog and `yes` to terminating autoinstall, then wait for the user-mode prompt. Prompts vary by model and release; test each model you stage. Aruba console sessions and dialogs are covered under Platform drivers.
+- **serial:** `cisco_ios_serial` with `serial_settings` (port, baud). Handle factory-default dialogs: answer `no` to the initial configuration dialog and `yes` to terminating autoinstall, then wait for the user-mode prompt. Prompts vary by model and release; test each model you stage. Aruba console sessions and dialogs are covered under Platform drivers. Console output is matched only after terminal escape codes are removed; cursor positioning counts as a line break (ProCurve moves the cursor where other devices send a newline). Cancelling a job stops the console wait.
 - **render:** no connection. The GUI shows rendered config per device with a copy button. MCP returns it masked.
 
 ### Run modes
@@ -1088,7 +1088,7 @@ A mock transport with configurable latency and failure rate runs 200 simulated d
 
 ### Serial
 
-CML consoles are not COM ports. Test serial day-0 on a physical factory-reset switch with a USB console cable for each model you stage. For CI, a virtual null-modem pair (com0com) with a scripted fake device covers dialog handling.
+CML consoles are not COM ports. Test serial day-0 on a physical factory-reset switch with a USB console cable for each model you stage. For CI, a virtual null-modem pair (com0com) with a scripted fake device covers dialog handling. Unit tests replay raw console captures (`tests/fixtures/console/`) a few bytes per read, so escape sequences split across reads.
 
 ### MCP
 
@@ -1395,3 +1395,4 @@ Changes since the original draft, with reasons:
 - The IOS rollback copy goes to the device's default file system from `show file systems`, not a fixed `flash:` (IOL has only `unix:`; IOS-XE uses `bootflash:`), with a free-space check, also run in check mode. Rollback errors quote the device's error lines instead of its prompt. The snapshot is deleted after a successful revert too, and a failed delete after a kept change is a warning instead of a rollback.
 - Credential Manager writes and deletes are logged by entry name and caller (never the value), after a lab login went missing twice with no trace; the test suite refuses any change to the real `tsunami` entries.
 - History and Credentials open as full tabs (the side bars were too narrow for their tables and buttons); the Credentials tab shows where each login is used. Settings has one Save bar, an Advanced section for redaction patterns, and buttons to open settings.json and mcp-policy.yml in VS Code; Tsunami reloads them when they change on disk and keeps the old values if a file is invalid.
+- Serial dialog matching strips terminal escape codes first (an AOS-S 2530 wraps its prompt in them and never matched, timing out after 300s), turning cursor positioning into line breaks. Cancel now stops the console wait, and a job is `cancelled` only if a device actually stopped for it.

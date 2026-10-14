@@ -1,0 +1,2 @@
+[1;24r[24;1H[2J[1;1HYour previous successful login (as manager) was on 1990-01-01 00:00:00
+[24;1H[2K[24;1H[?25h[24;1HHP-2530-24G# [24;1H[24;14H[24;1H[?25h[24;14H

@@ -210,8 +210,8 @@ class ApprovalsView(QWidget):
         self.count_label = QLabel("")
         self.count_label.setObjectName("Muted")
         top.addWidget(self.count_label, 1)
-        self.refresh_button = QPushButton("Refresh")
-        top.addWidget(self.refresh_button)
+        # No Refresh button of its own: the poller adds new requests, and the side bar's
+        # refresh (F5) re-reads them with everything else.
         layout.addLayout(top)
         self.list = QListWidget()
         self.list.setSpacing(2)
@@ -222,7 +222,6 @@ class ApprovalsView(QWidget):
         self.empty.setWordWrap(True)
         layout.addWidget(self.empty)
 
-        self.refresh_button.clicked.connect(self.refresh)
         self.list.itemClicked.connect(self._open)
         self.list.itemActivated.connect(self._open)
         ctx.approvals_changed.connect(self._on_approvals_changed)

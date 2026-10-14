@@ -12,3 +12,4 @@
 tests/fixtures/configs/** -text
 tests/fixtures/show/** -text
 *.ttf binary
+tests/fixtures/console/** -text

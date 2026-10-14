@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import dataclasses
+import threading
+from pathlib import Path
 from types import SimpleNamespace
 from typing import Any
 
@@ -14,11 +16,17 @@ from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports import console as console_mod
 from tsunami.core.transports.base import (
     AuthenticationError,
+    ConnectCancelled,
     ConnectError,
     ConnectTarget,
     UnreachableError,
 )
-from tsunami.core.transports.console import ConsoleTransport, DialogRule, available_ports
+from tsunami.core.transports.console import (
+    ConsoleTransport,
+    DialogRule,
+    available_ports,
+    clean_console,
+)
 from tsunami.core.transports.netmiko_session import NetmikoSession
 
 PW = "Sup3r-Secret-pw"
@@ -276,3 +284,100 @@ def test_available_ports(monkeypatch: pytest.MonkeyPatch) -> None:
         lp, "comports", lambda: [SimpleNamespace(device="COM10"), SimpleNamespace(device="COM3")]
     )
     assert available_ports() == ["COM10", "COM3"]
+
+
+# -- escape codes (ProCurve wraps its prompt in them) ---------------------------------
+
+FIXTURES = Path(__file__).parents[1] / "fixtures" / "console"
+
+
+class ChunkedSerial(FakeSerial):
+    """Replays raw byte captures a few bytes per read, so escape sequences split across
+    reads exactly as they do on a 9600-baud console."""
+
+    def __init__(self, steps: list[tuple[bytes, str | None]], chunk: int = 5, **kwargs: Any):
+        super().__init__([], **kwargs)
+        self.blobs = steps
+        self.chunk = chunk
+        self.offset = 0
+        self.answered = False
+
+    def read(self, n: int = 1) -> bytes:
+        if self.idx >= len(self.blobs):
+            return b""
+        blob, expected = self.blobs[self.idx]
+        if self.offset < len(blob):
+            part = blob[self.offset : self.offset + self.chunk]
+            self.offset += len(part)
+            if self.offset >= len(blob) and (expected is None or self.answered):
+                self.idx, self.offset, self.answered = self.idx + 1, 0, False
+            return part
+        if self.answered:  # the answer came before the last bytes; move on
+            self.idx, self.offset, self.answered = self.idx + 1, 0, False
+            return self.read(n)
+        return b""
+
+    def write(self, data: bytes) -> None:
+        text = data.decode()
+        self.writes.append(text)
+        if self.idx < len(self.blobs) and text == self.blobs[self.idx][1]:
+            self.answered = True  # a device takes a key press even mid-output
+
+
+def test_clean_console_turns_cursor_moves_into_line_breaks():
+    raw = "Banner\x1b[24;1H\x1b[2K\x1b[?25hHP-2530-24G# \x1b[24;14H"
+    assert clean_console(raw) == "Banner\nHP-2530-24G# \n"
+    assert clean_console("a\x1b7b\x1b8c\x1b[1;24rd") == "abcd"  # ESC 7/8, scroll region
+
+
+def test_clean_console_keeps_a_split_sequence_until_its_end_arrives():
+    first = clean_console("prompt line\x1b[24;")
+    assert first.endswith("\x1b[24;")  # not cleaned yet, not mangled
+    assert clean_console(first + "1HHP-2530-24G# ") == "prompt line\nHP-2530-24G# "
+
+
+@pytest.mark.parametrize("cred", [CRED, None])
+def test_procurve_2530_capture_reaches_the_manager_prompt(cred) -> None:
+    boot = (FIXTURES / "procurve-2530-boot.txt").read_bytes()
+    prompt = (FIXTURES / "procurve-2530-prompt.txt").read_bytes()
+    assert b"\x1b[" in boot and b"\x1b[" in prompt
+    ports: list[ChunkedSerial] = []
+
+    def serial_factory(**k):
+        s = ChunkedSerial([(boot, "\r"), (prompt, None)], **k)
+        ports.append(s)
+        return s
+
+    clock = Clock()
+    conns: list[dict[str, Any]] = []
+    transport = ConsoleTransport(
+        serial_factory=serial_factory,
+        netmiko_factory=lambda **k: conns.append(k) or SimpleNamespace(base_prompt="sw"),
+        list_ports=lambda: ["COM3"],
+        sleep=clock.sleep,
+        clock=clock,
+        wait_timeout=60,
+    )
+    target = ConnectTarget(
+        customer="acme",
+        device="sw1",
+        host=None,
+        port=0,
+        platform=Platform.AOS_S,
+        method=ConnectionMethod.SERIAL,
+        credential=cred,
+        serial_port="COM3",
+    )
+    transport.open(target)
+    assert ports[0].writes == ["\r"]  # pressed a key once, then found the prompt
+    assert conns and conns[0]["device_type"] == "hp_procurve_serial"
+    assert clock.t < 30  # found it, did not time out
+
+
+def test_cancel_stops_the_console_wait() -> None:
+    cancel = threading.Event()
+    cancel.set()
+    t, target, ports, _ = make(Platform.IOS, [("garbage", None)], wait_timeout=300)
+    with pytest.raises(ConnectCancelled, match="cancelled while waiting for the console"):
+        t.open(dataclasses.replace(target, cancel=cancel))
+    assert ports[0].closed

@@ -409,7 +409,9 @@ class Runner:
         counts: dict[str, int] = {}
         for status in results.values():
             counts[str(status)] = counts.get(str(status), 0) + 1
-        if self.cancel.is_set() or DeviceStatus.CANCELLED in results.values():
+        # Cancelled only when a device actually stopped for it: a cancel that came after
+        # every device had already finished (or timed out) leaves the real outcome.
+        if DeviceStatus.CANCELLED in results.values():
             status = JobStatus.CANCELLED
         elif any(s in FAILURE_STATUSES for s in results.values()):
             # Partial tells an operator at a glance that some devices did run.

@@ -8,6 +8,12 @@ then closed and handed to Netmiko, which logs in (or finds the CLI already open)
 
 Netmiko 4.8 registers no Aruba serial device types, but BaseConnection picks the serial
 protocol from a `_serial` substring of device_type, so the classes are used directly.
+
+Console output carries terminal escape codes (ProCurve wraps its prompt in them, and
+moves the cursor with ESC[24;1H where other devices send a newline). The buffer is
+cleaned after each read is joined onto it, so a sequence split across two reads is
+cleaned once its end arrives; cursor positioning becomes a line break so a prompt is not
+glued onto the previous line.
 """
 
 from __future__ import annotations
@@ -26,6 +32,7 @@ from tsunami.core.models.common import (
 from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.transports.base import (
     AuthenticationError,
+    ConnectCancelled,
     ConnectError,
     ConnectTarget,
     UnreachableError,
@@ -87,6 +94,18 @@ DEFAULT_DIALOGS: dict[PlatformFamily, tuple[DialogRule, ...]] = {
 }
 
 _PROMPT_RE = re.compile(r"^(?=[^\n]*\w)[\w.\-/()]+[>#]$")
+# Cursor positioning (ESC[row;colH or f) stands for a line break; other escape codes
+# (CSI sequences such as ESC[2K, ESC[?25h, and two-byte codes such as ESC 7) are dropped.
+_CURSOR_POS = re.compile(r"\x1b\[\d*(?:;\d*)?[Hf]")
+_ANSI = re.compile(r"\x1b(?:\[[0-?]*[ -/]*[@-~]|[0-Z\\-~])")
+
+
+def clean_console(text: str) -> str:
+    """Console text without escape codes. An incomplete sequence at the end is kept, so
+    it is cleaned once the rest arrives with the next read."""
+    return _ANSI.sub("", _CURSOR_POS.sub("\n", text))
+
+
 _LOGIN_RE = re.compile(r"(?i)(?:login|username):$")
 
 
@@ -214,9 +233,11 @@ class ConsoleTransport:
             deadline = now + self.wait_timeout
             last_activity = now
             while self._clock() < deadline:
+                if target.cancel is not None and target.cancel.is_set():
+                    raise ConnectCancelled(f"{port}: cancelled while waiting for the console")
                 data = self._read(ser)
                 if data:
-                    buf = (buf + data)[-_BUFFER_KEEP:]
+                    buf = clean_console(buf + data)[-_BUFFER_KEEP:]
                     last_activity = self._clock()
                 best: tuple[int, int] | None = None  # (match end, rule index)
                 for i, rule in enumerate(rules):

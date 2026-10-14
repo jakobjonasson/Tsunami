@@ -44,6 +44,7 @@ from tsunami.core.render.secret_refs import MASK
 from tsunami.core.rollback import Prepared, RollbackError, strategy_for
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports.base import (
+    ConnectCancelled,
     ConnectError,
     ConnectTarget,
     HostKeyMismatchError,
@@ -187,9 +188,12 @@ class DevicePipeline:
             serial_port=ctx.serial_port or _fixed_port(ctx.play.connection.port),
             baud=ctx.play.connection.baud or self.model_baud(),
             allow_new_host_key=ctx.allow_new_host_key,
+            cancel=ctx.cancel,
         )
         try:
             self.session = ctx.transport.open(target)
+        except ConnectCancelled as exc:
+            raise _Stop(DeviceStatus.CANCELLED, str(exc)) from None
         except HostKeyMismatchError as exc:
             raise _Stop(DeviceStatus.HOSTKEY_MISMATCH, str(exc)) from None
         except UnreachableError as exc:

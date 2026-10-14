@@ -8,7 +8,7 @@ device. Connection failures are typed, so the pipeline can map them to device st
 from __future__ import annotations
 
 from dataclasses import dataclass, field
-from typing import Protocol
+from typing import Any, Protocol
 
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import Platform
@@ -26,6 +26,10 @@ class UnreachableError(ConnectError):
 
 class HostKeyMismatchError(ConnectError):
     pass
+
+
+class ConnectCancelled(ConnectError):
+    """The job was cancelled while the transport was still connecting."""
 
 
 class AuthenticationError(ConnectError):
@@ -56,6 +60,8 @@ class ConnectTarget:
     serial_port: str | None = None
     baud: int | None = None
     allow_new_host_key: bool = True  # trust on first use; MCP jobs never replace a key
+    # The job's cancel event: a transport that waits (the console, up to minutes) checks it.
+    cancel: Any = field(default=None, repr=False, compare=False)
 
 
 class Transport(Protocol):
