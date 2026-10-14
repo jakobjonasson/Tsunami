@@ -47,6 +47,7 @@ _BUFFER_KEEP = 4000
 
 # Answer markers; never sent literally.
 CREDENTIAL_PASSWORD = "\x00credential-password"
+CREDENTIAL_USERNAME = "\x00credential-username"
 REQUIRE_CREDENTIAL = "\x00require-credential"  # send nothing, but fail early without one
 
 
@@ -83,15 +84,19 @@ DEFAULT_DIALOGS: dict[PlatformFamily, tuple[DialogRule, ...]] = {
         # sends the two it asks for.
         DialogRule(r"Press <Enter> twice to continue", "\r", "speed sense"),
         DialogRule(r"Press any key to continue", "", "press any key"),
-        # Prompt text is unverified. The retype rule precedes the manager rule because
-        # "Retype Manager password:" would also match the latter (ties go to rule order).
+        # First boot on YA.16.11 asks for a username, then the password twice, to create
+        # the login; on a switch that has one, the same answers just log in. "Username:" is
+        # from a capture; the password prompts' wording is not yet, so those match loosely.
+        # The confirm rule precedes the password rule because "Re-enter password:" also
+        # matches the latter (ties go to rule order).
+        DialogRule(r"(?i)username:\s*$", CREDENTIAL_USERNAME, "username"),
         DialogRule(
-            r"(?i)(?:re-?type|confirm)\s+(?:new\s+)?(?:manager\s+)?password",
+            r"(?i)(?:re-?type|re-?enter|confirm)\s+(?:new\s+)?(?:manager\s+)?password:?\s*$",
             CREDENTIAL_PASSWORD,
-            "retype manager password",
+            "confirm password",
         ),
         DialogRule(
-            r"(?i)(new )?manager password", CREDENTIAL_PASSWORD, "first-login manager password"
+            r"(?i)(?:new\s+)?(?:manager\s+)?password:?\s*$", CREDENTIAL_PASSWORD, "password"
         ),
     ),
 }
@@ -253,7 +258,7 @@ class ConsoleTransport:
                 if best is not None:
                     end, i = best
                     fired[i] += 1
-                    self._answer(ser, rules[i], cred.password if cred else None, port)
+                    self._answer(ser, rules[i], cred, port)
                     buf = buf[end:]
                     last_activity = self._clock()
                     continue
@@ -282,8 +287,17 @@ class ConsoleTransport:
         raw = ser.read(max(1, waiting))
         return raw.decode("utf-8", errors="replace") if raw else ""
 
-    def _answer(self, ser: Any, rule: DialogRule, password: str | None, port: str) -> None:
+    def _answer(self, ser: Any, rule: DialogRule, cred: Any, port: str) -> None:
         label = rule.note or rule.pattern
+        password = cred.password if cred else None
+        if rule.answer == CREDENTIAL_USERNAME:
+            if cred is None:
+                raise AuthenticationError(
+                    f"{port}: the console asks for a username, but no login credential was provided"
+                )
+            ser.write(cred.username.encode("utf-8") + b"\r")
+            self.dialog_log.append(f"{label}: sent <username>")
+            return
         if rule.answer in (CREDENTIAL_PASSWORD, REQUIRE_CREDENTIAL):
             if password is None:
                 raise AuthenticationError(

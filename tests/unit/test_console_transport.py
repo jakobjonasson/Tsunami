@@ -342,10 +342,18 @@ def _replay_2530(cred):
     boot = (FIXTURES / "aos-s-2530-48g-boot.txt").read_bytes()
     login = (FIXTURES / "aos-s-2530-48g-login.txt").read_bytes()
     assert b"Press <Enter> twice" in boot and b"\x1b[24;1HUsername: " in login
+    # After the username the switch asks for the password twice, then shows its prompt.
+    # Not in the capture: the wording below is a reconstruction in the same style.
+    password = b"\r\n\x1b[24;1H\x1b[2KPassword: \x1b[?25h\x1b[24;11H"
+    again = b"\r\n\x1b[24;1H\x1b[2KRe-enter password: \x1b[?25h\x1b[24;20H"
+    prompt = b"\x1b[1;24r\x1b[24;1H\x1b[2K\x1b[24;1H\x1b[?25h\x1b[24;1HHP-2530-48G# \x1b[24;14H"
     ports: list[ChunkedSerial] = []
 
     def serial_factory(**k):
-        s = ChunkedSerial([(boot, "\r\r"), (login, None)], **k)
+        steps = [(boot, "\r\r"), (login, "ops\r")]
+        if cred is not None:
+            steps += [(password, PW + "\r"), (again, PW + "\r"), (prompt, None)]
+        s = ChunkedSerial(steps, **k)
         ports.append(s)
         return s
 
@@ -372,14 +380,20 @@ def _replay_2530(cred):
     return transport, target, ports, conns, clock
 
 
-def test_2530_capture_answers_speed_sense_and_reaches_the_login_prompt() -> None:
+def test_2530_first_boot_creates_the_login_then_reaches_the_prompt() -> None:
     transport, target, ports, conns, clock = _replay_2530(CRED)
     transport.open(target)
-    assert ports[0].writes == ["\r\r"]  # both Enters for speed sense, nothing else
-    assert transport.dialog_log == ["speed sense: sent '\\r'"]
+    # Both Enters for speed sense, the username, the password twice; nothing else.
+    assert ports[0].writes == ["\r\r", "ops\r", PW + "\r", PW + "\r"]
+    assert transport.dialog_log == [
+        "speed sense: sent '\\r'",
+        "username: sent <username>",
+        "password: sent <password>",
+        "confirm password: sent <password>",
+    ]
+    assert PW not in repr(transport.dialog_log)
     assert conns and conns[0]["device_type"] == "hp_procurve_serial"
-    assert conns[0]["username"] == "ops"  # Netmiko logs in at the Username: prompt
-    assert clock.t < 30  # found it, did not time out
+    assert clock.t < 30  # found the prompt, did not time out
 
 
 def test_2530_login_prompt_without_a_credential_fails_at_once() -> None:
