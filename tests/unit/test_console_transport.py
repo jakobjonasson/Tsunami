@@ -448,14 +448,20 @@ def test_a_failed_netmiko_login_logs_what_the_console_last_showed() -> None:
     assert "Invalid password" in text and "\x1b" not in text
 
 
-def test_netmiko_recognises_the_2530_prompt_after_tsunami_logged_in() -> None:
+def test_netmiko_recognises_the_2530_prompt_after_tsunami_logged_in(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
     """Netmiko's own serial login, against a console showing the prompt the way a 2530
     does (cursor codes after the #). Stock HPProcurveSSH only strips those codes after
     login, so it gave up at the prompt; Tsunami's class strips them during login."""
+    import netmiko.base_connection
     from netmiko.exceptions import NetmikoAuthenticationException
     from netmiko.hp.hp_procurve import HPProcurveSSH
 
     from tsunami.core.transports.netmiko_session import procurve_serial_class
+
+    # Netmiko checks the COM port exists when the object is made; no port is opened here.
+    monkeypatch.setattr(netmiko.base_connection, "check_serial_port", lambda name: name)
 
     prompt = "\x1b[24;1H\x1b[2K\x1b[24;1H\x1b[?25h\x1b[24;1HHP-2530-48G# \x1b[24;14H"
 
