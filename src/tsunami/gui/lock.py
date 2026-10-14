@@ -211,6 +211,18 @@ class LockManager(QObject):
 
     # -- lock and unlock ------------------------------------------------------------------
 
+    def _encrypt_plain(self) -> None:
+        encrypt = getattr(self.secrets, "encrypt_plain", None)
+        if encrypt is None:
+            return
+        try:
+            count = encrypt()
+        except TsunamiError as exc:
+            log.warning("could not encrypt plain stored values: %s", exc)
+            return
+        if count:
+            log.info("encrypted %d stored values that were in plain text", count)
+
     def lock(self) -> None:
         if not self._unlocked:
             return
@@ -233,6 +245,7 @@ class LockManager(QObject):
                 if not ok or dialog.cipher is None:
                     return False
                 self.secrets.cipher = dialog.cipher
+                self._encrypt_plain()
                 self._set_unlocked(True)
                 return True
         finally:

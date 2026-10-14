@@ -75,7 +75,7 @@ def test_first_launch_sets_the_password_and_encrypts_saved_logins(manager, store
     Answers(monkeypatch, (SetPasswordDialog, set_password(PASSWORD)))
     assert manager.startup()
     assert manager.unlocked and manager.vault.exists()
-    assert keyring.get_password("tsunami", "cred/acme-admin").startswith("tv1:")
+    assert keyring.get_password("tsunami/cred/acme-admin", "cred/acme-admin").startswith("tv1:")
     assert store.get_login("acme-admin").password == "Old-Plain-1"
 
 

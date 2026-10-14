@@ -48,6 +48,7 @@ def main(argv: list[str] | None = None) -> int:
     history = History(paths.history_db)
     history.mark_interrupted()
     secrets = KeyringSecretStore(index_path=paths.settings / "credential-index.json")
+    bootstrap.migrate_credentials(secrets)
 
     def apply_theme() -> None:
         theme.apply(app, theme.resolve(ctx.settings.theme, app))

@@ -11,9 +11,11 @@ See design.md, GUI: Layout, Views, Behavior rules.
 
 from __future__ import annotations
 
+import logging
 import shutil
 import subprocess
 from collections.abc import Callable, Sequence
+from datetime import datetime
 from pathlib import Path
 from typing import Any
 
@@ -52,6 +54,9 @@ from tsunami.gui.palette import PaletteItem, PalettePopup
 from tsunami.gui.runner_thread import RunnerThread
 from tsunami.gui.shell import ActivityItem
 from tsunami.gui.widgets.masked_text import MaskedTextView
+
+log = logging.getLogger(__name__)
+CREDENTIAL_CHECK_MS = 120_000  # how often the watchdog lists Credential Manager
 
 
 class _ClickLabel(QLabel):
@@ -208,6 +213,15 @@ class MainWindow(QMainWindow):
         if ctx.workspace is not None or ctx.last_error:
             self._on_workspace_changed()  # the context may have loaded before the window
         self._refresh_alarms()
+        # Watchdog: a login that vanishes from Credential Manager without Tsunami
+        # deleting it is reported with the time it was noticed (core/secret_store.py).
+        self.missing_credentials: list[str] = []
+        self._credential_timer = QTimer(self)
+        self._credential_timer.setInterval(CREDENTIAL_CHECK_MS)
+        self._credential_timer.timeout.connect(self.check_credentials)
+        self._credential_timer.start()
+        ctx.jobs_changed.connect(self.check_credentials)
+        self.check_credentials()  # records what is there now
 
     # -- layout --------------------------------------------------------------------
 
@@ -660,6 +674,35 @@ class MainWindow(QMainWindow):
             self.tray.showMessage(
                 "Tsunami", "Claude is requesting a change. Review it in Approvals."
             )
+
+    def check_credentials(self) -> list[str]:
+        """Warn about stored values that disappeared since the last check without Tsunami
+        deleting them. Names only; nothing is decrypted, so this works while locked."""
+        check = getattr(self.ctx.secrets, "check_missing", None)
+        if check is None:
+            return []
+        try:
+            gone = check()
+        except TsunamiError:
+            return []
+        when = datetime.now().strftime("%H:%M")
+        for key in gone:
+            log.warning(
+                "credential store: %s disappeared from Credential Manager (noticed %s); "
+                "Tsunami did not delete it",
+                key,
+                when,
+            )
+            name = key.removeprefix("cred/")
+            message = (
+                f"Login {name} disappeared from Windows Credential Manager (noticed at "
+                f"{when}). Tsunami did not delete it. Add it again in Credentials."
+            )
+            self.notify(message, "warning")
+            if QSystemTrayIcon.isSystemTrayAvailable():
+                self.tray.showMessage("Tsunami", message, QSystemTrayIcon.MessageIcon.Warning)
+        self.missing_credentials += gone
+        return gone
 
     def _refresh_jobs_label(self) -> None:
         running = sum(1 for t in self._threads if t.isRunning())

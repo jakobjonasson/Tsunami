@@ -3,25 +3,40 @@
 Work package 2.3: the keyring-backed store. The protocol and naming are fixed so
 other modules can depend on them.
 
-How WinVaultKeyring stores a ``(service, username)`` pair (read from the
-installed keyring source): the first username stored under a service gets the
-Credential Manager target name ``<service>`` with ``UserName`` = the keyring
-username. When a second, different username is stored, the existing entry is
-re-saved under the compound target ``<username>@<service>`` and the new one takes
-the bare ``<service>`` target. So the targets are ``<service>`` plus
-``<username>@<service>`` for the others, and the ``UserName`` field of every
-entry is always the exact keyring username. The blob is UTF-16-LE.
+One Credential Manager entry per value. Each entry is stored with keyring service
+``<service>/<key>`` and username ``<key>`` (key: ``cred/<name>`` or
+``secret/<customer>/<name>``), so its target name is ``tsunami/cred/<name>`` and no
+other entry ever shares it.
+
+Persistence is always local machine. Windows keeps enterprise (roaming) and local-machine
+entries in separate stores; after an enterprise write anywhere in the session, a stale
+enterprise entry with the same target is shown again in place of a newer local one,
+which is then lost. Early Tsunami builds used keyring's enterprise default, and a test
+writing enterprise entries kept bringing one back over a real login.
+
+Why not one service for everything: WinVaultKeyring keeps the most recently written
+username of a service on the bare target ``<service>`` and moves the previous one to
+``<username>@<service>`` on every write, so every write and delete touches an entry
+belonging to a different login. In that layout the bare ``tsunami`` target had been
+written with enterprise persistence by early builds and local machine by later ones,
+which is how a stale login kept coming back over a real one (see Persistence above).
+migrate_legacy() moves entries from that layout (``tsunami`` and ``<key>@tsunami``) at
+startup and deletes them, stale enterprise copies included.
 
 Listing names. keyring has no list API, but ``win32ctypes.pywin32.win32cred``
-(pywin32-ctypes) provides ``CredEnumerate``. Credential Manager's filter only
-supports a trailing ``*`` (prefix match), so ``*@tsunami`` cannot be used; we
-enumerate all generic credentials (targets come back as
-``LegacyGeneric:target=<target>``; the prefix is stripped), keep those whose
-target is ``tsunami`` or ``<UserName>@tsunami``, and read the keyring username
-from ``UserName``. This is
-the source of truth and cannot drift from the vault, so it is the primary
-mechanism. Parsing is separated from the Win32 call so it is unit-tested with
-fake results.
+(pywin32-ctypes) provides ``CredEnumerate``. We enumerate all generic credentials
+(targets come back as ``LegacyGeneric:target=<target>``; the prefix is stripped) and
+keep those whose target is ``<service>/<UserName>``. This is the source of truth and
+cannot drift from the vault, so it is the primary mechanism. Parsing is separated from
+the Win32 call so it is unit-tested with fake results.
+
+keyring's WinVaultKeyring also moves an entry aside when the same username is written
+again under its service (``<key>@<service>/<key>``), which would leave a stale copy on
+every overwrite. Writes therefore go straight to the entry's own target through the
+backend's ``_set_password`` (a CredWrite with the backend's persistence) when it has one.
+
+check_missing() reports names that disappeared since the last check without this
+process deleting them; the GUI warns with the time it noticed.
 
 Fallback: when the active keyring backend is not WinVaultKeyring (tests, other
 platforms) enumeration is impossible, so a names-only JSON index at ``index_path``
@@ -104,19 +119,24 @@ class SecretStore(Protocol):
 
 
 def parse_enumerated_usernames(service: str, credentials: list[dict[str, Any]]) -> list[str]:
-    """Keyring usernames for ``service`` from CredEnumerate results (sorted, unique).
+    """Keys stored by this store for ``service`` from CredEnumerate results (sorted,
+    unique): entries whose target is ``<service>/<UserName>``."""
+    return _parse(credentials, lambda target, user: target == f"{service}/{user}")
 
-    A credential belongs to the service when its target is ``service`` or
-    ``<UserName>@service``; its ``UserName`` field is the keyring username.
-    """
+
+def parse_legacy_usernames(service: str, credentials: list[dict[str, Any]]) -> list[str]:
+    """Keys in the old shared layout: target ``service`` or ``<UserName>@service``."""
+    return _parse(credentials, lambda target, user: target in (service, f"{user}@{service}"))
+
+
+def _parse(credentials: list[dict[str, Any]], belongs: Callable[[str, str], bool]) -> list[str]:
     names: set[str] = set()
     for cred in credentials:
         target = cred.get("TargetName")
         user = cred.get("UserName")
         if not isinstance(target, str) or not isinstance(user, str):
             continue
-        target = target.removeprefix(_ENUM_TARGET_PREFIX)
-        if target in (service, f"{user}@{service}"):
+        if belongs(target.removeprefix(_ENUM_TARGET_PREFIX), user):
             names.add(user)
     return sorted(names)
 
@@ -161,6 +181,7 @@ class KeyringSecretStore:
         # vault.Cipher while unlocked, vault.LockedCipher while locked; None stores plain
         # values (no Tsunami password set: tests, and stores from before the vault).
         self.cipher = cipher
+        self._known: set[str] | None = None  # names at the last check_missing()
 
     def __repr__(self) -> str:
         return f"KeyringSecretStore(service={self._service!r})"
@@ -246,7 +267,7 @@ class KeyringSecretStore:
         or a password change. Everything is read before anything is written."""
         keys = self._usernames()
         plain = {key: self._get(key, key) for key in keys}
-        stored = {key: keyring.get_password(self._service, key) for key in keys}
+        stored = {key: keyring.get_password(self._entry(key), key) for key in keys}
         previous, self.cipher = self.cipher, cipher
         try:
             for key, value in plain.items():
@@ -255,7 +276,7 @@ class KeyringSecretStore:
             # Put every entry back as it was, so the old password still opens all of them.
             for key, raw in stored.items():
                 if raw is not None:
-                    keyring.set_password(self._service, key, raw)
+                    self._write(key, raw)
             self.cipher = previous
             raise
         return len(plain)
@@ -267,7 +288,80 @@ class KeyringSecretStore:
             self._delete(key, key)
         return len(keys)
 
+    def encrypt_plain(self) -> int:
+        """Encrypt values still stored in plain text (saved before the Tsunami password,
+        or copied from an old entry). Needs the unlocked cipher; returns how many."""
+        if self.cipher is None or isinstance(self.cipher, LockedCipher):
+            return 0
+        done = 0
+        for key in self._usernames():
+            raw = keyring.get_password(self._entry(key), key)
+            if raw is None or raw.startswith(TOKEN_PREFIX):
+                continue
+            self._set(key, raw, key)  # _set encrypts with the cipher
+            done += 1
+        return done
+
+    def migrate_legacy(self) -> int:
+        """Move entries from the old shared layout (one ``<service>`` target, the rest
+        at ``<key>@<service>``) to one target per entry. The raw stored value is copied,
+        so nothing is decrypted and no password is needed; the old entry is deleted only
+        after the copy reads back identical. Returns how many entries moved."""
+        moved = 0
+        for key in self._legacy_keys():
+            try:
+                raw = keyring.get_password(self._service, key)
+                if raw is None:
+                    continue
+                current = keyring.get_password(self._entry(key), key)
+                if current is None:
+                    self._write(key, raw)
+                    if keyring.get_password(self._entry(key), key) != raw:
+                        log.error("credential store: copy of %s did not read back; kept", key)
+                        continue
+                    moved += 1
+                    log.info("credential store: moved %s to its own entry", key)
+                else:
+                    log.info("credential store: %s already has its own entry", key)
+                keyring.delete_password(self._service, key)
+                self._index_add(key)
+            except Exception as exc:  # noqa: BLE001 - one bad entry must not stop the rest
+                log.error("credential store: could not move %s (%s)", key, type(exc).__name__)
+        return moved
+
+    def _legacy_keys(self) -> list[str]:
+        if self._enumerator is not None or _on_win_vault():
+            enumerate_fn = self._enumerator or _win32_enumerate
+            return parse_legacy_usernames(self._service, enumerate_fn())
+        if self._index_path is None:
+            return []
+        return [k for k in self._index_read() if keyring.get_password(self._service, k)]
+
+    def check_missing(self) -> list[str]:
+        """Names that were there at the last check and are gone now, without this
+        process deleting them. The first call records the names and returns []."""
+        current = set(self._usernames())
+        known, self._known = self._known, current
+        return sorted(known - current) if known is not None else []
+
     # ---- internals ----
+
+    def _entry(self, key: str) -> str:
+        """The keyring service for one entry: its own Credential Manager target."""
+        return f"{self._service}/{key}"
+
+    def _write(self, key: str, value: str) -> None:
+        """Store a raw value on the entry's own target, never moving another entry."""
+        backend = keyring.get_keyring()
+        direct = getattr(backend, "_set_password", None)
+        if direct is not None:  # WinVaultKeyring: CredWrite to exactly this target
+            # Never enterprise (keyring's default): Windows keeps enterprise and local-machine
+            # entries apart, and an enterprise write elsewhere brings a stale enterprise copy
+            # back over a newer local one with the same target. That replaced a real login.
+            backend.persist = "local machine"
+            direct(self._entry(key), key, value)
+        else:
+            keyring.set_password(self._entry(key), key, value)
 
     @staticmethod
     def _secret_key(customer: str, name: str) -> str:
@@ -275,7 +369,7 @@ class KeyringSecretStore:
 
     def _get(self, key: str, label: str) -> str:
         try:
-            value = keyring.get_password(self._service, key)
+            value = keyring.get_password(self._entry(key), key)
         except Exception as exc:  # noqa: BLE001
             raise self._backend_error("reading", label, exc) from None
         if value is None:
@@ -301,16 +395,20 @@ class KeyringSecretStore:
                 f"over the Credential Manager limit of {MAX_VALUE_BYTES}"
             )
         try:
-            keyring.set_password(self._service, key, value)
+            self._write(key, value)
         except Exception as exc:  # noqa: BLE001
             raise self._backend_error("writing", label, exc) from None
         self._index_add(key)
+        if self._known is not None:
+            self._known.add(key)
         log.info("credential store: wrote %s (%s, from %s)", key, self._service, _caller())
 
     def _delete(self, key: str, label: str) -> None:
         log.info("credential store: deleting %s (%s, from %s)", key, self._service, _caller())
+        if self._known is not None:
+            self._known.discard(key)
         try:
-            keyring.delete_password(self._service, key)
+            keyring.delete_password(self._entry(key), key)
         except keyring.errors.PasswordDeleteError:
             self._index_remove(key)
             raise TsunamiError(f"{label} is not in Credential Manager") from None

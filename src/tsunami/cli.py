@@ -130,14 +130,16 @@ def _run(args: argparse.Namespace) -> int:
             return True
         return input(f"Continue past canary {device}? [y/N] ").strip().lower().startswith("y")
 
+    secrets = KeyringSecretStore(
+        index_path=paths.settings / "credential-index.json", cipher=_unlock(paths)
+    )
+    bootstrap.migrate_credentials(secrets)
     try:
         runner = Runner(
             workspace,
             transport=DeviceTransport(paths, settings),
             history=history,
-            secrets=KeyringSecretStore(
-                index_path=paths.settings / "credential-index.json", cipher=_unlock(paths)
-            ),
+            secrets=secrets,
             paths=paths,
             app_settings=settings,
             on_event=show,

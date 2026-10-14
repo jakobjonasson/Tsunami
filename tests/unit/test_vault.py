@@ -30,7 +30,7 @@ def store(tmp_path) -> KeyringSecretStore:
 
 
 def raw(name: str) -> str | None:
-    return keyring.get_password("tsunami", name)
+    return keyring.get_password(f"tsunami/{name}", name)
 
 
 def test_create_and_unlock(vault):
@@ -154,3 +154,17 @@ def test_failed_rekey_restores_every_entry(store, vault, monkeypatch):
     monkeypatch.setattr(keyring, "set_password", real_set)
     assert {n: raw(n) for n in before} == before
     assert store.cipher is old and store.get_secret("acme", "a") == "Value-A-111"
+
+
+def test_plain_values_are_encrypted_after_unlock(vault, store):
+    """A value still in plain text (saved before the Tsunami password, or copied from an
+    old entry) is encrypted the next time Tsunami is unlocked."""
+    store.set_login("old", LoginCredential("u", "Plain-Pass-1"))  # no cipher yet
+    assert not raw("cred/old").startswith("tv1:")
+    store.cipher = vault.create("Pass-word-123")
+    assert store.encrypt_plain() == 1
+    assert raw("cred/old").startswith("tv1:")
+    assert store.get_login("old") == LoginCredential("u", "Plain-Pass-1")
+    assert store.encrypt_plain() == 0  # nothing left
+    store.cipher = LockedCipher()
+    assert store.encrypt_plain() == 0  # locked: does nothing

@@ -231,6 +231,7 @@ class Runner:
         )
         # Each target's login: its own, else its site's default, else the customer's.
         credentials: dict[str, LoginCredential] = {}
+        notes: dict[str, str] = {}
         if settings.method != ConnectionMethod.RENDER:
             loaded: dict[str, LoginCredential] = {}
             for target in targets:
@@ -238,9 +239,10 @@ class Runner:
                 if name not in loaded:
                     try:
                         loaded[name] = self.secrets.get_login(name)
-                    except TsunamiError:
+                    except TsunamiError as exc:
                         if settings.method == ConnectionMethod.SERIAL:
-                            continue  # factory-default consoles need none
+                            notes[target.label] = str(exc)  # factory consoles need none
+                            continue
                         raise
                 credentials[target.label] = loaded[name]
         jump = None
@@ -294,6 +296,7 @@ class Runner:
             approved_hashes=request.approved_hashes,
             allow_new_host_key=request.allow_new_host_key,
             serial_port=request.serial_port,
+            credential_notes=notes,
         )
 
     # -- execution --------------------------------------------------------------------

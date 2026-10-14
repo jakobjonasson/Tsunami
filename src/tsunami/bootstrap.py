@@ -31,6 +31,19 @@ def configure_keyring() -> None:
     keyring.set_keyring(backend)
 
 
+def migrate_credentials(secrets: object) -> None:
+    """Move logins from the old shared Credential Manager layout; a failure only logs."""
+    import logging
+
+    try:
+        moved = secrets.migrate_legacy()  # type: ignore[attr-defined]
+    except Exception:  # noqa: BLE001 - never stop the app over this
+        logging.getLogger(__name__).exception("credential store: migration failed")
+        return
+    if moved:
+        logging.getLogger(__name__).info("credential store: moved %d entries", moved)
+
+
 def selftest() -> int:
     """Load the models, data files and keyring backend. Returns an exit code."""
     import keyring

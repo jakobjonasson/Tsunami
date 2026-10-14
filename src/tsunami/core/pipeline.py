@@ -83,6 +83,9 @@ class JobContext:
     approved_hashes: Mapping[str, str] | None = None
     allow_new_host_key: bool = True
     serial_port: str | None = None  # chosen at run time when the play says port: ask
+    # Per target label: why it has no login (a serial run goes on without one, since a
+    # factory-default console needs none; the reason is logged before connecting).
+    credential_notes: Mapping[str, str] = field(default_factory=dict)
 
 
 class _Stop(Exception):
@@ -194,6 +197,9 @@ class DevicePipeline:
             cancel=ctx.cancel,
             log=self.log,
         )
+        note = ctx.credential_notes.get(self.label)
+        if note:
+            self.log(f"login: {note}; connecting without one")
         try:
             self.session = ctx.transport.open(target)
         except ConnectCancelled as exc:

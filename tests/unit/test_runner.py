@@ -420,3 +420,41 @@ def test_each_device_log_is_kept_in_history_redacted(ws_root, history, secrets, 
     assert live and device.output_redacted
     assert all(line in device.output_redacted for line in live)  # the Output tab, get_job
     assert SECRET not in device.output_redacted and LOGIN not in device.output_redacted
+
+
+def test_a_serial_run_logs_why_it_has_no_login(ws_root, history, app_paths, tmp_path):
+    """A factory console needs no login, so a serial run goes on without one, but the
+    job log says which login was missing instead of a bare "no login credential"."""
+    from tsunami.core.transports.base import UnreachableError
+
+    secrets = KeyringSecretStore(index_path=tmp_path / "idx2.json")
+    secrets.set_secret("acme", "tacacs", SECRET)  # but no acme-netadmin login
+
+    class Console:
+        target = None
+
+        def open(self, target):
+            Console.target = target
+            raise UnreachableError("COM3: no console prompt after 300s")
+
+    (ws_root / "plays" / "initial" / "bench.yml").write_text(
+        "name: Bench day 0\n"
+        "type: initial\n"
+        "customer: acme\n"
+        "connection:\n  method: serial\n  port: ask\n"
+        "vars:\n  platform: aos-s\n  hostname: tb-1\n  site: site-a\n  role: access\n"
+        'steps:\n  - config:\n      - hostname "{{ hostname }}"\n',
+        encoding="utf-8",
+    )
+    runner, events = make_runner(ws_root, Console(), history, secrets, app_paths)
+    request = RunRequest("plays/initial/bench.yml", RunMode.APPLY, serial_port="COM3")
+    job_id = runner.run(request)
+    assert Console.target is not None and Console.target.credential is None
+    logs = [e.text for e in events if type(e).__name__ == "DeviceLog"]
+    assert any(
+        "login: credential acme-netadmin is not in Credential Manager" in t
+        and "connecting without one" in t
+        for t in logs
+    ), logs
+    [device] = history.devices(job_id)
+    assert "acme-netadmin is not in Credential Manager" in (device.output_redacted or "")

@@ -45,13 +45,21 @@ def pytest_configure(config) -> None:
         return
 
     def refuse(target: str) -> None:
-        if target == SERVICE or target.endswith(f"@{SERVICE}"):
+        if target == SERVICE or target.endswith(f"@{SERVICE}") or target.startswith(f"{SERVICE}/"):
             raise RuntimeError(f"a test tried to change the real Credential Manager ({target})")
 
+    from win32ctypes.pywin32 import win32cred
+
+    ENTERPRISE = win32cred.CRED_PERSIST_ENTERPRISE  # noqa: N806
     write, delete = WinVaultKeyring._set_password, WinVaultKeyring._delete_password
 
     def guarded_write(self, target, username, password):
         refuse(target)
+        if self.persist == ENTERPRISE:
+            # An enterprise write makes Windows bring back stale roaming entries over newer
+            # local-machine ones with the same target: this is how a test (the real-vault
+            # round trip) kept replacing a real login on a developer's machine.
+            raise RuntimeError("a test tried to write an enterprise-persistence credential")
         return write(self, target, username, password)
 
     def guarded_delete(self, target):

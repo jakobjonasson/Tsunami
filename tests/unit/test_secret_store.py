@@ -16,6 +16,7 @@ from tsunami.core.secret_store import (
     KeyringSecretStore,
     LoginCredential,
     parse_enumerated_usernames,
+    parse_legacy_usernames,
 )
 
 
@@ -166,6 +167,20 @@ def test_backend_exception_text_not_propagated(tmp_path):
 
 def test_parse_enumerated_usernames():
     creds = [
+        {"TargetName": "LegacyGeneric:target=tsunami/cred/lab", "UserName": "cred/lab"},
+        {"TargetName": "tsunami/secret/acme/a", "UserName": "secret/acme/a"},
+        {"TargetName": "tsunami/cred/lab", "UserName": "cred/lab"},  # duplicate
+        {"TargetName": "tsunami-test/cred/other", "UserName": "cred/other"},
+        {"TargetName": "tsunami/cred/evil", "UserName": "cred/different"},  # mismatch
+        {"TargetName": "tsunami", "UserName": "cred/old"},  # the old layout: not listed
+        {"TargetName": "cred/old2@tsunami", "UserName": "cred/old2"},
+        {"TargetName": "tsunami/cred/x"},  # no UserName
+    ]
+    assert parse_enumerated_usernames("tsunami", creds) == ["cred/lab", "secret/acme/a"]
+
+
+def test_parse_legacy_usernames():
+    creds = [
         {"TargetName": "LegacyGeneric:target=tsunami", "UserName": "secret/acme/z"},
         {"TargetName": "LegacyGeneric:target=cred/lab@tsunami", "UserName": "cred/lab"},
         {"TargetName": "secret/acme/a@tsunami", "UserName": "secret/acme/a"},
@@ -176,7 +191,7 @@ def test_parse_enumerated_usernames():
         {"TargetName": "evil@tsunami", "UserName": "cred/different"},  # target/user mismatch
         {"TargetName": "tsunami"},  # no UserName
     ]
-    assert parse_enumerated_usernames("tsunami", creds) == [
+    assert parse_legacy_usernames("tsunami", creds) == [
         "cred/lab",
         "secret/acme/a",
         "secret/acme/z",
@@ -185,9 +200,9 @@ def test_parse_enumerated_usernames():
 
 def test_listing_uses_enumerator():
     creds = [
-        {"TargetName": "tsunami", "UserName": "cred/b"},
-        {"TargetName": "cred/a@tsunami", "UserName": "cred/a"},
-        {"TargetName": "secret/acme/k@tsunami", "UserName": "secret/acme/k"},
+        {"TargetName": "tsunami/cred/b", "UserName": "cred/b"},
+        {"TargetName": "tsunami/cred/a", "UserName": "cred/a"},
+        {"TargetName": "tsunami/secret/acme/k", "UserName": "secret/acme/k"},
     ]
     s = KeyringSecretStore(enumerator=lambda: creds)
     assert s.list_logins() == ["a", "b"]
@@ -204,7 +219,9 @@ def test_real_vault_round_trip_and_listing():
     from keyring.backends.Windows import WinVaultKeyring
 
     previous = keyring.get_keyring()
-    keyring.set_keyring(WinVaultKeyring())
+    backend = WinVaultKeyring()
+    backend.persist = "local machine"  # as the app sets it; never enterprise (see conftest)
+    keyring.set_keyring(backend)
     s = KeyringSecretStore(TEST_SERVICE)
     try:
         s.set_login("t1", LoginCredential("u", "p", "e"))
@@ -238,6 +255,33 @@ def test_tests_can_never_change_the_real_tsunami_entries():
         backend.set_password(SERVICE, "cred/guard-probe", "x")
     with pytest.raises(RuntimeError, match="real Credential Manager"):
         backend._delete_password(f"cred/guard-probe@{SERVICE}")
+    with pytest.raises(RuntimeError, match="real Credential Manager"):
+        backend.set_password(f"{SERVICE}/cred/guard-probe", "cred/guard-probe", "x")
+    # keyring's default is enterprise persistence, which tests may never write anywhere
+    with pytest.raises(RuntimeError, match="enterprise-persistence"):
+        backend.set_password(f"{TEST_SERVICE}/cred/guard-probe", "cred/guard-probe", "x")
+
+
+@pytest.mark.skipif(sys.platform != "win32", reason="Windows Credential Manager only")
+def test_writes_force_local_machine_persistence(monkeypatch):
+    """Even on a backend left at keyring's enterprise default, the store writes with
+    local-machine persistence: Windows lets a stale enterprise entry resurface over a
+    newer local one with the same target, so Tsunami never writes enterprise."""
+    from keyring.backends.Windows import WinVaultKeyring
+    from win32ctypes.pywin32 import win32cred
+
+    seen: list[int] = []
+    backend = WinVaultKeyring()  # enterprise by default
+    monkeypatch.setattr(
+        WinVaultKeyring, "_set_password", lambda self, *a: seen.append(self.persist)
+    )
+    previous = keyring.get_keyring()
+    keyring.set_keyring(backend)
+    try:
+        KeyringSecretStore(TEST_SERVICE).set_secret("acme", "probe", "v")
+    finally:
+        keyring.set_keyring(previous)
+    assert seen == [win32cred.CRED_PERSIST_LOCAL_MACHINE]
 
 
 def test_writes_and_deletes_are_logged_by_name_never_value(tmp_path, caplog):
@@ -249,3 +293,135 @@ def test_writes_and_deletes_are_logged_by_name_never_value(tmp_path, caplog):
     assert "wrote cred/lab" in text and "deleting cred/lab" in text
     assert "test_secret_store.test_writes_and_deletes_are_logged_by_name_never_value" in text
     assert "Pw-Secret-99" not in text
+
+
+# -- one entry per value, and moving the old shared layout ------------------------------
+
+
+class FakeWinVault(KeyringBackend):
+    """keyring's WinVaultKeyring logic over a dict of targets: the last username written
+    under a service takes the bare target, the previous one moves to <user>@<service>."""
+
+    priority = 1  # type: ignore[assignment]
+
+    def __init__(self) -> None:
+        super().__init__()
+        self.targets: dict[str, tuple[str, str]] = {}  # target -> (UserName, value)
+        self.corrupt_new_writes = False
+
+    def get_password(self, service, username):
+        hit = self.targets.get(service)
+        if hit is None or hit[0] != username:
+            hit = self.targets.get(f"{username}@{service}")
+        return hit[1] if hit else None
+
+    def set_password(self, service, username, password):
+        if service in self.targets:
+            user, value = self.targets[service]
+            self.targets[f"{user}@{service}"] = (user, value)
+        if self.corrupt_new_writes and "/" in service:
+            password = password + "-garbled"
+        self.targets[service] = (username, password)
+
+    def delete_password(self, service, username):
+        deleted = False
+        for target in (service, f"{username}@{service}"):
+            if self.targets.get(target, ("",))[0] == username:
+                del self.targets[target]
+                deleted = True
+        if not deleted:
+            raise keyring.errors.PasswordDeleteError(service)
+
+    def _set_password(self, target, username, password):  # WinVault's direct CredWrite
+        if self.corrupt_new_writes and "/" in target:
+            password = password + "-garbled"
+        self.targets[target] = (username, password)
+
+    def enumerate(self) -> list[dict[str, str]]:
+        return [{"TargetName": t, "UserName": u} for t, (u, _v) in self.targets.items()]
+
+
+@pytest.fixture
+def vault():
+    backend = FakeWinVault()
+    previous = keyring.get_keyring()
+    keyring.set_keyring(backend)
+    yield backend
+    keyring.set_keyring(previous)
+
+
+def test_each_value_has_its_own_target_and_writes_never_move_another(vault):
+    s = KeyringSecretStore(enumerator=vault.enumerate)
+    s.set_login("jj-router", LoginCredential("u1", "p1"))
+    s.set_login("cml-lab", LoginCredential("u2", "p2"))
+    s.set_login("jj-router", LoginCredential("u1", "p1b"))  # overwrite
+    assert sorted(vault.targets) == ["tsunami/cred/cml-lab", "tsunami/cred/jj-router"]
+    s.delete_login("jj-router")
+    assert s.get_login("cml-lab") == LoginCredential("u2", "p2")
+    assert s.list_logins() == ["cml-lab"]
+
+
+def test_migrate_moves_the_old_shared_layout_including_a_duplicate(vault):
+    # The state found on the bench: jj-router on the bare target AND at jj-router@,
+    # another login at its compound target, and a secret.
+    vault.targets = {
+        "tsunami": ("cred/jj-router", "J-new"),
+        "cred/jj-router@tsunami": ("cred/jj-router", "J-old"),
+        "cred/cml-lab@tsunami": ("cred/cml-lab", "C"),
+        "secret/acme/tacacs@tsunami": ("secret/acme/tacacs", "T"),
+        "tsunami-test": ("cred/other", "O"),  # another service: left alone
+    }
+    s = KeyringSecretStore(enumerator=vault.enumerate)
+    assert s.migrate_legacy() == 3
+    assert vault.targets == {
+        "tsunami/cred/jj-router": ("cred/jj-router", "J-new"),  # the bare one wins
+        "tsunami/cred/cml-lab": ("cred/cml-lab", "C"),
+        "tsunami/secret/acme/tacacs": ("secret/acme/tacacs", "T"),
+        "tsunami-test": ("cred/other", "O"),
+    }
+    assert s.migrate_legacy() == 0  # nothing left to move
+
+
+def test_migrate_keeps_an_existing_new_entry_and_drops_the_old_one(vault):
+    vault.targets = {
+        "tsunami/cred/lab": ("cred/lab", "NEW"),
+        "tsunami": ("cred/lab", "OLD"),
+    }
+    s = KeyringSecretStore(enumerator=vault.enumerate)
+    assert s.migrate_legacy() == 0
+    assert vault.targets == {"tsunami/cred/lab": ("cred/lab", "NEW")}
+
+
+def test_migrate_keeps_the_old_entry_when_the_copy_does_not_read_back(vault, caplog):
+    vault.targets = {"tsunami": ("cred/lab", "OLD")}
+    vault.corrupt_new_writes = True
+    s = KeyringSecretStore(enumerator=vault.enumerate)
+    with caplog.at_level("ERROR", logger="tsunami.core.secret_store"):
+        assert s.migrate_legacy() == 0
+    assert vault.targets["tsunami"] == ("cred/lab", "OLD")  # never deleted
+    assert "did not read back" in caplog.text and "OLD" not in caplog.text
+
+
+def test_migrate_without_enumeration_uses_the_index(tmp_path, memory_keyring):
+    keyring.set_password("tsunami", "cred/lab", '{"username": "u", "password": "p"}')
+    index = tmp_path / "idx.json"
+    index.write_text('["cred/lab"]', encoding="utf-8")
+    s = KeyringSecretStore(index_path=index)
+    assert s.migrate_legacy() == 1
+    assert keyring.get_password("tsunami", "cred/lab") is None
+    assert s.get_login("lab") == LoginCredential("u", "p")
+    assert s.list_logins() == ["lab"]
+
+
+def test_check_missing_reports_only_what_this_process_did_not_delete(vault):
+    s = KeyringSecretStore(enumerator=vault.enumerate)
+    s.set_login("a", LoginCredential("u", "p"))
+    s.set_login("b", LoginCredential("u", "p"))
+    assert s.check_missing() == []  # first call records
+    s.delete_login("a")  # Tsunami's own delete: not reported
+    other = KeyringSecretStore(enumerator=vault.enumerate)
+    other.delete_login("b")  # something else removes it
+    assert s.check_missing() == ["cred/b"]
+    assert s.check_missing() == []  # reported once
+    s.set_login("c", LoginCredential("u", "p"))
+    assert s.check_missing() == []

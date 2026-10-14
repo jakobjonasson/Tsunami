@@ -34,6 +34,7 @@
 - Primary (accent) buttons need `setProperty("primary", True)` before the widget is first styled; setting it later leaves the default look.
 - CI runs on 2-vCPU Windows runners: timing assertions need slack (see `tests/gui/test_responsiveness.py`).
 - Tests use an in-memory keyring and temp `%APPDATA%`/`%LOCALAPPDATA%` (`tests/conftest.py`); never touch the real Credential Manager or Recycle Bin from a test. Vault tests lower the scrypt cost.
+- Never write a Credential Manager entry with enterprise persistence (keyring's default), not even in a test or a scratch script: Windows then brings back stale enterprise entries over newer local-machine ones with the same target, and the local one is lost. Use `bootstrap.configure_keyring()` or set `persist = "local machine"`; the test guard refuses enterprise writes.
 - `history.db` schema changes go in a new numbered file in `core/migrations/`, never an edit to an old one.
 - Paramiko 5 has no SHA-1; `core/transports/legacy_ssh.py` adds it back as a fallback. Netmiko gets the transport through `connection_class()` in `netmiko_session.py`.
 
