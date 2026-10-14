@@ -106,11 +106,14 @@ class DevicePipeline:
         self.prepared: Prepared | None = None
         self.changed = False  # any config or exec step was sent
         self.running_size: int | None = None  # bytes of running config, for the snapshot
+        self.output: list[str] = []  # this device's job log, redacted; kept in history
 
     # -- events and history ------------------------------------------------------
 
     def status(self, status: DeviceStatus, detail: str = "", **fields: Any) -> None:
         detail = self.ctx.redactor.text(detail)
+        if self.output:
+            fields.setdefault("output_redacted", "\n".join(self.output)[-_OUTPUT_KEEP:])
         self.ctx.history.update_device(self.ctx.job_id, self.label, status=status, **fields)
         self.ctx.emit(
             DeviceStatusChanged(
@@ -119,9 +122,9 @@ class DevicePipeline:
         )
 
     def log(self, text: str) -> None:
-        self.ctx.emit(
-            DeviceLog(job_id=self.ctx.job_id, device=self.label, text=self.ctx.redactor.text(text))
-        )
+        redacted = self.ctx.redactor.text(text)
+        self.output.append(redacted)
+        self.ctx.emit(DeviceLog(job_id=self.ctx.job_id, device=self.label, text=redacted))
 
     # -- the pipeline ----------------------------------------------------------------
 
@@ -189,6 +192,7 @@ class DevicePipeline:
             baud=ctx.play.connection.baud or self.model_baud(),
             allow_new_host_key=ctx.allow_new_host_key,
             cancel=ctx.cancel,
+            log=self.log,
         )
         try:
             self.session = ctx.transport.open(target)
@@ -516,6 +520,9 @@ def _prune(folder: Path, keep: int) -> None:
     backups = sorted(folder.glob("*.cfg"))
     for old in backups[: max(0, len(backups) - keep)]:
         old.unlink(missing_ok=True)
+
+
+_OUTPUT_KEEP = 200_000  # characters of a device's log kept in history
 
 
 def _now() -> datetime:

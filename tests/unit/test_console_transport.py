@@ -410,3 +410,35 @@ def test_cancel_stops_the_console_wait() -> None:
     with pytest.raises(ConnectCancelled, match="cancelled while waiting for the console"):
         t.open(dataclasses.replace(target, cancel=cancel))
     assert ports[0].closed
+
+
+def test_the_console_conversation_goes_to_the_job_log_without_the_password() -> None:
+    transport, target, _ports, _conns, _clock = _replay_2530(CRED)
+    lines: list[str] = []
+    transport.open(dataclasses.replace(target, log=lines.append))
+    text = "\n".join(lines)
+    assert "console: COM3 at 9600 baud" in text
+    assert "Press <Enter> twice to continue" in text  # what the switch showed
+    assert "console: username: sent <username>" in text
+    assert "console: confirm password: sent <password>" in text
+    assert "console: ready at 'HP-2530-48G#'" in text
+    assert "handing over to Netmiko" in text and "console: logged in" in text
+    assert PW not in text and "\x1b" not in text
+
+
+def test_a_failed_netmiko_login_logs_what_the_console_last_showed() -> None:
+    from netmiko.exceptions import NetmikoAuthenticationException
+
+    lines: list[str] = []
+
+    def netmiko_factory(**k):
+        k["session_log"].write(b"\x1b[24;1HUsername: ops\r\nPassword: \r\nInvalid password\r\n")
+        raise NetmikoAuthenticationException("auth failed")
+
+    t, target, _, _ = make(Platform.AOS_S, [("\nsw1# ", None)])
+    t._netmiko_factory = netmiko_factory
+    with pytest.raises(AuthenticationError, match="console login failed"):
+        t.open(dataclasses.replace(target, log=lines.append))
+    text = "\n".join(lines)
+    assert "Netmiko login failed (NetmikoAuthenticationException); it saw:" in text
+    assert "Invalid password" in text and "\x1b" not in text

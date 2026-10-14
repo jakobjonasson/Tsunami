@@ -409,3 +409,14 @@ def test_cancel_during_the_connect_marks_device_and_job_cancelled(
     job_id = runner.run(RunRequest(ADD_VLAN, RunMode.CHECK, prompts=VLAN, limit=["sa-as01"]))
     assert statuses(history, job_id) == {"sa-as01": DeviceStatus.CANCELLED}
     assert history.get_job(job_id).status == JobStatus.CANCELLED
+
+
+def test_each_device_log_is_kept_in_history_redacted(ws_root, history, secrets, app_paths):
+    mock = mock_for(["sa-as01"])
+    runner, events = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(BASELINE, RunMode.APPLY, limit=["sa-as01"]))
+    [device] = history.devices(job_id)
+    live = [e.text for e in events if type(e).__name__ == "DeviceLog"]
+    assert live and device.output_redacted
+    assert all(line in device.output_redacted for line in live)  # the Output tab, get_job
+    assert SECRET not in device.output_redacted and LOGIN not in device.output_redacted

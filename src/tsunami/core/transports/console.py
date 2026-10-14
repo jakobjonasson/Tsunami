@@ -14,10 +14,17 @@ moves the cursor with ESC[24;1H where other devices send a newline). The buffer 
 cleaned after each read is joined onto it, so a sequence split across two reads is
 cleaned once its end arrives; cursor positioning becomes a line break so a prompt is not
 glued onto the previous line.
+
+What the console showed and what Tsunami answered go to the device's job log (target.log,
+redacted there; passwords are never written, only "<password>"): the screen each time a
+rule fires, the prompt it hands over at, and the last screen on any failure. Netmiko's
+own login runs with an in-memory session log (Netmiko masks the password and secret in
+it); its tail is logged when the login fails.
 """
 
 from __future__ import annotations
 
+import io
 import re
 import time
 from collections.abc import Callable, Mapping, Sequence
@@ -44,6 +51,7 @@ _WAKE_AFTER = 5.0  # seconds of silence before sending a bare Enter
 _POLL = 0.1
 _MAX_FIRINGS = 3  # per rule, so a rejected factory login falls through to Netmiko
 _BUFFER_KEEP = 4000
+_SCREEN_LINES = 12  # lines of console text logged on a failure
 
 # Answer markers; never sent literally.
 CREDENTIAL_PASSWORD = "\x00credential-password"
@@ -180,6 +188,7 @@ class ConsoleTransport:
         xonxoff = family == PlatformFamily.AOS_S
 
         self.dialog_log = []
+        _log(target, f"console: {port} at {baud} baud; waiting up to {self.wait_timeout:.0f}s")
         self._clear_dialogs(target, family, port, baud, xonxoff)
 
         cred = target.credential
@@ -191,11 +200,16 @@ class ConsoleTransport:
             "secret": (cred.enable if cred else None) or "",
             "fast_cli": False,
             "conn_timeout": target.connect_timeout,
+            "session_log": io.BytesIO(),  # Netmiko masks the password and secret in it
         }
+        _log(target, f"console: handing over to Netmiko ({kwargs['device_type']}) to log in")
         try:
             conn = self._netmiko_factory(**kwargs)
         except Exception as exc:  # noqa: BLE001 - mapped below; messages carry the type only
+            tail = _screen(_session_text(kwargs["session_log"]), _SCREEN_LINES)
+            _log(target, f"console: Netmiko login failed ({type(exc).__name__}); it saw:\n{tail}")
             raise self._map_netmiko_error(exc, port) from None
+        _log(target, "console: logged in")
         return NetmikoSession(conn, family, command_timeout=target.command_timeout)
 
     @staticmethod
@@ -258,13 +272,20 @@ class ConsoleTransport:
                 if best is not None:
                     end, i = best
                     fired[i] += 1
-                    self._answer(ser, rules[i], cred, port)
+                    _log(target, f"console showed: {_screen(buf[:end], 3)}")
+                    try:
+                        self._answer(ser, rules[i], cred, port)
+                    finally:
+                        if self.dialog_log:
+                            _log(target, f"console: {self.dialog_log[-1]}")
                     buf = buf[end:]
                     last_activity = self._clock()
                     continue
                 if self._ready(buf, cred is not None):
+                    _log(target, f"console: ready at {_screen(buf, 1)!r}")
                     return
                 if cred is None and self._ready(buf, True):  # a login prompt, nothing to give
+                    _log(target, f"console showed: {_screen(buf, 3)}")
                     raise AuthenticationError(
                         f"{port}: the console asks for a username, but no login credential "
                         "was provided"
@@ -274,6 +295,7 @@ class ConsoleTransport:
                         ser.write(b"\r")
                         last_activity = self._clock()
                     self._sleep(_POLL)
+            _log(target, f"console: no prompt; the last screen was:\n{_screen(buf, _SCREEN_LINES)}")
             raise UnreachableError(f"{port}: no console prompt after {self.wait_timeout:.0f}s")
         finally:
             try:
@@ -322,3 +344,18 @@ class ConsoleTransport:
         if _PROMPT_RE.match(last):
             return True
         return has_credential and bool(_LOGIN_RE.search(last))
+
+
+def _log(target: ConnectTarget, text: str) -> None:
+    if target.log is not None:
+        target.log(text)
+
+
+def _screen(text: str, lines: int) -> str:
+    """The last lines of console text with something on them, for the job log."""
+    shown = [line.rstrip() for line in clean_console(text).splitlines() if line.strip()]
+    return "\n".join(line[:200] for line in shown[-lines:]) or "(nothing)"
+
+
+def _session_text(buffer: io.BytesIO) -> str:
+    return buffer.getvalue().decode("utf-8", errors="replace")

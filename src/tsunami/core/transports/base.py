@@ -62,6 +62,9 @@ class ConnectTarget:
     allow_new_host_key: bool = True  # trust on first use; MCP jobs never replace a key
     # The job's cancel event: a transport that waits (the console, up to minutes) checks it.
     cancel: Any = field(default=None, repr=False, compare=False)
+    # Where a transport reports what happened while connecting (the device's job log,
+    # redacted there). The console uses it for its dialog transcript.
+    log: Any = field(default=None, repr=False, compare=False)
 
 
 class Transport(Protocol):
