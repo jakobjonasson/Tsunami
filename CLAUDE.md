@@ -21,6 +21,7 @@
 ## Workflow
 
 - Commit and push straight to `main`. No `Co-Authored-By` or "Generated with" lines in commit messages.
+- Bump `__version__` (`src/tsunami/__init__.py`) when shipping an installer: minor for new features, patch for fix-only builds.
 - Every push runs CI (`.github/workflows/ci.yml`). Check it with `gh run list` and `gh run view <id> --log-failed`; the installer is the `tsunami-installer` artifact (see README, Releases).
 - Real customer and employer names are blocked by local `pre-commit` and `commit-msg` hooks that read `.git/info/denylist`. Neither is versioned, so a fresh clone has no protection: ask the user for the terms and recreate them before the first commit. Never write the terms anywhere in the repo.
 - A change that deviates from or extends the spec updates `docs/design.md` in the same commit, with a line in its Revision notes.

@@ -41,7 +41,7 @@ CI (`frozen-build` job in `.github/workflows/ci.yml`) does the build, both self-
 ## Sign
 
 ```powershell
-packaging\sign.ps1 -Thumbprint <sha1> -Files dist\Tsunami\tsunami.exe,dist\Tsunami\tsunami-mcp.exe,packaging\Output\Tsunami-0.1.0-setup.exe
+packaging\sign.ps1 -Thumbprint <sha1> -Files dist\Tsunami\tsunami.exe,dist\Tsunami\tsunami-mcp.exe,packaging\Output\Tsunami-<version>-setup.exe
 ```
 
 Or set `TSUNAMI_SIGN_THUMBPRINT`, or `TSUNAMI_PFX_PATH` plus the password in `TSUNAMI_PFX_PASSWORD`. `-TimestampUrl` defaults to `http://timestamp.digicert.com`. Without a certificate the script exits 1, or 0 with `-Optional`. Sign the exes before compiling the installer so the installer contains signed binaries, then sign the installer.

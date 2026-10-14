@@ -31,7 +31,7 @@ What is left, roughly in priority order. Check the user's wishes before starting
    - whether `cfg-restore` leaves flash-stored credentials alone
    Work packages 3.8 (CML suite) and 3.11 (Aruba lab) cover this.
 2. **Code signing.** `packaging/sign.ps1` is ready; it needs a certificate (an internal CA if the tool stays in-house, else an OV certificate with cloud signing) and EDR allowlisting.
-3. **Version bump.** Everything still ships as 0.1.0 (`src/tsunami/__init__.py`). Bump it per release so installers can be told apart.
+3. **Versioning.** `__version__` in `src/tsunami/__init__.py` is the only place it is set; the installer is named from it. Bump the minor version for a build with new features and the patch version for a fix-only build, in the commit that ships it. 0.2.0 was the first bump.
 4. **MCP Inspector pass** (5.5) and a Claude Desktop check after each MCP change. The Store build of Claude Desktop keeps its config under `%LOCALAPPDATA%\Packages\Claude_*`; `core/registration.py` handles both locations.
 5. **Ideas raised but not built:** a "Trust host keys" bulk probe for a customer or site (records keys without logging in, flags changes); import of known host keys from MobaXterm; reloading the workspace automatically when files change; generating `no` commands to remove compliance extras; listing "inventory only" devices (APs, controllers on unsupported platforms).
 6. **Catalog verification** (1.9): lifecycle, end-of-sale years, example SKUs and model patterns in `core/data/hardware.yml` are unverified against vendor sources.

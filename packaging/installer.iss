@@ -1,4 +1,4 @@
-; Inno Setup 6 script. Build: ISCC /DAppVersion=0.1.0 packaging\installer.iss
+; Inno Setup 6 script. Build: ISCC /DAppVersion=<version> packaging\installer.iss
 ; (build.ps1 passes the version from tsunami.__version__.)
 
 #ifndef AppVersion
