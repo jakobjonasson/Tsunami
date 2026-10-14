@@ -192,7 +192,7 @@ def test_login_prompt_ready_only_with_credential() -> None:
     t.open(target)
     assert conns[0]["username"] == "ops"
     t2, target2, _, _ = make(Platform.IOS, steps, cred=None, wait_timeout=10)
-    with pytest.raises(UnreachableError):
+    with pytest.raises(AuthenticationError, match="asks for a username"):
         t2.open(target2)
 
 
@@ -336,15 +336,16 @@ def test_clean_console_keeps_a_split_sequence_until_its_end_arrives():
     assert clean_console(first + "1HHP-2530-24G# ") == "prompt line\nHP-2530-24G# "
 
 
-@pytest.mark.parametrize("cred", [CRED, None])
-def test_procurve_2530_capture_reaches_the_manager_prompt(cred) -> None:
-    boot = (FIXTURES / "procurve-2530-boot.txt").read_bytes()
-    prompt = (FIXTURES / "procurve-2530-prompt.txt").read_bytes()
-    assert b"\x1b[" in boot and b"\x1b[" in prompt
+def _replay_2530(cred):
+    """A real 2530-48G (YA.16.11) boot captured with PuTTY: speed sense, then a login
+    prompt wrapped in escape codes (ESC[24;1HUsername: ESC[?25h ESC[24;11H...)."""
+    boot = (FIXTURES / "aos-s-2530-48g-boot.txt").read_bytes()
+    login = (FIXTURES / "aos-s-2530-48g-login.txt").read_bytes()
+    assert b"Press <Enter> twice" in boot and b"\x1b[24;1HUsername: " in login
     ports: list[ChunkedSerial] = []
 
     def serial_factory(**k):
-        s = ChunkedSerial([(boot, "\r"), (prompt, None)], **k)
+        s = ChunkedSerial([(boot, "\r\r"), (login, None)], **k)
         ports.append(s)
         return s
 
@@ -368,10 +369,24 @@ def test_procurve_2530_capture_reaches_the_manager_prompt(cred) -> None:
         credential=cred,
         serial_port="COM3",
     )
+    return transport, target, ports, conns, clock
+
+
+def test_2530_capture_answers_speed_sense_and_reaches_the_login_prompt() -> None:
+    transport, target, ports, conns, clock = _replay_2530(CRED)
     transport.open(target)
-    assert ports[0].writes == ["\r"]  # pressed a key once, then found the prompt
+    assert ports[0].writes == ["\r\r"]  # both Enters for speed sense, nothing else
+    assert transport.dialog_log == ["speed sense: sent '\\r'"]
     assert conns and conns[0]["device_type"] == "hp_procurve_serial"
+    assert conns[0]["username"] == "ops"  # Netmiko logs in at the Username: prompt
     assert clock.t < 30  # found it, did not time out
+
+
+def test_2530_login_prompt_without_a_credential_fails_at_once() -> None:
+    transport, target, _ports, conns, clock = _replay_2530(None)
+    with pytest.raises(AuthenticationError, match="asks for a username, but no login"):
+        transport.open(target)
+    assert not conns and clock.t < 30
 
 
 def test_cancel_stops_the_console_wait() -> None:

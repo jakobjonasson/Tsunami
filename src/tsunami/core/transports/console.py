@@ -79,6 +79,9 @@ DEFAULT_DIALOGS: dict[PlatformFamily, tuple[DialogRule, ...]] = {
         DialogRule(r"(?i)confirm new password:\s*$", CREDENTIAL_PASSWORD, "confirm admin password"),
     ),
     PlatformFamily.AOS_S: (
+        # Seen on a 2530-48G (YA.16.11) after boot; the answer "\r" plus the usual Enter
+        # sends the two it asks for.
+        DialogRule(r"Press <Enter> twice to continue", "\r", "speed sense"),
         DialogRule(r"Press any key to continue", "", "press any key"),
         # Prompt text is unverified. The retype rule precedes the manager rule because
         # "Retype Manager password:" would also match the latter (ties go to rule order).
@@ -256,6 +259,11 @@ class ConsoleTransport:
                     continue
                 if self._ready(buf, cred is not None):
                     return
+                if cred is None and self._ready(buf, True):  # a login prompt, nothing to give
+                    raise AuthenticationError(
+                        f"{port}: the console asks for a username, but no login credential "
+                        "was provided"
+                    )
                 if not data:
                     if self._clock() - last_activity >= _WAKE_AFTER:
                         ser.write(b"\r")
