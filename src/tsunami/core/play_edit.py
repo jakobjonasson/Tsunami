@@ -16,6 +16,7 @@ from pathlib import Path
 
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
+from tsunami.core.models.play import GLOBAL_CUSTOMER
 from tsunami.core.yamlio import RoundTripDoc, YamlLoadError, dump_roundtrip, load_roundtrip
 
 _SECRET_REF = re.compile(r"""secret\(\s*(['"])(?P<customer>[a-z0-9][a-z0-9-]*)/""")
@@ -47,6 +48,15 @@ def copy_play(root: Path, play_path: Path | str, customer: str, name: str | None
         raise TsunamiError(str(exc)) from None
     if not isinstance(doc.data, dict):
         raise TsunamiError(f"{source.name} is not a play")
+    if customer == GLOBAL_CUSTOMER:
+        targets = doc.data.get("targets")
+        named = targets.get("devices") if isinstance(targets, dict) else None
+        if named:
+            raise TsunamiError(
+                "a global play picks devices by role or site, but this one names devices ("
+                + ", ".join(str(d) for d in named)
+                + "); change its targets first"
+            )
     doc.data["customer"] = customer
     dump_roundtrip(
         RoundTripDoc(target, doc.data, doc.mapping_indent, doc.sequence_indent, doc.sequence_offset)

@@ -119,3 +119,36 @@ def test_copy_play_to_another_customer(root):
     assert copy_play(root, GLOBAL_PLAY, "zeta", "zeta-vlan") == Path("plays/push/zeta-vlan.yml")
     with pytest.raises(TsunamiError, match="no live play"):
         copy_play(root, "drafts/plays/push/x.yml", "zeta")
+
+
+def test_copy_a_customer_play_as_a_global_play(root):
+    baseline = root / "plays/baseline/acme-baseline.yml"
+    baseline.write_text(
+        baseline.read_text(encoding="utf-8")
+        + "  - config:\n      - \" key {{ secret('acme/radius') }}\"\n",
+        encoding="utf-8",
+    )
+    new = copy_play(root, "plays/baseline/acme-baseline.yml", "global", "baseline")
+    assert new == Path("plays/baseline/baseline.yml")
+    text = (root / new).read_text(encoding="utf-8")
+    assert "customer: global" in text
+    assert "secret('radius')" in text and "acme/" not in text  # the customer's own secret
+    ws = load_workspace(root)
+    entry = ws.plays[new]
+    assert entry.play is not None and entry.play.customer == "global"
+    assert not [i for i in ws.errors if i.file and Path(i.file).name == "baseline.yml"]
+    bound = play_entry(ws, new, "acme")  # runs for a customer like any global play
+    assert bound.play.customer == "acme"
+
+
+def test_a_play_that_names_devices_cannot_become_global(root):
+    play = root / "plays/push/two-devices.yml"
+    play.write_text(
+        "name: Two devices\ntype: push\ncustomer: acme\n"
+        "targets:\n  devices: [sa-as01, sa-as02]\n"
+        "steps:\n  - config:\n      - ntp server 192.0.2.99\n",
+        encoding="utf-8",
+    )
+    with pytest.raises(TsunamiError, match=r"names devices \(sa-as01, sa-as02\)"):
+        copy_play(root, "plays/push/two-devices.yml", "global")
+    assert not (root / "plays/push/two-devices-global.yml").exists()

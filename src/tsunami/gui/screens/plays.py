@@ -47,14 +47,15 @@ def run_dialog(dialog: QDialog) -> bool:
 
 
 class CopyPlayDialog(QDialog):
-    """Copy a live play for another customer. Snippets are not copied."""
+    """Copy a live play for another customer, or as a global play that runs for any
+    customer (listed first). Snippets are not copied."""
 
     def __init__(self, ctx: AppContext, path: Path, parent: QWidget | None = None) -> None:
         super().__init__(parent)
         self.ctx = ctx
         self.path = path
         self.new_path: Path | None = None
-        self.setWindowTitle(f"Copy {path.stem} to customer")
+        self.setWindowTitle(f"Copy {path.stem}")
         self.setMinimumWidth(440)
         ws = ctx.workspace
         entry = ws.plays.get(path) if ws else None
@@ -62,9 +63,14 @@ class CopyPlayDialog(QDialog):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(10)
-        layout.addWidget(QLabel(f"Copy {path.as_posix()} for another customer."))
+        layout.addWidget(
+            QLabel(f"Copy {path.as_posix()} for another customer, or as a global play.")
+        )
         form = QFormLayout()
         self.customer_combo = wheel.ComboBox()
+        self._own = own
+        if own != GLOBAL_CUSTOMER:
+            self.customer_combo.addItem("Global (any customer)", GLOBAL_CUSTOMER)
         for name in sorted(ws.customers if ws else ()):
             if name != own:
                 self.customer_combo.addItem(name, name)
@@ -99,8 +105,26 @@ class CopyPlayDialog(QDialog):
 
     def _customer_changed(self, _index: int = 0) -> None:
         customer = self.customer_combo.currentData()
-        if customer:
+        if customer == GLOBAL_CUSTOMER:
+            self.name_edit.setText(self._global_name())
+        elif customer:
             self.name_edit.setText(f"{self.path.stem}-{customer}")
+
+    def _global_name(self) -> str:
+        """The file name without the customer in it ("acme-baseline" -> "baseline"), or
+        with "-global" when that name is taken."""
+        stem = self.path.stem
+        if self._own and stem.startswith(f"{self._own}-"):
+            stem = stem.removeprefix(f"{self._own}-")
+        elif self._own and stem.endswith(f"-{self._own}"):
+            stem = stem.removesuffix(f"-{self._own}")
+        if (self.path.parent / f"{stem}.yml") == self.path or self._taken(stem):
+            stem = f"{stem}-global"
+        return stem
+
+    def _taken(self, stem: str) -> bool:
+        ws = self.ctx.workspace
+        return ws is not None and (ws.root / self.path.parent / f"{stem}.yml").exists()
 
     def accept(self) -> None:
         root = self.ctx.workspace.root if self.ctx.workspace else Path()

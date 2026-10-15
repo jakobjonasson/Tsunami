@@ -137,7 +137,8 @@ def test_copy_to_customer(qtbot, main_window, gui_ctx, workspace_root, monkeypat
         seen.append(dialog)
         assert [
             dialog.customer_combo.itemText(i) for i in range(dialog.customer_combo.count())
-        ] == ["beta"]
+        ] == ["Global (any customer)", "beta"]
+        dialog.customer_combo.setCurrentIndex(1)
         assert dialog.name_edit.text() == "add-vlan-beta"
         dialog.name_edit.setText("add-vlan")  # exists: the error shows inline
         dialog.accept()
@@ -186,3 +187,36 @@ def test_wheel_never_changes_a_number_box_or_dropdown(qtbot):
     assert wheel(combo, -120) is False and combo.currentIndex() == 0
     qtbot.keyClick(spin, Qt.Key.Key_Up)  # keys still work
     assert spin.value() == 6
+
+
+def test_copy_as_a_global_play(qtbot, main_window, gui_ctx, workspace_root, monkeypatch):
+    view = _plays(main_window)
+    menu = view.menu_for(_find(view, ADD_VLAN))
+    action = next(a for a in menu.actions() if a.text() == "Copy to customer…")
+
+    def run(dialog: CopyPlayDialog) -> bool:
+        assert dialog.customer_combo.itemText(0) == "Global (any customer)"
+        assert dialog.customer_combo.currentData() == "global"
+        assert dialog.name_edit.text() == "add-vlan-global"  # "add-vlan" is taken
+        dialog.accept()
+        return dialog.new_path is not None
+
+    monkeypatch.setattr(plays_screen, "run_dialog", run)
+    action.trigger()
+    new = Path("plays/push/add-vlan-global.yml")
+    assert "customer: global" in (workspace_root / new).read_text(encoding="utf-8")
+    qtbot.waitUntil(lambda: new in gui_ctx.workspace.plays, timeout=10000)
+    assert gui_ctx.workspace.plays[new].play.customer == "global"
+    labels = [view.tree.topLevelItem(i).text(0) for i in range(view.tree.topLevelItemCount())]
+    push = next(
+        view.tree.topLevelItem(i)
+        for i in range(view.tree.topLevelItemCount())
+        if view.tree.topLevelItem(i).text(0) == "Push"
+    )
+    assert push.child(0).text(0) == "Global", labels  # Global first under the type
+
+
+def test_copy_dialog_strips_the_customer_from_a_global_name(main_window, gui_ctx):
+    dialog = CopyPlayDialog(gui_ctx, Path("plays/baseline/acme-baseline.yml"), main_window)
+    assert dialog.customer_combo.currentData() == "global"
+    assert dialog.name_edit.text() == "baseline"
