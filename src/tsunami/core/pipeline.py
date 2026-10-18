@@ -242,6 +242,19 @@ class DevicePipeline:
         known = [f"{k}={v}" for k, v in (("model", facts.model), ("version", facts.version)) if v]
         if known:
             self.log("facts: " + " ".join(known))
+        if self.device is not None:  # a device staged over console has no inventory entry
+            redact = self.ctx.redactor.text
+            try:
+                self.ctx.history.record_device_facts(
+                    self.ctx.play.customer,
+                    self.device.name,
+                    platform=facts.platform.value if facts.platform else None,
+                    model=redact(facts.model) if facts.model else None,
+                    version=redact(facts.version) if facts.version else None,
+                    serial=redact(facts.serial) if facts.serial else None,
+                )
+            except Exception:  # noqa: BLE001 - a display cache must not fail a run
+                log.warning("could not record facts for %s", self.label, exc_info=True)
         return facts
 
     def final_render(self, facts: Facts | None) -> Rendering:

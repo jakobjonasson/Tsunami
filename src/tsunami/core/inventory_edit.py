@@ -11,7 +11,7 @@ See design.md, Inventory and variables; GUI: Inventory.
 
 from __future__ import annotations
 
-from collections.abc import Callable, Mapping
+from collections.abc import Callable, Mapping, Sequence
 from enum import Enum
 from pathlib import Path
 from typing import Any
@@ -189,6 +189,45 @@ class InventoryEditor:
         devices.data.append(item)
         self._check_devices(customer, devices.data)
         dump_roundtrip(devices)
+
+    def add_devices(
+        self,
+        customer: str,
+        batch: Sequence[Mapping[str, Any]],
+        *,
+        create_sites: Sequence[str] = (),
+    ) -> None:
+        """Add many devices, and the sites they need, with one validation and one write.
+
+        All or nothing: if the result is invalid nothing is added and the sites created
+        for this call are removed again. Calling add_device per row would revalidate the
+        whole file each time.
+        """
+        if not batch:
+            return
+        devices = self._devices_doc(customer)
+        for fields in batch:
+            item = CommentedMap()
+            for key in DEVICE_KEYS:
+                value = fields.get(key)
+                if value is not None and not (key == "port" and value == 22):
+                    item[key] = _plain(value)
+            devices.data.append(item)
+        created: list[Path] = []
+        try:
+            for site in create_sites:
+                path = self._site_path(customer, site, must_exist=False)
+                if path.exists():
+                    continue
+                path.parent.mkdir(parents=True, exist_ok=True)
+                path.write_text("{}\n", encoding="utf-8", newline="\n")
+                created.append(path)
+            self._check_devices(customer, devices.data)
+            dump_roundtrip(devices)
+        except BaseException:
+            for path in created:
+                path.unlink(missing_ok=True)
+            raise
 
     def update_device(self, customer: str, name: str, fields: Mapping[str, Any]) -> None:
         """Set device fields; a None value removes an optional one (model, credential...)."""

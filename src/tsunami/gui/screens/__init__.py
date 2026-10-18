@@ -40,7 +40,7 @@ def load_views() -> list[ActivityItem]:
 
 
 def register_all(shell: Any) -> None:
-    for name in (*VIEW_MODULES, "run_wizard", "job_view"):
+    for name in (*VIEW_MODULES, "run_wizard", "job_view", "backups"):
         module = importlib.import_module(f"tsunami.gui.screens.{name}")
         register = getattr(module, "register", None)
         if callable(register):

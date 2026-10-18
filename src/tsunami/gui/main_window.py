@@ -523,6 +523,9 @@ class MainWindow(QMainWindow):
     def set_handler(self, command_id: str, handler: Callable[..., None]) -> None:
         setattr(self, f"_handler_{command_id.replace('.', '_')}", handler)
 
+    def has_handler(self, command_id: str) -> bool:
+        return getattr(self, f"_handler_{command_id.replace('.', '_')}", None) is not None
+
     def _open_workspace_dialog(self) -> None:
         folder = QFileDialog.getExistingDirectory(self, "Open workspace")
         if folder:

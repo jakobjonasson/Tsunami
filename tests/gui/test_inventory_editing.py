@@ -334,11 +334,14 @@ def test_menu_contents(main_window):
         "Run play…",
         "Edit…",
         "Properties",
+        "Backups…",
         "Delete…",
     ]
     assert _texts(view.menu_for(_find(tree, "acme", "site-a"))) == [
         "Show devices",
         "New device…",
+        "Import devices from CSV…",
+        "Trust host keys…",
         "Edit…",
         "View settings",
         "Delete…",
@@ -346,10 +349,43 @@ def test_menu_contents(main_window):
     assert _texts(view.menu_for(_find(tree, "acme"))) == [
         "Show devices",
         "Add site…",
+        "Import devices from CSV…",
+        "Trust host keys…",
         "Properties…",
         "Delete…",
     ]
     assert _texts(view.menu_for(None)) == ["New customer…"]
+
+
+def test_new_menu_entries_open_their_screens(main_window, gui_ctx, monkeypatch):
+    from tsunami.gui.screens import import_devices
+    from tsunami.gui.screens.backups import BackupsTab
+    from tsunami.gui.screens.host_keys import HostKeysTab
+
+    view = _view(main_window)
+    tree = view.tree
+
+    def trigger(item, text):
+        action = next(a for a in view.menu_for(item).actions() if a.text() == text)
+        action.trigger()
+
+    trigger(_find(tree, "acme", "site-a"), "Trust host keys…")
+    tab = main_window._tabs["hostkeys:acme/site-a"]
+    assert isinstance(tab, HostKeysTab) and tab.site == "site-a"
+
+    trigger(_find(tree, "acme", "site-a", "sa-as01"), "Backups…")
+    assert isinstance(main_window._tabs["backups:acme/sa-as01"], BackupsTab)
+
+    opened: list = []
+    monkeypatch.setattr(import_devices, "pick_csv_file", lambda parent=None: None)
+    monkeypatch.setattr(
+        import_devices,
+        "open_import_dialog",
+        lambda ctx, shell, customer, site=None, parent=None: opened.append((customer, site)),
+    )
+    trigger(_find(tree, "acme"), "Import devices from CSV…")
+    assert opened == [("acme", None)]
+    assert main_window.has_handler("backups.open")
 
 
 def test_menu_actions_disabled_without_workspace(main_window, gui_ctx):

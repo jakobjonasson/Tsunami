@@ -5,10 +5,13 @@ See design.md, GUI: Views.
 
 from __future__ import annotations
 
+import ipaddress
+from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import QEvent, QItemSelection, QItemSelectionModel, Qt, QTimer
+from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QAbstractItemView,
     QDialog,
@@ -27,17 +30,97 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.models.inventory import DEVICE_TYPES
+from tsunami.core.models.jobs import DeviceStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, PlayType
 from tsunami.core.targets import resolve_targets
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
+from tsunami.gui.screens.history import relative_time
+from tsunami.gui.screens.job_view import status_color
 from tsunami.gui.shell import Shell
 
-COLUMNS = ("Name", "Type", "Platform", "Model", "Host", "Site", "Login")
+COLUMNS = (
+    "Name",
+    "Type",
+    "Platform",
+    "Model",
+    "Version",
+    "Last job",
+    "Last contact",
+    "Host",
+    "Site",
+    "Login",
+)
 _STRETCH_COLUMNS = ("Model", "Login")
+_STATUS_COLUMNS = ("Last job", "Last contact")
 RUN_DISABLED_TIP = "Select one or more devices to run a play"
+NEVER = "never"
 _NAME_ROLE = Qt.ItemDataRole.UserRole
 _ROLE_ROLE = Qt.ItemDataRole.UserRole + 1
+_SORT_ROLE = Qt.ItemDataRole.UserRole + 2
+_REFRESH_TIMES_MS = 60_000
+
+# Last job column sort order, problems first: sorting ascending groups the failures at
+# the top, then what ran, then what never did. Newer jobs come later within a group.
+_STATUS_ORDER = [
+    DeviceStatus.ROLLBACK_FAILED,
+    DeviceStatus.FAILED,
+    DeviceStatus.HOSTKEY_MISMATCH,
+    DeviceStatus.RENDER_CHANGED,
+    DeviceStatus.INTERRUPTED,
+    DeviceStatus.UNREACHABLE,
+    DeviceStatus.ROLLED_BACK,
+    DeviceStatus.SKIPPED_PRECHECK,
+    DeviceStatus.DEVICE_BUSY,
+    DeviceStatus.CANCELLED,
+    DeviceStatus.SKIPPED_MAXFAIL,
+    DeviceStatus.CONNECTING,
+    DeviceStatus.RUNNING,
+    DeviceStatus.PENDING,
+    DeviceStatus.READY,
+    DeviceStatus.NO_CHANGES,
+    DeviceStatus.SUCCESS,
+]
+_STATUS_RANK = {s: i for i, s in enumerate(_STATUS_ORDER)}
+
+
+def status_label(status: DeviceStatus) -> str:
+    return str(status).replace("_", " ")
+
+
+def _ts(value: datetime | None) -> float:
+    return value.timestamp() if value else 0.0
+
+
+def local_time(value: datetime | None) -> str:
+    return value.astimezone().strftime("%Y-%m-%d %H:%M:%S") if value else ""
+
+
+def play_name(ctx: AppContext, play_path: str) -> str:
+    """The play's own name for a job's recorded path, or the file name if the play is gone."""
+    path = Path(play_path.replace("\\", "/"))
+    ws = ctx.workspace
+    entry = ws.plays.get(path) if ws is not None else None
+    return entry.play.name if entry is not None and entry.play else path.stem
+
+
+def _host_key(host: str) -> tuple:
+    """Addresses sort numerically, names alphabetically after them."""
+    try:
+        addr = ipaddress.ip_address(host)
+    except ValueError:
+        return (1, 0, host.lower())
+    return (0, addr.version * 2**128 + int(addr), "")
+
+
+class _SortItem(QTableWidgetItem):
+    """A cell that sorts by its sort role (a number or tuple) rather than by its text."""
+
+    def __lt__(self, other: QTableWidgetItem) -> bool:
+        mine, theirs = self.data(_SORT_ROLE), other.data(_SORT_ROLE)
+        if mine is None or theirs is None:
+            return self.text().lower() < other.text().lower()
+        return mine < theirs
 
 
 def type_label(role: str) -> str:
@@ -228,22 +311,40 @@ class DeviceListView(QWidget):
         self.table.setAlternatingRowColors(True)
         header = self.table.horizontalHeader()
         header.setDefaultAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
-        header.setMinimumSectionSize(60)
-        # Short columns size to their contents; Model and Login share what is left, so the
-        # table fits without a horizontal scroll bar until the contents alone outgrow it.
+        header.setMinimumSectionSize(48)
+        # Columns size to their contents; Model and Login share what is left (see
+        # _fit_columns), so the table fits without a horizontal scroll bar until the
+        # contents alone outgrow it. With ten columns a plain Stretch would squeeze those two
+        # to nothing at narrow widths: they never get narrower than their text.
         header.setStretchLastSection(False)
         for col, name in enumerate(COLUMNS):
             mode = (
-                QHeaderView.ResizeMode.Stretch
+                QHeaderView.ResizeMode.Interactive
                 if name in _STRETCH_COLUMNS
                 else QHeaderView.ResizeMode.ResizeToContents
             )
             header.setSectionResizeMode(col, mode)
+        self._wanted: dict[int, int] = {}
+        self.table.viewport().installEventFilter(self)
         self.table.itemSelectionChanged.connect(self._update_buttons)
         self.table.cellDoubleClicked.connect(self._open_row)
+        self.table.setSortingEnabled(True)
+        self.table.sortByColumn(0, Qt.SortOrder.AscendingOrder)
+        # Hidden rows belong to a row number, not to a device: hide them again after a sort.
+        self.table.model().layoutChanged.connect(self._apply_filter)
         layout.addWidget(self.table, 1)
 
+        self._facts: dict[str, Any] = {}
+        self._activity: dict[str, Any] = {}
+        self._contact: dict[str, datetime] = {}
+        self._play_names: dict[str, str] = {}
         ctx.workspace_changed.connect(self.refresh)
+        ctx.jobs_changed.connect(self.reload_status)
+        # The ages ("5 min ago") move on without any job finishing.
+        self._age_timer = QTimer(self)
+        self._age_timer.setInterval(_REFRESH_TIMES_MS)
+        self._age_timer.timeout.connect(self._fill_status)
+        self._age_timer.start()
         self.refresh()
 
     # -- data -------------------------------------------------------------------------
@@ -257,8 +358,17 @@ class DeviceListView(QWidget):
             devices = [d for d in devices if d.site == self.site]
         return sorted(devices, key=lambda d: d.name)
 
+    def _load_status(self) -> None:
+        """One query each, for the whole customer: not one per device."""
+        history = self.ctx.history
+        self._facts = history.device_facts(self.customer)
+        self._activity = history.device_activity(self.customer)
+        self._contact = history.last_contact(self.customer)
+        self._play_names = {}
+
     def refresh(self) -> None:
         keep = set(self.selected_names())
+        self._load_status()
         ws = self.ctx.workspace
         cust = ws.customers.get(self.customer) if ws else None
         devices = self._devices()
@@ -268,6 +378,10 @@ class DeviceListView(QWidget):
             else "This customer is not in the loaded workspace."
         )
         self._build_type_buttons(devices)
+        # Rows must not move while they are being filled in.
+        sort_column = self.table.horizontalHeader().sortIndicatorSection()
+        sort_order = self.table.horizontalHeader().sortIndicatorOrder()
+        self.table.setSortingEnabled(False)
         self.table.setRowCount(len(devices))
         for row, dev in enumerate(devices):
             login = cust.credential_for(dev) if cust is not None else ""
@@ -276,23 +390,100 @@ class DeviceListView(QWidget):
                 type_label(dev.role),
                 dev.platform,
                 dev.model or "",
+                "",
+                "",
+                "",
                 dev.host,
                 dev.site,
                 login,
             )
             for col, text in enumerate(cells):
-                item = QTableWidgetItem(text)
+                item = _SortItem(text)
                 item.setToolTip(text)
+                is_host = COLUMNS[col] == "Host"
+                item.setData(_SORT_ROLE, _host_key(text) if is_host else text.lower())
                 if col == 0:
                     item.setData(_NAME_ROLE, dev.name)
                     item.setData(_ROLE_ROLE, dev.role)
                 self.table.setItem(row, col, item)
+        self._fill_status()
+        self.table.setSortingEnabled(True)
+        self.table.sortByColumn(sort_column, sort_order)
+        self._measure_columns()
         self._apply_filter()
-        self.table.clearSelection()
-        for row in range(self.table.rowCount()):
-            if self._name_at(row) in keep and not self.table.isRowHidden(row):
-                self.table.selectRow(row)
+        self._select_rows(
+            [
+                r
+                for r in range(self.table.rowCount())
+                if self._name_at(r) in keep and not self.table.isRowHidden(r)
+            ]
+        )
         self._update_buttons()
+
+    def reload_status(self) -> None:
+        """A job finished: re-read what the devices reported and did, and redraw those cells."""
+        self._load_status()
+        self._fill_status()
+        self._measure_columns()
+
+    def _play_name(self, play_path: str) -> str:
+        cached = self._play_names.get(play_path)
+        if cached is None:
+            cached = self._play_names[play_path] = play_name(self.ctx, play_path)
+        return cached
+
+    def _fill_status(self) -> None:
+        """Model (when the inventory has none), Version and the two status columns, from the
+        data loaded by _load_status."""
+        job_col, contact_col = (COLUMNS.index(c) for c in _STATUS_COLUMNS)
+        version_col, model_col = COLUMNS.index("Version"), COLUMNS.index("Model")
+        ws = self.ctx.workspace
+        cust = ws.customers.get(self.customer) if ws else None
+        colors = theme.current()
+        was_sorting = self.table.isSortingEnabled()
+        self.table.setSortingEnabled(False)  # setText on a sorted column would move rows
+        now = datetime.now(UTC)
+        for row in range(self.table.rowCount()):
+            name = self._name_at(row)
+            facts = self._facts.get(name)
+            version = self.table.item(row, version_col)
+            version.setText(facts.version if facts and facts.version else "")
+            version.setData(_SORT_ROLE, version.text().lower())
+            version.setToolTip(
+                f"{version.text()}\nreported by the device {local_time(facts.updated_at)}"
+                if facts and facts.version
+                else ""
+            )
+            dev = cust.device(name) if cust is not None else None
+            if dev is not None and not dev.model:
+                model = self.table.item(row, model_col)
+                model.setText(facts.model if facts and facts.model else "")
+                model.setData(_SORT_ROLE, model.text().lower())
+                model.setToolTip(model.text())
+
+            item = self.table.item(row, job_col)
+            activity = self._activity.get(name)
+            if activity is None:
+                item.setText(NEVER)
+                item.setForeground(QBrush(QColor(colors.muted)))
+                item.setToolTip("No job has touched this device yet")
+                item.setData(_SORT_ROLE, (len(_STATUS_RANK) + 1, 0.0))
+            else:
+                item.setText(f"{status_label(activity.status)} · {relative_time(activity.at, now)}")
+                item.setForeground(QBrush(QColor(status_color(activity.status))))
+                item.setToolTip(f"{self._play_name(activity.play_path)}\n{local_time(activity.at)}")
+                rank = _STATUS_RANK.get(activity.status, len(_STATUS_RANK))
+                item.setData(_SORT_ROLE, (rank, _ts(activity.at)))
+
+            item = self.table.item(row, contact_col)
+            contact = self._contact.get(name)
+            item.setText(relative_time(contact, now) if contact else NEVER)
+            item.setToolTip(
+                local_time(contact) if contact else "Tsunami has not reached this device yet"
+            )
+            item.setForeground(QBrush(QColor(colors.text if contact else colors.muted)))
+            item.setData(_SORT_ROLE, _ts(contact))
+        self.table.setSortingEnabled(was_sorting)
 
     def _build_type_buttons(self, devices: list[Any]) -> None:
         present = {d.role for d in devices}
@@ -323,6 +514,31 @@ class DeviceListView(QWidget):
             self._hidden_types.add(role)
         self._apply_filter()
 
+    def eventFilter(self, watched: Any, event: Any) -> bool:
+        if watched is self.table.viewport() and event.type() == QEvent.Type.Resize:
+            self._fit_columns()
+        return super().eventFilter(watched, event)
+
+    def _measure_columns(self) -> None:
+        """Remember how wide Model and Login need to be for their text, then fit."""
+        header = self.table.horizontalHeader()
+        for name in _STRETCH_COLUMNS:
+            col = COLUMNS.index(name)
+            self._wanted[col] = max(self.table.sizeHintForColumn(col), header.sectionSizeHint(col))
+        self._fit_columns()
+
+    def _fit_columns(self) -> None:
+        """Give Model and Login the width the other columns leave, but never less than their
+        text needs."""
+        header = self.table.horizontalHeader()
+        flexible = [COLUMNS.index(c) for c in _STRETCH_COLUMNS]
+        used = sum(header.sectionSize(c) for c in range(len(COLUMNS)) if c not in flexible)
+        share = (self.table.viewport().width() - used) // len(flexible)
+        for col in flexible:
+            width = max(self._wanted.get(col, 0), share, header.minimumSectionSize())
+            if header.sectionSize(col) != width:
+                header.resizeSection(col, width)
+
     def _apply_filter(self) -> None:
         needle = self.filter_box.text().strip().lower()
         for row in range(self.table.rowCount()):
@@ -346,11 +562,24 @@ class DeviceListView(QWidget):
         rows = sorted({i.row() for i in self.table.selectedItems()})
         return [self._name_at(r) for r in rows]
 
+    def _select_rows(self, rows: list[int]) -> None:
+        """Select exactly these rows. selectRow() per row would leave only the last one
+        selected in extended-selection mode."""
+        selection = QItemSelection()
+        last = self.table.columnCount() - 1
+        model = self.table.model()
+        for row in rows:
+            selection.select(model.index(row, 0), model.index(row, last))
+        self.table.selectionModel().select(
+            selection,
+            QItemSelectionModel.SelectionFlag.ClearAndSelect
+            | QItemSelectionModel.SelectionFlag.Rows,
+        )
+
     def select_all_shown(self) -> None:
-        self.table.clearSelection()
-        for row in range(self.table.rowCount()):
-            if not self.table.isRowHidden(row):
-                self.table.selectRow(row)
+        self._select_rows(
+            [r for r in range(self.table.rowCount()) if not self.table.isRowHidden(r)]
+        )
 
     def _update_buttons(self) -> None:
         has_selection = bool(self.selected_names())

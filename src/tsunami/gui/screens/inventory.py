@@ -7,9 +7,10 @@ See design.md, GUI: Views; Inventory and variables: Provenance.
 from __future__ import annotations
 
 import json
+from datetime import UTC, datetime
 from typing import Any
 
-from PySide6.QtCore import Qt
+from PySide6.QtCore import Qt, QThreadPool
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
     QHBoxLayout,
@@ -19,20 +20,28 @@ from PySide6.QtWidgets import (
     QMenu,
     QMessageBox,
     QPushButton,
+    QSplitter,
     QTreeWidget,
     QTreeWidgetItem,
     QVBoxLayout,
     QWidget,
 )
 
+from tsunami.core import ssh_launch
 from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.issues import TsunamiError
+from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.resolver import Level, ResolvedVars
+from tsunami.core.transports.base import ConnectTarget
+from tsunami.core.vault import VaultLocked
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
 from tsunami.gui.screens import device_list
 from tsunami.gui.screens import inventory_dialogs as dialogs
+from tsunami.gui.screens.credentials import _TestSignals, _TestTask
+from tsunami.gui.screens.history import relative_time
+from tsunami.gui.screens.job_view import status_color
 from tsunami.gui.shell import ActivityItem, Shell
 
 _DEVICE_ROLE = Qt.ItemDataRole.UserRole
@@ -95,6 +104,57 @@ class DeviceView(QWidget):
         self.details.setWordWrap(True)
         layout.addWidget(self.details)
 
+        actions = QHBoxLayout()
+        actions.setSpacing(8)
+        self.run_button = QPushButton("Run play…")
+        self.run_button.setProperty("primary", True)
+        self.run_button.clicked.connect(self.run_play)
+        self.test_button = QPushButton("Test connection")
+        self.test_button.setToolTip("Log in to the device with its credential and log out again")
+        self.test_button.clicked.connect(self.test_connection)
+        self.ssh_button = QPushButton("Open SSH")
+        self.ssh_button.setToolTip("Open an interactive session in MobaXterm or a console window")
+        self.ssh_button.clicked.connect(self.open_ssh)
+        self.backups_button = QPushButton("Backups…")
+        self.backups_button.clicked.connect(self.open_backups)
+        for button in (self.run_button, self.test_button, self.ssh_button, self.backups_button):
+            actions.addWidget(button)
+        actions.addStretch(1)
+        layout.addLayout(actions)
+        self.action_label = QLabel()  # the result of Test connection, Open SSH, Backups…
+        self.action_label.setWordWrap(True)
+        self.action_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.action_label.setVisible(False)
+        layout.addWidget(self.action_label)
+        self.last_test_result: tuple[bool, str] | None = None
+        self.last_ssh_command: list[str] | None = None
+        self._test_signals = _TestSignals()
+        self._test_signals.done.connect(self._test_done)
+
+        jobs_box = QWidget()
+        jobs_layout = QVBoxLayout(jobs_box)
+        jobs_layout.setContentsMargins(0, 0, 0, 0)
+        jobs_layout.setSpacing(4)
+        jobs_title = QLabel("Recent jobs")
+        jobs_title.setProperty("section", True)
+        title_font = jobs_title.font()
+        title_font.setBold(True)
+        jobs_title.setFont(title_font)
+        jobs_layout.addWidget(jobs_title)
+        self.jobs = QTreeWidget()
+        self.jobs.setColumnCount(4)
+        self.jobs.setHeaderLabels(["Play", "Mode", "Status", "When"])
+        self.jobs.setRootIsDecorated(False)
+        self.jobs.setUniformRowHeights(True)
+        self.jobs.header().setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        self.jobs.header().setSectionResizeMode(0, QHeaderView.ResizeMode.Stretch)
+        self.jobs.setToolTip("Double-click a job to open it")
+        self.jobs.itemDoubleClicked.connect(self._open_job)
+        jobs_layout.addWidget(self.jobs, 1)
+        self.jobs_empty = QLabel("No job has run on this device yet.")
+        self.jobs_empty.setObjectName("Muted")
+        jobs_layout.addWidget(self.jobs_empty)
+
         self.tree = QTreeWidget()
         self.tree.setColumnCount(4)
         self.tree.setHeaderLabels(["Variable", "Value", "Level", "Source"])
@@ -105,9 +165,16 @@ class DeviceView(QWidget):
         self.tree.setColumnWidth(0, 220)
         self.tree.setColumnWidth(1, 300)
         self.tree.setColumnWidth(2, 110)
-        layout.addWidget(self.tree, 1)
+        split = QSplitter(Qt.Orientation.Vertical)
+        split.setChildrenCollapsible(False)
+        split.addWidget(jobs_box)
+        split.addWidget(self.tree)
+        split.setStretchFactor(0, 2)
+        split.setStretchFactor(1, 3)
+        layout.addWidget(split, 1)
 
         ctx.workspace_changed.connect(self.refresh)
+        ctx.jobs_changed.connect(self.refresh_status)
         self.refresh()
 
     def _open_vscode(self) -> None:
@@ -117,22 +184,166 @@ class DeviceView(QWidget):
                 ws.root / "inventory" / "customers" / self.customer / "devices.yml"
             )
 
+    def _inventory_device(self) -> Any:
+        ws = self.ctx.workspace
+        if ws is None or self.customer not in ws.customers:
+            return None
+        return ws.customers[self.customer].device(self.device)
+
     def refresh(self) -> None:
         self.tree.clear()
+        self.refresh_status()
         ws = self.ctx.workspace
-        dev = None
-        if ws is not None and self.customer in ws.customers:
-            dev = ws.customers[self.customer].device(self.device)
-        if ws is None or dev is None:
-            self.details.setText("This device is not in the loaded workspace.")
+        if ws is None or self._inventory_device() is None:
             return
-        self.details.setText(
-            f"{self.customer}  |  host {dev.host}  |  {dev.platform}  |  model {dev.model or '-'}"
-            f"  |  site {dev.site}  |  role {dev.role}"
-        )
         resolved = ws.resolve_vars(self.customer, device=self.device)
         self._add_values(self.tree.invisibleRootItem(), resolved.values, resolved, ())
         self.tree.expandAll()
+
+    def refresh_status(self) -> None:
+        """The header (with what the device reported) and the recent jobs: what changes when
+        a job finishes."""
+        dev = self._inventory_device()
+        for button in (self.run_button, self.test_button, self.ssh_button, self.backups_button):
+            button.setEnabled(dev is not None)
+        if dev is None:
+            self.details.setText("This device is not in the loaded workspace.")
+            self.jobs.clear()
+            self.jobs_empty.setVisible(False)
+            return
+        history = self.ctx.history
+        facts = history.device_facts(self.customer).get(self.device)
+        model = dev.model or (facts.model if facts and facts.model else None)
+        parts = [
+            self.customer,
+            f"host {dev.host}",
+            str(dev.platform),
+            f"model {model or '-'}",
+        ]
+        if facts and facts.version:
+            parts.append(f"version {facts.version}")
+        if facts and facts.serial:
+            parts.append(f"serial {facts.serial}")
+        parts += [f"site {dev.site}", f"role {dev.role}"]
+        self.details.setText("  |  ".join(parts))
+        if facts:
+            self.details.setToolTip(
+                f"Model, version and serial as the device reported them on "
+                f"{device_list.local_time(facts.updated_at)}"
+            )
+        self._fill_jobs(history.recent_jobs_for_device(self.customer, self.device, limit=10))
+
+    def _fill_jobs(self, jobs: list[Any]) -> None:
+        self.jobs.clear()
+        now = datetime.now(UTC)
+        for job in jobs:
+            name = device_list.play_name(self.ctx, job.play_path)
+            item = QTreeWidgetItem(
+                [
+                    name,
+                    job.mode,
+                    device_list.status_label(job.status),
+                    relative_time(job.at, now),
+                ]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, job.job_id)
+            item.setForeground(2, QBrush(QColor(status_color(job.status))))
+            item.setToolTip(0, f"{name}\n{job.play_path}")
+            item.setToolTip(3, device_list.local_time(job.at))
+            self.jobs.addTopLevelItem(item)
+        self.jobs_empty.setVisible(not jobs)
+        self.jobs.setVisible(bool(jobs))
+
+    def _open_job(self, item: QTreeWidgetItem, _column: int = 0) -> None:
+        self.shell.open_job(item.data(0, Qt.ItemDataRole.UserRole))
+
+    # -- actions ----------------------------------------------------------------------
+
+    def _say(self, text: str, level: str = "info") -> None:
+        colors = theme.current()
+        color = {"error": colors.error, "success": colors.success}.get(level, colors.muted)
+        self.action_label.setStyleSheet(f"color: {color};")
+        self.action_label.setText(text)
+        self.action_label.setVisible(True)
+
+    def run_play(self) -> None:
+        device_list.pick_play_and_run(self.ctx, self.shell, self.customer, [self.device], self)
+
+    def _login_name(self) -> str:
+        ws = self.ctx.workspace
+        cust = ws.customers.get(self.customer) if ws else None
+        return cust.credential_for(self._inventory_device()) if cust is not None else ""
+
+    def test_connection(self) -> bool:
+        """Log in with the device's credential, off the GUI thread, and show the result here."""
+        dev = self._inventory_device()
+        if dev is None:
+            return False
+        login = self._login_name()
+        try:
+            credential = self.ctx.secrets.get_login(login)
+        except TsunamiError as exc:
+            self.last_test_result = (False, str(exc))
+            self._say(f"Cannot test: {exc}", "error")
+            return False
+        target = ConnectTarget(
+            customer=self.customer,
+            device=dev.name,
+            host=str(dev.host),
+            port=dev.port,
+            platform=dev.platform,
+            method=ConnectionMethod.SSH,
+            credential=credential,
+        )
+        self.test_button.setEnabled(False)
+        self._say(f"Testing {login} on {dev.name}…")
+        QThreadPool.globalInstance().start(_TestTask(self._test_signals, self.ctx, login, target))
+        return True
+
+    def _test_done(self, name: str, ok: bool, message: str) -> None:
+        self.last_test_result = (ok, message)
+        self.test_button.setEnabled(self._inventory_device() is not None)
+        self._say(
+            f"{'Success' if ok else 'Failed'} ({name}): {message}", "success" if ok else "error"
+        )
+
+    def _ssh_username(self) -> tuple[str | None, str]:
+        """The login name for the device, and why there is none. Only the name: a password
+        is never read here."""
+        name = self._login_name()
+        try:
+            return self.ctx.secrets.get_login(name).username, ""
+        except VaultLocked:
+            return None, "Tsunami is locked, so the login name is not known"
+        except TsunamiError:
+            return None, f"login {name or '(none)'} is not available"
+
+    def open_ssh(self) -> None:
+        dev = self._inventory_device()
+        if dev is None:
+            return
+        username, why = self._ssh_username()
+        try:
+            argv = ssh_launch.open_ssh(str(dev.host), dev.port, username)
+        except ssh_launch.SshLaunchError as exc:
+            self._say(str(exc), "error")
+            return
+        text = f"Opened an SSH session to {dev.host}."
+        if username is None:
+            text += f" Opened without a username: {why}."
+        self._say(text)
+        self.last_ssh_command = argv
+
+    def open_backups(self) -> None:
+        has_handler = getattr(self.shell, "has_handler", None)
+        if callable(has_handler):
+            available = bool(has_handler("backups.open"))
+        else:  # MainWindow keeps command handlers as attributes
+            available = getattr(self.shell, "_handler_backups_open", None) is not None
+        if not available:
+            self._say("Backups are not available.")
+            return
+        self.shell.run_command_with("backups.open", self.customer, self.device)
 
     def _add_values(
         self,
@@ -285,12 +496,16 @@ class InventoryView(QWidget):
         elif kind[0] == "customer":
             add("Show devices", "server-environment", self.show_devices, kind[1])
             add("Add site…", "add", self.new_site, kind[1])
+            add("Import devices from CSV…", "cloud-upload", self.import_devices, kind[1])
+            add("Trust host keys…", "key", self.trust_host_keys, kind[1])
             add("Properties…", "info", self.edit_customer, kind[1])
             menu.addSeparator()
             add("Delete…", "trash", self.delete_customer, kind[1])
         elif kind[0] == "site":
             add("Show devices", "server-environment", self.show_devices, kind[1], kind[2])
             add("New device…", "add", self.new_device, kind[1], kind[2])
+            add("Import devices from CSV…", "cloud-upload", self.import_devices, kind[1], kind[2])
+            add("Trust host keys…", "key", self.trust_host_keys, kind[1], kind[2])
             add("Edit…", "edit", self.edit_site, kind[1], kind[2])
             add("View settings", "info", self.view_site, kind[1], kind[2])
             menu.addSeparator()
@@ -299,9 +514,25 @@ class InventoryView(QWidget):
             add("Run play…", "play", self.run_play, kind[1], kind[2])
             add("Edit…", "edit", self.edit_device, kind[1], kind[2])
             add("Properties", "info", self.open_properties, kind[1], kind[2])
+            add("Backups…", "archive", self.open_backups, kind[1], kind[2])
             menu.addSeparator()
             add("Delete…", "trash", self.delete_device, kind[1], kind[2])
         return menu
+
+    def import_devices(self, customer: str, site: str | None = None) -> None:
+        from tsunami.gui.screens.import_devices import open_import_dialog
+
+        open_import_dialog(self.ctx, self.shell, customer, site)
+
+    def trust_host_keys(self, customer: str, site: str | None = None) -> None:
+        from tsunami.gui.screens.host_keys import open_trust_tab
+
+        open_trust_tab(self.ctx, self.shell, customer, site)
+
+    def open_backups(self, customer: str, name: str) -> None:
+        from tsunami.gui.screens.backups import open_backups
+
+        open_backups(self.ctx, self.shell, customer, name)
 
     def show_devices(self, customer: str, site: str | None = None) -> None:
         device_list.open_device_list(self.ctx, self.shell, customer, site)

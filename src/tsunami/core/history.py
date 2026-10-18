@@ -18,7 +18,7 @@ from contextlib import contextmanager
 from datetime import UTC, datetime, timedelta
 from importlib import resources
 from pathlib import Path
-from typing import Any
+from typing import Any, NamedTuple
 
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.jobs import (
@@ -71,6 +71,59 @@ _DEVICE_COLUMNS = frozenset(
     }
 )
 _TERMINAL_VALUES = tuple(sorted(s.value for s in TERMINAL_DEVICE_STATUSES))
+
+# A device in one of these states answered Tsunami: the SSH session opened, and what went
+# wrong, if anything, went wrong after that. Excluded on purpose: unreachable and
+# hostkey_mismatch (the connect failed), pending and connecting (not reached yet),
+# device_busy, cancelled and skipped_maxfail (never connected), interrupted (a crash:
+# unknown whether it got that far).
+CONNECTED_DEVICE_STATUSES = frozenset(
+    {
+        DeviceStatus.READY,
+        DeviceStatus.NO_CHANGES,
+        DeviceStatus.RUNNING,
+        DeviceStatus.SUCCESS,
+        DeviceStatus.FAILED,
+        DeviceStatus.ROLLED_BACK,
+        DeviceStatus.ROLLBACK_FAILED,
+        DeviceStatus.SKIPPED_PRECHECK,
+        DeviceStatus.RENDER_CHANGED,
+    }
+)
+_CONNECTED_VALUES = tuple(sorted(s.value for s in CONNECTED_DEVICE_STATUSES))
+
+
+class StoredFacts(NamedTuple):
+    """What a device last reported (table device_facts); None where it never said."""
+
+    platform: str | None
+    model: str | None
+    version: str | None
+    serial: str | None
+    updated_at: datetime
+
+
+class DeviceActivity(NamedTuple):
+    """A device's most recent job row. `at` is when it finished, else started, else was queued."""
+
+    job_id: str
+    play_path: str
+    status: DeviceStatus
+    at: datetime
+
+
+class DeviceJob(NamedTuple):
+    """One job a device took part in, newest first in recent_jobs_for_device."""
+
+    job_id: str
+    play_path: str
+    mode: str
+    status: DeviceStatus
+    at: datetime
+
+
+# When a job_devices row happened: finished, else started, else its job was queued.
+_ROW_TIME = "COALESCE(d.finished_at, d.started_at, j.created_at)"
 
 
 def _dumps(value: Any) -> str:
@@ -506,6 +559,108 @@ class History:
                 "extra_count": r["extra_count"],
                 "details": json.loads(r["details_json"]),
             }
+            for r in rows
+        ]
+
+    # --- what each device reported, and what happened to it (one query per customer) ---
+
+    def record_device_facts(
+        self,
+        customer: str,
+        device: str,
+        *,
+        platform: str | None = None,
+        model: str | None = None,
+        version: str | None = None,
+        serial: str | None = None,
+    ) -> None:
+        """Remember what a device reported. A value that is None or empty keeps the known one;
+        with nothing new to say, nothing is written."""
+        values = [v or None for v in (platform, model, version, serial)]
+        if not any(values):
+            return
+        self._exec(
+            "INSERT INTO device_facts (customer, device, platform, model, version, serial,"
+            " updated_at) VALUES (?,?,?,?,?,?,?)"
+            " ON CONFLICT(customer, device) DO UPDATE SET"
+            " platform = COALESCE(excluded.platform, platform),"
+            " model = COALESCE(excluded.model, model),"
+            " version = COALESCE(excluded.version, version),"
+            " serial = COALESCE(excluded.serial, serial),"
+            " updated_at = excluded.updated_at",
+            (customer, device, *values, self._now()),
+        )
+
+    def device_facts(self, customer: str) -> dict[str, StoredFacts]:
+        rows = self._query(
+            "SELECT device, platform, model, version, serial, updated_at FROM device_facts"
+            " WHERE customer = ?",
+            (customer,),
+        )
+        return {
+            r["device"]: StoredFacts(
+                r["platform"],
+                r["model"],
+                r["version"],
+                r["serial"],
+                _parse_ts(r["updated_at"]),  # type: ignore[arg-type]
+            )
+            for r in rows
+        }
+
+    def device_activity(self, customer: str) -> dict[str, DeviceActivity]:
+        """Each device's most recent job row, whatever its status: the job (newest created
+        first) it was last part of."""
+        rows = self._query(
+            "SELECT device, job_id, play_path, status, at FROM ("
+            " SELECT d.device AS device, d.job_id AS job_id, j.play_path AS play_path,"
+            f" d.status AS status, {_ROW_TIME} AS at,"
+            " ROW_NUMBER() OVER (PARTITION BY d.device"
+            "  ORDER BY j.created_at DESC, j.rowid DESC) AS n"
+            " FROM job_devices d JOIN jobs j ON j.id = d.job_id WHERE j.customer = ?"
+            ") WHERE n = 1",
+            (customer,),
+        )
+        return {
+            r["device"]: DeviceActivity(
+                r["job_id"],
+                r["play_path"],
+                DeviceStatus(r["status"]),
+                _parse_ts(r["at"]),  # type: ignore[arg-type]
+            )
+            for r in rows
+        }
+
+    def last_contact(self, customer: str) -> dict[str, datetime]:
+        """When Tsunami last reached each device: its newest job row in a status of
+        CONNECTED_DEVICE_STATUSES."""
+        marks = ",".join("?" * len(_CONNECTED_VALUES))
+        rows = self._query(
+            f"SELECT d.device AS device, MAX({_ROW_TIME}) AS at FROM job_devices d"
+            f" JOIN jobs j ON j.id = d.job_id WHERE j.customer = ? AND d.status IN ({marks})"
+            " GROUP BY d.device",
+            (customer, *_CONNECTED_VALUES),
+        )
+        return {r["device"]: _parse_ts(r["at"]) for r in rows}  # type: ignore[misc]
+
+    def recent_jobs_for_device(
+        self, customer: str, device: str, limit: int = 10
+    ) -> list[DeviceJob]:
+        rows = self._query(
+            "SELECT d.job_id AS job_id, j.play_path AS play_path, j.mode AS mode,"
+            f" d.status AS status, {_ROW_TIME} AS at FROM job_devices d"
+            " JOIN jobs j ON j.id = d.job_id WHERE j.customer = ? AND d.device = ?"
+            " ORDER BY j.created_at DESC, j.rowid DESC LIMIT ?",
+            (customer, device, limit),
+        )
+        return [
+            DeviceJob(
+                r["job_id"],
+                r["play_path"],
+                r["mode"],
+                DeviceStatus(r["status"]),
+                _parse_ts(r["at"]),  # type: ignore[arg-type]
+            )
             for r in rows
         ]
 

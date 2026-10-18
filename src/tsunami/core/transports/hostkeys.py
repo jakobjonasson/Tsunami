@@ -28,13 +28,17 @@ import paramiko
 from tsunami.core.transports.base import HostKeyMismatchError, UnreachableError
 from tsunami.core.transports.legacy_ssh import offered_key_types, transport_class
 
-_locks: dict[Path, threading.Lock] = {}
+_locks: dict[str, threading.Lock] = {}
 _locks_guard = threading.Lock()
 
 
 def _lock_for(path: Path) -> threading.Lock:
+    # Keyed by a pure string normalization, never path.resolve(): resolve asks the file
+    # system, and while another thread was creating the known_hosts folder it could spell
+    # the same path differently, so two threads got two locks and one new key was lost.
+    key = os.path.normcase(os.path.abspath(path))
     with _locks_guard:
-        return _locks.setdefault(path.resolve(), threading.Lock())
+        return _locks.setdefault(key, threading.Lock())
 
 
 def entry_name(host: str, port: int) -> str:
@@ -55,6 +59,12 @@ class HostKeyStore:
         with _lock_for(self.path):
             entry = self._load().lookup(entry_name(host, port))
         return list(entry.keys()) if entry else []
+
+    def known_keys(self, host: str, port: int) -> dict[str, paramiko.PKey]:
+        """The keys on file for the host, by key type (empty if none)."""
+        with _lock_for(self.path):
+            entry = self._load().lookup(entry_name(host, port))
+        return dict(entry) if entry else {}
 
     def export_host(self, host: str, port: int, path: Path) -> None:
         """Write just this host's keys to path, for Netmiko's alt_key_file.

@@ -87,10 +87,12 @@ def test_click_customer_and_site_open_device_tabs(main_window):
     site_tab = main_window._tabs["devices:acme/site-a"]
     assert isinstance(customer_tab, DeviceListView) and isinstance(site_tab, DeviceListView)
     assert customer_tab.visible_names() == ["sa-as01", "sa-as02"]
-    row = [customer_tab.table.item(0, c).text() for c in range(7)]
-    assert row[:3] == ["sa-as01", "Access switch", "ios-xe"]
-    assert row[4:6] == ["203.0.113.11", "site-a"]
-    assert row[6] == "acme-netadmin"
+    columns = device_list.COLUMNS
+    row = {name: customer_tab.table.item(0, c).text() for c, name in enumerate(columns)}
+    assert [row["Name"], row["Type"], row["Platform"]] == ["sa-as01", "Access switch", "ios-xe"]
+    assert [row["Host"], row["Site"]] == ["203.0.113.11", "site-a"]
+    assert row["Login"] == "acme-netadmin"
+    assert row["Last job"] == "never" and row["Last contact"] == "never"
     inv._click_item(_node(inv.tree, "acme"))  # reused, not duplicated
     assert main_window._tabs["devices:acme"] is customer_tab
 
