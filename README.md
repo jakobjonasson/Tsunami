@@ -2,7 +2,19 @@
 
 Tsunami is a Windows desktop tool that pushes templated Cisco IOS/IOS-XE and HPE Aruba AOS-CX/AOS-S configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude. Claude can read inventory, draft plays, render and run read-only checks. It never sees credentials or secret values, and changes to customer devices need approval in the GUI.
 
-**Status:** Feature-complete for v1 and tested against simulated devices (about 2,400 unit and 115 GUI tests, plus a frozen-build check in CI). Not yet tested against real switches or a CML lab. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md). The spec is [docs/design.md](docs/design.md); read [CLAUDE.md](CLAUDE.md) before changing code.
+**Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 2,470 unit and 170 GUI tests run in CI, plus a frozen-build check. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md). The spec is [docs/design.md](docs/design.md); read [CLAUDE.md](CLAUDE.md) before changing code.
+
+## Tested platforms
+
+| Platform | Tested on | Status |
+|---|---|---|
+| HPE Aruba AOS-S (ProCurve) | 2530-48G, YA.16.11 | Confirmed working, including console day-0 (first-boot login, speed sense) |
+| Cisco IOS | Catalyst 2960-X | Confirmed working |
+| Cisco IOS-XE | ISR C1101-4P | Confirmed working |
+| Cisco IOS on Linux (IOL) | CML lab | Confirmed working (rollback copy on the `unix:` file system) |
+| HPE Aruba AOS-CX | Not yet | Built and unit-tested against simulated devices only; checkpoint rollback is unverified on hardware |
+
+Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached through an automatic fallback (`core/transports/legacy_ssh.py`).
 
 ## How it works
 
@@ -10,7 +22,7 @@ Tsunami is a Windows desktop tool that pushes templated Cisco IOS/IOS-XE and HPE
 - **Engine (`core/`):** validates, renders templates (secrets as `secret('customer/name')` placeholders), diffs against running config, and pushes with canary, batches, backups and rollback. Every outbound string goes through one redactor.
 - **GUI (`tsunami.exe`):** the only place changes are approved and run. It holds the unlocked credential vault (the Tsunami password, set on first launch) and serves Claude's tool calls.
 - **MCP server (`tsunami-mcp.exe`):** a stdio relay. It holds no credentials: each tool call goes over a local named pipe to the GUI, which runs it only while unlocked (403 when locked, 503 when Tsunami is closed).
-- **Local data:** `%APPDATA%\Tsunami` (settings, MCP policy), `%LOCALAPPDATA%\Tsunami` (`history.db`, backups, logs, known_hosts, `vault.json`). Logins and secrets live in Windows Credential Manager, encrypted under the Tsunami password, local-machine only.
+- **Local data:** `%APPDATA%\Tsunami` (settings, MCP policy), `%LOCALAPPDATA%\Tsunami` (`history.db`, backups, logs, known_hosts, `vault.json`). Logins and secrets live in Windows Credential Manager, encrypted under the Tsunami password: one entry per value (`tsunami/<key>`), local-machine persistence only (see `core/secret_store.py` for why).
 
 ## Development setup
 
@@ -21,8 +33,8 @@ uv sync                                  # create .venv and install everything
 uv run tsunami                           # GUI
 uv run tsunami-mcp                       # MCP relay on stdio (needs the GUI running and unlocked)
 uv run python -m tsunami --selftest      # dev CLI; also init, validate, render, run
-uv run pytest tests/unit                 # unit tests (about 80 s)
-$env:QT_QPA_PLATFORM="offscreen"; uv run pytest tests/gui   # GUI tests (about 3 min)
+uv run pytest tests/unit                 # unit tests (about 90 s)
+$env:QT_QPA_PLATFORM="offscreen"; uv run pytest tests/gui   # GUI tests (about 3.5 min)
 uv run ruff check
 uv run ruff format
 ```

@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–6 are built and tested against simulated devices, and CI produces the installer. Not yet done: real-device and CML testing (3.8, 3.11), code signing, and hands-on checks (5.5, 6.3, 6.5). See Open items, and After the plan for work added since.
+**Status:** Phases 0–6 are built, and CI produces the installer. Confirmed working on real devices: AOS-S (2530-48G), IOS (2960-X), IOS-XE (C1101-4P) and IOS on Linux in CML. Not yet done: AOS-CX on hardware (3.11), code signing, and hands-on checks (5.5, 6.3, 6.5). See Open items, and After the plan for work added since.
 
 ---
 
@@ -24,12 +24,11 @@ This file goes with [design.md](design.md), which is the spec. The spec says *wh
 
 What is left, roughly in priority order. Check the user's wishes before starting any of them.
 
-1. **Real-device testing.** Everything so far ran against MockTransport and local SSH servers. Not yet proven on hardware or CML: the SHA-1 fallback on older switches, serial day-0 staging, AOS-CX checkpoint and AOS-S `cfg-restore` rollback, and the Aruba facts still marked *verify* in design.md, Platform drivers:
+1. **Real-device testing.** Confirmed working on an AOS-S 2530-48G (YA.16.11, including console day-0), a Catalyst 2960-X (IOS), an ISR C1101-4P (IOS-XE) and IOS on Linux in CML. Bench fixes from that testing: the IOS rollback copy uses the device's default file system, console output is matched after escape codes are stripped, and the 2530 first-boot login is created on the console. Remaining: AOS-CX on hardware, and the facts still marked *verify* in design.md, Platform drivers:
    - the AOS-CX auto-checkpoint behavior after a dropped session
    - how AOS-CX's revert-now path interacts with a running auto-checkpoint timer
-   - the AOS-S first-login prompt text
    - whether `cfg-restore` leaves flash-stored credentials alone
-   Work packages 3.8 (CML suite) and 3.11 (Aruba lab) cover this.
+   Work package 3.11 (Aruba lab) covers the AOS-CX items.
 2. **Code signing.** `packaging/sign.ps1` is ready; it needs a certificate (an internal CA if the tool stays in-house, else an OV certificate with cloud signing) and EDR allowlisting.
 3. **Versioning.** `__version__` in `src/tsunami/__init__.py` is the only place it is set; the installer is named from it. Bump the minor version for a build with new features and the patch version for a fix-only build, in the commit that ships it. 0.2.0 was the first bump.
 4. **MCP Inspector pass** (5.5) and a Claude Desktop check after each MCP change. The Store build of Claude Desktop keeps its config under `%LOCALAPPDATA%\Packages\Claude_*`; `core/registration.py` handles both locations.
