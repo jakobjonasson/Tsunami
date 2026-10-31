@@ -58,8 +58,10 @@ class McpApp:
         secrets: Any,  # tsunami.core.secret_store.SecretStore
         transport_factory: Callable[[], Any] | None = None,
         clock: Callable[[], float] = time.monotonic,
+        on_inventory_changed: Callable[[], None] | None = None,
     ) -> None:
         self.paths = paths
+        self.on_inventory_changed = on_inventory_changed
         self.history = history
         self.secrets = secrets
         self.transport_factory = transport_factory
@@ -88,6 +90,14 @@ class McpApp:
         from tsunami.core.transports import DeviceTransport
 
         return DeviceTransport(self.paths, self.settings())
+
+    def inventory_changed(self) -> None:
+        """A tool added to the inventory: tell the GUI, so it reloads its workspace."""
+        if self.on_inventory_changed is not None:
+            try:
+                self.on_inventory_changed()
+            except Exception:  # noqa: BLE001 - a refresh is never a reason to fail the call
+                log.warning("inventory change notification failed", exc_info=True)
 
     def visible_customer(self, policy: McpPolicy, workspace: Workspace, customer: str) -> Any:
         """The customer's inventory, or ToolRefused if unknown or blocked (indistinguishable)."""

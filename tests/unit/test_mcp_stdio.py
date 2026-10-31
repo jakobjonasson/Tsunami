@@ -69,7 +69,7 @@ def gui(tmp_path, app_paths):
 def test_calls_go_through_while_unlocked(gui, app_paths):
     _state, history = gui
     names, result = run_session()
-    assert len(names) == 18 and "request_run" in names
+    assert len(names) == 21 and "request_run" in names
     assert not result.is_error and "acme" in str(result.content)
     assert (app_paths.logs_dir / "mcp.log").is_file()
     rows = history._query("SELECT tool, status FROM mcp_calls")
@@ -86,7 +86,7 @@ def test_locked_tsunami_answers_403(gui):
 def test_closed_tsunami_answers_503(app_paths):
     assert not token_path(app_paths).exists()
     names, result = run_session()
-    assert len(names) == 18  # the server still starts and lists its tools
+    assert len(names) == 21  # the server still starts and lists its tools
     assert result.is_error and "503 Tsunami is not running" in str(result.content)
 
 

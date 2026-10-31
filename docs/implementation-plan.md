@@ -47,6 +47,7 @@ Built after Phase 6 at the user's request, each with tests and a design.md revis
 - The MCP relay (`mcp_server/bridge.py`): tsunami-mcp.exe holds no credentials; the GUI runs the tools only while unlocked (403 locked, 503 closed). MCP policy option `trust_new_host_keys`.
 - Approval requests mark devices `ready` (not `success`) and end `no_changes` without asking for approval when nothing would change.
 - GUI polish: teal-blue accent, welcome page, app icon in title bars and tray, refresh button and F5 on every side bar view.
+- 0.5.1: example CSV for device import; site discovery over CDP/LLDP and Check for unlearned neighbors (`core/discovery.py`, `gui/screens/discovery.py`), checked end to end against an IOL chain lab in CML; MCP `add_customer`, `add_site` and `add_devices` behind the policy switch `inventory_edits`; Edit allowlists in VS Code in Settings. Discovery's AOS-CX and AOS-S parsers still need real output (the hardware testing in Open items, 1).
 
 ---
 

@@ -391,7 +391,8 @@ def test_server_registers_tools_and_calls_them(env):
 
     server = build_server(env.app)
     tools = {t.name: t for t in asyncio.run(server.list_tools())}
-    assert len(tools) == 18
+    assert len(tools) == 21
+    assert tools["add_devices"].annotations.read_only_hint is False
     assert tools["show"].annotations.read_only_hint is True
     assert tools["request_run"].annotations.read_only_hint is False
 
@@ -590,3 +591,149 @@ def test_global_play_needs_a_customer_and_respects_blocking(env):
     env.policy(customers_blocked=["acme"])
     with pytest.raises(ToolRefused, match="unknown customer"):
         env.tools.render(path, device="sa-as01", prompts=PROMPTS, customer="acme")
+
+
+# -- inventory additions --------------------------------------------------------------------
+
+NEW_DEVICE = {
+    "name": "sa-as09",
+    "host": "192.0.2.99",
+    "site": "site-a",
+    "role": "access",
+    "platform": "ios-xe",
+}
+
+
+def test_inventory_additions_are_off_by_default(env):
+    for call in (
+        lambda: env.tools.add_customer("beta", "Beta Inc", "beta-login"),
+        lambda: env.tools.add_site("acme", "site-z"),
+        lambda: env.tools.add_devices("acme", [NEW_DEVICE]),
+    ):
+        with pytest.raises(ToolRefused, match="turned off"):
+            call()
+    assert not (env.root / "inventory/customers/beta").exists()
+
+
+def test_add_customer_is_never_a_lab_and_never_takes_another_customers_login(env):
+    reloads = []
+    env.app.on_inventory_changed = lambda: reloads.append(1)
+    env.policy(inventory_edits=True)
+    result = env.tools.add_customer("beta", "Beta Inc", "beta-login")
+    assert result["created"] and result["lab"] is False
+    cust = load_workspace(env.root).customers["beta"]
+    assert (cust.config.lab, cust.config.credential, cust.config.name) == (
+        False,
+        "beta-login",
+        "Beta Inc",
+    )
+    assert reloads == [1]
+    with pytest.raises(ToolRefused, match="another customer"):
+        env.tools.add_customer("gamma", "Gamma", "acme-netadmin")
+    with pytest.raises(ToolRefused, match="control characters"):
+        env.tools.add_customer("delta", "Delta\nlab: true", "delta-login")
+
+
+def test_add_customer_answers_alike_for_taken_blocked_and_reserved_slugs(env):
+    env.policy(inventory_edits=True, customers_blocked=["lab"])
+    messages = set()
+    for slug in ("acme", "lab", "global", "Bad Slug"):
+        with pytest.raises(ToolRefused) as refused:
+            env.tools.add_customer(slug, "X", f"x-{len(messages)}-login")
+        messages.add(str(refused.value).replace(repr(slug), "SLUG"))
+    assert len(messages) == 1 and "taken or not valid" in messages.pop()
+
+
+def test_add_site_with_vars_and_no_secrets(env):
+    env.policy(inventory_edits=True)
+    env.tools.add_site("acme", "site-b", {"site_code": "SB", "gateway": "192.0.2.1"})
+    ws = load_workspace(env.root)
+    assert ws.customers["acme"].sites["site-b"] == {"site_code": "SB", "gateway": "192.0.2.1"}
+    with pytest.raises(ToolRefused, match="already exists"):
+        env.tools.add_site("acme", "site-b")
+    with pytest.raises(ToolRefused, match="never hold secrets"):
+        env.tools.add_site("acme", "site-c", {"snmp_community": "public"})
+    with pytest.raises(ToolRefused):
+        env.tools.add_site("acme", "site-d", {"customer": "other"})  # a built-in variable
+    with pytest.raises(ToolRefused, match="unknown customer"):
+        env.tools.add_site("nobody", "site-e")
+
+
+def test_add_devices_checks_rows_like_an_import(env):
+    env.policy(inventory_edits=True)
+    rows = [
+        NEW_DEVICE,
+        {
+            "name": "sa-as10",
+            "host": "192.0.2.100",
+            "site": "site-a",
+            "type": "Distribution",
+            "platform": "ios-xe",
+        },
+        {**NEW_DEVICE, "name": "Bad Name"},
+        {
+            "name": "sa-as01",
+            "host": "203.0.113.11",
+            "site": "site-a",
+            "role": "access",
+            "platform": "ios-xe",
+        },  # already present
+        {**NEW_DEVICE, "name": "sa-as11", "host": "192.0.2.101", "credential": "lab-admin"},
+        {**NEW_DEVICE, "name": "sb-as01", "host": "192.0.2.102", "site": "site-b"},
+    ]
+    result = env.tools.add_devices("acme", rows)
+    statuses = {r["name"]: r["status"] for r in result["rows"]}
+    assert statuses == {
+        "sa-as09": "ok",
+        "sa-as10": "ok",
+        "Bad Name": "error",
+        "sa-as01": "skipped",
+        "sa-as11": "error",  # another customer's login
+        "sb-as01": "error",  # unknown site without create_sites
+    }
+    assert result["imported"] == 2
+    devices = {d.name: d for d in load_workspace(env.root).customers["acme"].devices}
+    assert devices["sa-as10"].role == "distribution"
+    assert env.history.mcp_devices("acme") == {"sa-as09": "192.0.2.99", "sa-as10": "192.0.2.100"}
+
+    result = env.tools.add_devices(
+        "acme",
+        [{**NEW_DEVICE, "name": "sb-as01", "host": "192.0.2.102", "site": "site-b"}],
+        create_sites=True,
+    )
+    assert result["sites_created"] == ["site-b"]
+    with pytest.raises(ToolRefused, match="unknown field"):
+        env.tools.add_devices("acme", [{**NEW_DEVICE, "password": "x"}])
+    with pytest.raises(ToolRefused, match="non-empty"):
+        env.tools.add_devices("acme", [])
+
+
+def test_add_devices_for_a_blocked_customer_looks_unknown(env):
+    env.policy(inventory_edits=True, customers_blocked=["acme"])
+    with pytest.raises(ToolRefused, match="unknown customer"):
+        env.tools.add_devices("acme", [NEW_DEVICE])
+
+
+def test_claude_never_makes_first_contact_with_a_device_it_added(env):
+    env.policy(inventory_edits=True, trust_new_host_keys=True)
+    env.tools.add_devices("acme", [NEW_DEVICE])
+    env.mock.add_device("sa-as09", running=["hostname sa-as09"])
+    env.tools.show("acme", "sa-as09", "show version")
+    assert env.recorder.targets[-1].allow_new_host_key is False
+    env.tools.show("acme", "sa-as01", "show version")  # a device a person added
+    assert env.recorder.targets[-1].allow_new_host_key is True
+    env.tools.check(PLAY, targets=["sa-as01", "sa-as09"], prompts=PROMPTS)
+    env.join()
+    by_device = {t.device: t.allow_new_host_key for t in env.recorder.targets[2:]}
+    assert by_device == {"sa-as01": True, "sa-as09": False}
+
+
+def test_a_person_changing_the_host_lifts_the_first_contact_rule(env):
+    from tsunami.core.inventory_edit import InventoryEditor
+
+    env.policy(inventory_edits=True, trust_new_host_keys=True)
+    env.tools.add_devices("acme", [NEW_DEVICE])
+    InventoryEditor(env.root).update_device("acme", "sa-as09", {"host": "192.0.2.123"})
+    env.mock.add_device("sa-as09", running=["hostname sa-as09"])
+    env.tools.show("acme", "sa-as09", "show version")
+    assert env.recorder.targets[-1].allow_new_host_key is True

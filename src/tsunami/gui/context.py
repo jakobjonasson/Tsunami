@@ -48,6 +48,9 @@ class AppContext(QObject):
     jobs_changed = Signal()
     alarms_changed = Signal()
     approvals_changed = Signal(int)  # pending request count, from the poller
+    # Emitted from any thread (an MCP tool that added to the inventory); queued to the
+    # GUI thread, which reloads the workspace.
+    reload_requested = Signal()
 
     def __init__(
         self,
@@ -72,6 +75,7 @@ class AppContext(QObject):
         self.qsettings = qsettings or QSettings("Tsunami", "Tsunami")
         self._load_signals = _LoadSignals()
         self._load_signals.done.connect(self._loaded)
+        self.reload_requested.connect(lambda: self.reload_workspace())
 
     # -- workspace ---------------------------------------------------------------
 
@@ -116,7 +120,7 @@ class AppContext(QObject):
         """A Runner for this workspace; kwargs are on_event, confirm_canary, cancel."""
         if self.workspace is None:
             raise RuntimeError("no workspace is open")
-        transport = self._transport_factory() if self._transport_factory else self._transport()
+        transport = self.make_transport()
         return Runner(
             self.workspace,
             transport=transport,
@@ -126,6 +130,10 @@ class AppContext(QObject):
             app_settings=self.settings,
             **kwargs,
         )
+
+    def make_transport(self) -> Any:
+        """A device transport for one run (tests inject one through transport_factory)."""
+        return self._transport_factory() if self._transport_factory else self._transport()
 
     def _transport(self) -> Any:
         from tsunami.core.transports import DeviceTransport

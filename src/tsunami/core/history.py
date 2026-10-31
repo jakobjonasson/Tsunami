@@ -531,6 +531,20 @@ class History:
     def forget_mcp_draft(self, path: str) -> None:
         self._exec("DELETE FROM mcp_drafts WHERE path = ?", (path,))
 
+    def record_mcp_device(self, customer: str, device: str, host: str) -> None:
+        """Remember a device Claude added over MCP (see mcp_devices)."""
+        self._exec(
+            "INSERT INTO mcp_devices (customer, device, host, added_at) VALUES (?,?,?,?)"
+            " ON CONFLICT(customer, device) DO UPDATE SET host = excluded.host,"
+            " added_at = excluded.added_at",
+            (customer, device, host, self._now()),
+        )
+
+    def mcp_devices(self, customer: str) -> dict[str, str]:
+        """Devices Claude added to a customer over MCP: name -> the host it gave."""
+        rows = self._query("SELECT device, host FROM mcp_devices WHERE customer = ?", (customer,))
+        return {r["device"]: r["host"] for r in rows}
+
     def mcp_draft_hashes(self) -> dict[str, str]:
         return {r["path"]: r["sha256"] for r in self._query("SELECT path, sha256 FROM mcp_drafts")}
 

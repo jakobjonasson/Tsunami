@@ -66,6 +66,8 @@ class McpPolicy(StrictModel):
     # Claude's connections record a device's host key on first contact, as the GUI's runs
     # do. Off: a person makes first contact. A changed key is refused either way.
     trust_new_host_keys: bool = False
+    # Claude may add customers, sites and devices to the inventory (never edit or delete).
+    inventory_edits: bool = False
     customers_blocked: list[Slug] = []
     show_allowlist: dict[PlatformFamily, list[AllowEntry]] = Field(
         default_factory=default_show_allowlist

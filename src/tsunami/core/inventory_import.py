@@ -180,6 +180,41 @@ def _sniff(line: str) -> str:
     return best
 
 
+# -- example file -----------------------------------------------------------------------
+
+# Header names auto_map recognizes, one per field, in FIELDS order.
+EXAMPLE_HEADERS = ("name", "host", "site", "type", "platform", "model", "port", "login")
+_EXAMPLE_ROWS = (
+    ("sw-core-01", "192.0.2.10", "core", "ios-xe", "cisco-c9500", "", ""),
+    ("sw-access-01", "192.0.2.21", "access", "ios-xe", "cisco-c9300", "", ""),
+    ("sw-access-02", "192.0.2.22", "access", "aos-s", "aruba-2930f", "2222", ""),
+    ("rtr-edge-01", "192.0.2.1", "router", "ios", "", "", "edge-login"),
+)
+
+
+def example_csv(site: str = "site-a") -> str:
+    """A CSV that shows every column the import understands, with placeholder devices.
+
+    Every row passes preview() for a customer that has `site` (or with Create missing
+    sites ticked); the last row names a login, which the preview warns about until it
+    exists in Credentials. Optional columns (model, port, login) may be left empty.
+    """
+    require_slug(site)
+    out = io.StringIO()
+    writer = csv.writer(out, lineterminator="\r\n")  # what Excel writes and expects
+    writer.writerow(EXAMPLE_HEADERS)
+    for name, host, role, platform, model, port, login in _EXAMPLE_ROWS:
+        writer.writerow((name, host, site, role, platform, model, port, login))
+    return out.getvalue()
+
+
+def write_example_csv(path: Path | str, site: str = "site-a") -> Path:
+    """Save example_csv() as UTF-8 with a BOM, so Excel opens it with the right encoding."""
+    path = Path(path)
+    path.write_text(example_csv(site), encoding="utf-8-sig", newline="")
+    return path
+
+
 # -- mapping ----------------------------------------------------------------------------
 
 
@@ -271,13 +306,13 @@ class ImportSummary:
 
 
 @dataclass
-class _Inventory:
+class InventorySnapshot:
     sites: set[str]
     roles: set[str]
     devices: dict[str, dict[str, Any]]
 
 
-def _load_inventory(root: Path, customer: str) -> _Inventory:
+def load_snapshot(root: Path, customer: str) -> InventorySnapshot:
     require_slug(customer)
     folder = root / CUSTOMERS / customer
     if not (folder / "customer.yml").is_file():
@@ -297,7 +332,7 @@ def _load_inventory(root: Path, customer: str) -> _Inventory:
         for item in data:
             if isinstance(item, Mapping) and isinstance(item.get("name"), str):
                 devices[item["name"]] = dict(item)
-    return _Inventory(sites, roles, devices)
+    return InventorySnapshot(sites, roles, devices)
 
 
 def _resolve_type(text: str, roles: Collection[str]) -> str | None:
@@ -375,7 +410,7 @@ def preview(
     known_logins are the Credential Manager login names; None skips that check. A login
     that is not known is a warning (add it in Credentials later), not an error.
     """
-    inventory = _load_inventory(Path(root), customer)
+    inventory = load_snapshot(Path(root), customer)
     getters = _getters(table, mapping)
     drafts = [
         _check_row(number, cells, getters, inventory, known_logins, create_sites)
@@ -420,7 +455,7 @@ def _check_row(
     number: int,
     cells: list[str],
     getters: dict[str, Any],
-    inventory: _Inventory,
+    inventory: InventorySnapshot,
     known_logins: Collection[str] | None,
     create_sites: bool,
 ) -> _Draft:
@@ -504,7 +539,7 @@ def _check_row(
     return draft
 
 
-def _check_names(drafts: list[_Draft], inventory: _Inventory) -> None:
+def _check_names(drafts: list[_Draft], inventory: InventorySnapshot) -> None:
     by_name: dict[str, list[_Draft]] = {}
     for draft in drafts:
         name = draft.fields["name"]
@@ -578,7 +613,9 @@ __all__ = [
     "RowResult",
     "apply_import",
     "auto_map",
+    "example_csv",
     "preview",
     "read_csv",
     "secret_headers",
+    "write_example_csv",
 ]

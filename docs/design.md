@@ -144,7 +144,7 @@ The workspace is a plain folder, normally a git repo, that the app points at. Ev
 
 - Slugs (customer folders, site files, role files, device names, snippet names) match `^[a-z0-9][a-z0-9-]*$`. Customer slugs appear in credential and secret names.
 - YAML files use `.yml`. Snippets use `.j2`.
-- `drafts/` is the only place the MCP server can write. A draft becomes live only when a person promotes it in the GUI, which moves it to the matching path under `plays/` or `snippets/`.
+- `drafts/` is the only place the MCP server can write plays and snippets. A draft becomes live only when a person promotes it in the GUI, which moves it to the matching path under `plays/` or `snippets/`. The one exception is inventory additions (`add_customer`, `add_site`, `add_devices`), off unless the policy sets `inventory_edits: true`; they add and never edit or delete (see MCP interface: Tools).
 - `workspace.yml` holds the workspace name, `schema_version`, default platform, and default batch size. It holds nothing that affects MCP permissions.
 - The app refuses a workspace whose `schema_version` is newer than it understands, and offers a migration for older ones.
 
@@ -783,6 +783,9 @@ Accepted residual: if a secret is also stored in plain text somewhere the exact 
 |`render(path, device, prompts)`|0|Rendered lines, secrets masked|
 |`write_draft(path, content)`|0|Validation result. Writes only under `drafts/`|
 |`delete_draft(path)`|0|Confirmation. Only under `drafts/`|
+|`add_customer(slug, name, credential)`|0|Confirmation. Policy `inventory_edits` only. Never a lab customer; the login name must not belong to another customer|
+|`add_site(customer, site, vars?)`|0|Confirmation. Policy `inventory_edits` only. Vars keys that look secret are refused|
+|`add_devices(customer, devices, create_sites?)`|0|Status per row, checked as a CSV import. Policy `inventory_edits` only. A device may name only a login its customer already uses|
 |`check(path, targets?, prompts)`|1|Job id. Results hold per-device diffs|
 |`compliance(path)`|1|Job id. Results hold missing and extra lines|
 |`show(customer, device, command)`|1|Redacted output. Allowlisted commands only|
@@ -792,6 +795,8 @@ Accepted residual: if a secret is also stored in plain text somewhere the exact 
 |`cancel_job(job_id)`|2|Only jobs created by MCP that have not started|
 
 Tier 0 touches only the workspace. Tier 1 contacts devices read-only: the engine uses credentials, and Claude sees only redacted output. Tier 2 requests changes.
+
+Inventory additions are recorded in `history.db` (`mcp_devices`: customer, device, the host Claude gave). No MCP connection (`show`, check, compliance, `request_run`, lab runs) records a first-contact host key for such a device while its host is unchanged, even with `trust_new_host_keys: true`. A person trusts its key first (Trust host keys, or a GUI run), so a host Claude chose never receives a login. `add_customer` answers alike for a taken, blocked or reserved slug, so it never confirms a blocked customer. After an addition the GUI reloads its workspace.
 
 Mark tier 0 and tier 1 read tools with `readOnlyHint`. Treat annotations as hints for the client, not enforcement; enforcement is server-side. Write each tool description so it tells Claude the rules, for example that `request_run` needs human approval for non-lab customers and that Claude should show the user the diff.
 
@@ -817,6 +822,7 @@ enabled: true
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
 trust_new_host_keys: false  # true: Claude may make first contact with a device
+inventory_edits: false     # true: Claude may add customers, sites and devices (add only)
 customers_blocked: []      # hidden from MCP entirely
 show_allowlist:           # per platform family
   ios:
@@ -896,6 +902,7 @@ approval_expiry_minutes: 60
 |Backups and session logs|No tool exposes them.|
 |Filesystem|No generic read. Workspace paths only. Writes in `drafts/` only.|
 |Policy tampering|Policy lives outside the workspace. No MCP write path.|
+|Inventory additions|Off by default (`inventory_edits`). Add only. A customer Claude adds is never a lab customer, so it cannot skip approval. A device names only a login its customer already uses, and no MCP connection makes first contact with a device Claude added, so a host Claude chose never receives a login.|
 |Prompt injection from device output|Approval gate for non-lab customers. Device output is returned in a field named `untrusted_device_output`.|
 
 The MCP server holds no credentials: the GUI runs every tool, and only while unlocked. Another process running as you can still reach the relay while Tsunami is unlocked, and could read process memory; the protection is the narrow tool surface and the Tsunami password, not OS isolation. That is acceptable for this threat model. Real isolation would mean running the runner as a separate Windows account.
@@ -920,7 +927,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |---|---|
 |View|Purpose|
 |Workspace|Open or init a workspace. Shows schema version, a lint summary of every file, and reload.|
-|Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Read-only in v1.|
+|Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Context menus edit the inventory, import devices from CSV (Save example CSV writes a file with every column), trust host keys, and on a site run Discover devices (CDP/LLDP) and Check for unlearned neighbors.|
 |Plays|Plays grouped by type and customer, with validation status, a read-only YAML view, and a Run button.|
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
@@ -928,7 +935,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete.|
 |History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
 |Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed.|
-|Settings|Workspace path, MCP policy editor, Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
+|Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
 
 ### Behavior rules
 
@@ -1408,3 +1415,8 @@ Changes since the original draft, with reasons:
   - Trust host keys in bulk (`core/hostkey_trust.py`): each device's key is read without logging in (through the jump host if the customer has one), new keys are recorded, and a changed key is listed with both fingerprints and replaced only after a confirmation that shows both. The known_hosts lock is keyed by string normalization, not `Path.resolve()`, which lost about one new key in a hundred when a fresh folder was being created.
   - `history.db` migration 003 keeps each device's last reported facts (model, version, serial). The device list shows last job, last contact and version; the device page adds Run play, Test connection, Open SSH (MobaXterm `-newtab` when installed, else OpenSSH; host, port and username only), recent jobs and Backups.
   - A backups viewer lists a device's backups and shows them, or a diff of two, through the redactor (every stored secret plus the line rules), masked on both sides before diffing. Nothing is shown while Tsunami is locked, and there is no raw-file action.
+- 0.5.1, onboarding a site and Claude adding inventory:
+  - Save example CSV (Inventory menus and the import dialog) writes a UTF-8 file with a BOM, every column the import understands and placeholder devices.
+  - Site discovery over CDP and LLDP (`core/discovery.py`, Inventory, a site, Discover devices). It starts from seed addresses and/or the site's devices and logs in with one login (the site's default, or another chosen login, which is then written on each added device). For each device it reads facts and neighbors, adds the device to the site, and follows new neighbors breadth first. A neighbor is followed only if it is inside the scope (networks the person lists; the seeds' /24s by default), advertises a management address, is a switch or router, and has a platform Tsunami supports. It stops at a hop limit and a device limit (200). Every neighbor not learned is listed with the reason. New host keys are recorded, as in a GUI run. Names come from the device's hostname, slugged. A name clash with another host is reported, not added. A router-only neighbor is added as `router`, the rest as the chosen type. Check for unlearned neighbors reads the site's devices and lists neighbors the inventory lacks, adding nothing. The IOS parsers come from IOL 17.18 output (CML); IOL switches advertise `Router Switch IGMP`, so only a router-only neighbor becomes `router`. The AOS-CX (LLDP only) and AOS-S parsers are unverified on hardware.
+  - MCP inventory additions (`add_customer`, `add_site`, `add_devices`), behind the new policy switch `inventory_edits` (off by default). The design said MCP writes only to `drafts/`. Additions are useful when Claude reads a customer's documentation, and the constraints keep them from widening what Claude can reach: add only, never a lab customer, logins limited to the customer's own, and no first contact with a device Claude added (`history.db` migration 004, `mcp_devices`). Runs gained a per-device refusal of first-contact keys (`RunRequest.no_new_host_key`).
+  - Settings: Edit allowlists in VS Code beside the show allowlist.

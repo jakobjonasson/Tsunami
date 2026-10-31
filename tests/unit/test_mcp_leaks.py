@@ -1963,3 +1963,49 @@ def test_refusal_reason_over_the_wire_holds_no_secret(env):
             v for v in ALL_VALUES if v in blob and v not in args.get("prompts", {}).values()
         ]
         assert "Error executing tool" in blob
+
+
+# ---------------------------------------------------------------------------------------
+# inventory additions
+# ---------------------------------------------------------------------------------------
+
+
+def _device(**fields: Any) -> dict[str, Any]:
+    base = {"name": "sa-as77", "host": "192.0.2.77", "site": "site-a", "role": "access",
+            "platform": "ios-xe"}  # fmt: skip
+    return {**base, **fields}
+
+
+def test_inventory_tools_leak_nothing(env):
+    env.set_policy(inventory_edits=True)
+    calls = [
+        ("add_customer", {"slug": "newco", "name": f"New {TACACS}", "credential": "newco-login"}),
+        ("add_customer", {"slug": "newco2", "name": "N", "credential": "beta-netadmin"}),
+        ("add_site", {"customer": "acme", "site": "site-q", "vars": {"note": "x"}}),
+        ("add_site", {"customer": "acme", "site": "site-r", "vars": {"tacacs_key": TACACS}}),
+        ("add_devices", {"customer": "acme", "devices": [_device()]}),
+        ("add_devices", {"customer": "acme", "devices": [_device(name="x", host=LOGIN_PW)]}),
+        ("add_devices", {"customer": "acme", "devices": [_device(credential="beta-netadmin")]}),
+        ("add_devices", {"customer": "acme", "devices": [_device(model=BETA_PW)]}),
+    ]
+    for tool, args in calls:
+        out = env.call(tool, **args)
+        supplied = tuple(v for v in ALL_VALUES if v in json.dumps(args, ensure_ascii=False))
+        assert_clean(out, exclude=supplied)
+    for row in env.audit_rows():
+        for value in ALL_VALUES:
+            assert value not in json.dumps(row, default=str), row["tool"]
+
+
+def test_inventory_tools_hide_blocked_customers(env):
+    env.set_policy(inventory_edits=True, customers_blocked=["beta"])
+    site = env.call("add_site", customer="beta", site="site-x")
+    unknown_site = env.call("add_site", customer="zzz", site="site-x")
+    devices = env.call("add_devices", customer="beta", devices=[_device()])
+    assert site.refused and unknown_site.refused and devices.refused
+    assert site.error_text.replace("beta", "zzz") == unknown_site.error_text
+    blocked = env.call("add_customer", slug="beta", name="B", credential="b2-login")
+    visible = env.call("add_customer", slug="acme", name="A", credential="a2-login")
+    assert blocked.refused and visible.refused
+    assert blocked.error_text.replace("beta", "acme") == visible.error_text
+    assert not (env.root / "inventory/customers/beta/sites/site-x.yml").exists()

@@ -1,0 +1,68 @@
+-------------------------
+Device ID: DSC-SW3.lab.local
+Entry address(es): 
+  IP address: 192.0.2.53
+Platform: Linux Unix,  Capabilities: Router Switch IGMP 
+Interface: Ethernet0/1,  Port ID (outgoing port): Ethernet0/0
+Holdtime : 130 sec
+
+Version :
+Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX_L2-ADVENTERPRISEK9-M), Version 17.18.2, RELEASE SOFTWARE (fc3)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2025 by Cisco Systems, Inc.
+Compiled Fri 19-Dec-25 03:28 by mcpre
+
+advertisement version: 2
+Peer Source MAC: aabb.cc00.bb00
+VTP Management Domain: ''
+Native VLAN: 10
+Duplex: full
+Management address(es): 
+  IP address: 192.0.2.53
+
+-------------------------
+Device ID: dsc-sw4.lab.local
+Entry address(es): 
+  IP address: 192.0.2.54
+Platform: Linux Unix,  Capabilities: Router Switch IGMP 
+Interface: Ethernet0/2,  Port ID (outgoing port): Ethernet0/1
+Holdtime : 133 sec
+
+Version :
+Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX_L2-ADVENTERPRISEK9-M), Version 17.18.2, RELEASE SOFTWARE (fc3)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2025 by Cisco Systems, Inc.
+Compiled Fri 19-Dec-25 03:28 by mcpre
+
+advertisement version: 2
+Peer Source MAC: aabb.cc00.bc10
+VTP Management Domain: ''
+Native VLAN: 10
+Duplex: full
+Management address(es): 
+  IP address: 192.0.2.54
+
+-------------------------
+Device ID: dsc-sw1.lab.local
+Entry address(es): 
+  IP address: 192.0.2.51
+Platform: Linux Unix,  Capabilities: Router Switch IGMP 
+Interface: Ethernet0/0,  Port ID (outgoing port): Ethernet0/1
+Holdtime : 172 sec
+
+Version :
+Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX_L2-ADVENTERPRISEK9-M), Version 17.18.2, RELEASE SOFTWARE (fc3)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2025 by Cisco Systems, Inc.
+Compiled Fri 19-Dec-25 03:28 by mcpre
+
+advertisement version: 2
+Peer Source MAC: aabb.cc00.b910
+VTP Management Domain: ''
+Native VLAN: 10
+Duplex: full
+Management address(es): 
+  IP address: 192.0.2.51
+
+
+Total cdp entries displayed : 3

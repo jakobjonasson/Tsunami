@@ -71,9 +71,10 @@ def test_migrations_apply(hist: History, db_path: Path):
         "compliance_results",
         "mcp_drafts",
         "device_facts",
+        "mcp_devices",
     } <= tables
     assert "device_leases" in tables
-    assert raw(db_path, "SELECT version FROM schema_version") == [(3,)]
+    assert raw(db_path, "SELECT version FROM schema_version") == [(4,)]
 
 
 def test_wal_and_busy_timeout(hist: History):
@@ -89,7 +90,7 @@ def test_reopen_is_idempotent(db_path: Path, clock: FakeClock):
     h2 = History(db_path, clock=clock)
     assert h2.get_job(job_id).id == job_id
     h2.close()
-    assert raw(db_path, "SELECT version FROM schema_version") == [(3,)]
+    assert raw(db_path, "SELECT version FROM schema_version") == [(4,)]
 
 
 def test_newer_database_is_refused(db_path: Path, clock: FakeClock):
@@ -425,3 +426,11 @@ def test_reads_do_not_wait_for_a_writer(hist: History):
     release.set()
     thread.join()
     assert len(jobs) == 1 and elapsed < 0.5
+
+
+def test_mcp_devices_are_remembered_per_customer(hist: History):
+    assert hist.mcp_devices("acme") == {}
+    hist.record_mcp_device("acme", "sw-new", "192.0.2.9")
+    hist.record_mcp_device("acme", "sw-new", "192.0.2.10")  # added again: the newer host
+    hist.record_mcp_device("other", "sw-x", "192.0.2.11")
+    assert hist.mcp_devices("acme") == {"sw-new": "192.0.2.10"}

@@ -521,3 +521,35 @@ def test_250_rows_import_fast_and_round_trip(root, tmp_path):
     # importing the same file again changes nothing
     again = run(root, tmp_path, "\n".join(lines) + "\n", create_sites=True)
     assert again.skipped == 250 and again.ready == 0
+
+
+# -- example file ---------------------------------------------------------------------
+
+
+def test_example_csv_maps_every_field_and_previews_clean(root, tmp_path):
+    from tsunami.core.inventory_import import FIELDS, OK, WARNING, write_example_csv
+
+    path = write_example_csv(tmp_path / "example.csv")
+    assert path.read_bytes().startswith(b"\xef\xbb\xbf")  # BOM: Excel reads it as UTF-8
+    table = read_csv(path)
+    mapping = auto_map(table.headers)
+    assert set(mapping.columns) == set(FIELDS)
+    plan = preview(root, "acme", table, mapping, known_logins=LOGINS)
+    assert plan.errors == 0
+    assert plan.ready == len(table.rows) == 4
+    assert statuses(plan) == [OK, OK, OK, WARNING]  # the last row names a login not yet stored
+    assert "edge-login" in reasons(plan)["rtr-edge-01"]
+
+
+def test_example_csv_uses_the_site_it_is_made_for(root, tmp_path):
+    from tsunami.core.inventory_import import example_csv
+    from tsunami.core.issues import TsunamiError
+
+    text = example_csv("branch-7")
+    assert all(line.split(",")[2] == "branch-7" for line in text.splitlines()[1:])
+    plan = run(root, tmp_path, text)
+    assert plan.errors == 4  # branch-7 is not a site of acme yet
+    plan = run(root, tmp_path, text, create_sites=True)
+    assert plan.errors == 0 and plan.new_sites == ["branch-7"]
+    with pytest.raises(TsunamiError):
+        example_csv("Bad Site")

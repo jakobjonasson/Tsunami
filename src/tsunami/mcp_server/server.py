@@ -22,6 +22,8 @@ Rules:
 - Changes to customer devices need a person to approve them in the Tsunami GUI. After
   request_run, show the user the per-device diff from get_job and tell them to approve it.
 - Drafts never reach a customer device until a person promotes them.
+- When Settings allow it, you can add customers, sites and devices (never edit or delete).
+  Before you can reach a device you added, a person must trust its host key in the GUI.
 - A play with `customer: global` runs for any customer: pass `customer` to render, check,
   compliance and request_run. Its secrets are written secret('name') and resolve to that
   customer's.
@@ -132,6 +134,29 @@ def build_server(backend: Any) -> Any:
     @server.tool(annotations=writes, description="Delete a draft under drafts/.")
     def delete_draft(path: str) -> dict[str, Any]:
         return tools.delete_draft(path)
+
+    @server.tool(
+        annotations=writes,
+        description="Add a customer to the inventory (only when Tsunami Settings allow inventory additions). slug: lowercase letters, digits, dashes. credential: the name of the login its devices use; it must not belong to another customer, and a person adds the login itself in Tsunami Credentials. Never a lab customer. Add only: nothing can be edited or deleted over MCP.",
+    )
+    def add_customer(slug: str, name: str, credential: str) -> dict[str, Any]:
+        return tools.add_customer(slug, name, credential)
+
+    @server.tool(
+        annotations=writes,
+        description="Add a site to a customer, with optional site variables (no secrets: keys like password, secret or key are refused). Only when Tsunami Settings allow inventory additions.",
+    )
+    def add_site(customer: str, site: str, vars: dict[str, Any] | None = None) -> dict[str, Any]:  # noqa: A002
+        return tools.add_site(customer, site, vars)
+
+    @server.tool(
+        annotations=writes,
+        description="Add devices to a customer, checked like a CSV import: each device has name, host, site, role (device type: core, distribution, access, wlc, ap, router or a custom role) and platform (ios, ios-xe, aos-cx, aos-s), optionally model (catalog id), port and credential (only a login this customer already uses). Returns a status per row; rows with errors are left out, rows already present are skipped. create_sites adds missing sites. Only when Tsunami Settings allow inventory additions. You cannot connect to a device you added until a person trusts its host key in the GUI.",
+    )
+    def add_devices(
+        customer: str, devices: list[dict[str, Any]], create_sites: bool = False
+    ) -> dict[str, Any]:
+        return tools.add_devices(customer, devices, create_sites)
 
     @server.tool(
         annotations=read_only,

@@ -78,6 +78,10 @@ class RunRequest:
     job_id: str | None = None  # an approved job created earlier by the approval flow
     approved_hashes: Mapping[str, str] | None = None
     allow_new_host_key: bool = True
+    # Devices that never get a first-contact host key in this run, whatever
+    # allow_new_host_key says: devices Claude added to the inventory (a person trusts
+    # their key first, so a host Claude chose never receives a login).
+    no_new_host_key: frozenset[str] = frozenset()
     serial_port: str | None = None
     # MCP jobs: text Claude supplied (prompt values, a draft's content). It is left out of
     # the exact-value layer where echoed; redacting a correct guess would confirm it.
@@ -295,6 +299,7 @@ class Runner:
             secret_values=secret_values,
             approved_hashes=request.approved_hashes,
             allow_new_host_key=request.allow_new_host_key,
+            no_new_host_key=request.no_new_host_key,
             serial_port=request.serial_port,
             credential_notes=notes,
         )

@@ -65,7 +65,7 @@ def main(argv: list[str] | None = None) -> int:
         return 0
     ctx.lock = lock
     ctx.settings_changed.connect(lambda: setattr(lock, "settings", ctx.settings))
-    bridge = start_bridge(paths, history, secrets, lambda: lock.unlocked)
+    bridge = start_bridge(paths, history, secrets, lambda: lock.unlocked, ctx.reload_requested.emit)
 
     window = MainWindow(ctx, load_views())
     register_all(window)
@@ -81,7 +81,7 @@ def main(argv: list[str] | None = None) -> int:
         history.close()
 
 
-def start_bridge(paths, history, secrets, is_unlocked):
+def start_bridge(paths, history, secrets, is_unlocked, on_inventory_changed=None):
     """Serve MCP tool calls from tsunami-mcp.exe in this process, which alone holds the
     unlocked vault. None if another Tsunami window already serves them."""
     import logging
@@ -90,7 +90,8 @@ def start_bridge(paths, history, secrets, is_unlocked):
     from tsunami.mcp_server.enforcement import McpApp
     from tsunami.mcp_server.tools import Tools
 
-    tools = Tools(McpApp(paths, history=history, secrets=secrets))
+    app = McpApp(paths, history=history, secrets=secrets, on_inventory_changed=on_inventory_changed)
+    tools = Tools(app)
     bridge = BridgeServer(paths, tools.dispatch, is_unlocked=is_unlocked)
     try:
         bridge.start()

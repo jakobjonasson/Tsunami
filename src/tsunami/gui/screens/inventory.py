@@ -497,6 +497,7 @@ class InventoryView(QWidget):
             add("Show devices", "server-environment", self.show_devices, kind[1])
             add("Add site…", "add", self.new_site, kind[1])
             add("Import devices from CSV…", "cloud-upload", self.import_devices, kind[1])
+            add("Save example CSV…", "save", self.save_example_csv)
             add("Trust host keys…", "key", self.trust_host_keys, kind[1])
             add("Properties…", "info", self.edit_customer, kind[1])
             menu.addSeparator()
@@ -505,6 +506,21 @@ class InventoryView(QWidget):
             add("Show devices", "server-environment", self.show_devices, kind[1], kind[2])
             add("New device…", "add", self.new_device, kind[1], kind[2])
             add("Import devices from CSV…", "cloud-upload", self.import_devices, kind[1], kind[2])
+            add("Save example CSV…", "save", self.save_example_csv, kind[2])
+            add(
+                "Discover devices (CDP/LLDP)…",
+                "type-hierarchy-sub",
+                self.discover,
+                kind[1],
+                kind[2],
+            )
+            add(
+                "Check for unlearned neighbors",
+                "search",
+                self.check_neighbors,
+                kind[1],
+                kind[2],
+            )
             add("Trust host keys…", "key", self.trust_host_keys, kind[1], kind[2])
             add("Edit…", "edit", self.edit_site, kind[1], kind[2])
             add("View settings", "info", self.view_site, kind[1], kind[2])
@@ -523,6 +539,21 @@ class InventoryView(QWidget):
         from tsunami.gui.screens.import_devices import open_import_dialog
 
         open_import_dialog(self.ctx, self.shell, customer, site)
+
+    def save_example_csv(self, site: str | None = None) -> None:
+        from tsunami.gui.screens.import_devices import save_example
+
+        save_example(self.shell, site, self)
+
+    def discover(self, customer: str, site: str) -> None:
+        from tsunami.gui.screens.discovery import open_discovery_tab
+
+        open_discovery_tab(self.ctx, self.shell, customer, site)
+
+    def check_neighbors(self, customer: str, site: str) -> None:
+        from tsunami.gui.screens.discovery import open_discovery_tab
+
+        open_discovery_tab(self.ctx, self.shell, customer, site, check_only=True)
 
     def trust_host_keys(self, customer: str, site: str | None = None) -> None:
         from tsunami.gui.screens.host_keys import open_trust_tab

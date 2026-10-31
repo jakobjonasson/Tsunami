@@ -16,17 +16,33 @@ from __future__ import annotations
 
 import hashlib
 import inspect
+import io
 import os
+import re
 import tempfile
 import threading
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
+from ruamel.yaml import YAML
+
 from tsunami.core.approvals import classify_request
+from tsunami.core.inventory_edit import InventoryEditor
+from tsunami.core.inventory_import import ERROR as IMPORT_ERROR
+from tsunami.core.inventory_import import FIELDS as IMPORT_FIELDS
+from tsunami.core.inventory_import import (
+    ColumnMapping,
+    CsvTable,
+    ImportPlan,
+    RowResult,
+    apply_import,
+    preview,
+)
 from tsunami.core.issues import Issue, Severity, TsunamiError
-from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
+from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
+from tsunami.core.models.policy import has_control_chars
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
 from tsunami.core.policy import PolicyError, check_show_command
 from tsunami.core.redact import supplied_values
@@ -42,6 +58,11 @@ from tsunami.core.yamlio import YamlLoadError, load_yaml_text
 from tsunami.mcp_server.enforcement import McpApp, ToolRefused
 
 PLAY_DIRS = ("plays", "drafts/plays")
+SLUG_RE = re.compile(SLUG_PATTERN)
+MAX_DEVICE_ROWS = 200
+# Vars keys refused over MCP: vars never hold secrets, and Claude has no reason to set these.
+_SECRET_KEY = re.compile(r"password|secret|key|community|psk|token|enable", re.I)
+_DEVICE_KEYS = frozenset({*IMPORT_FIELDS, "type"})  # `type` is the CSV name for role
 TOOL_NAMES = frozenset(
     {
         "list_customers",
@@ -62,6 +83,9 @@ TOOL_NAMES = frozenset(
         "list_jobs",
         "request_run",
         "cancel_job",
+        "add_customer",
+        "add_site",
+        "add_devices",
     }
 )
 
@@ -327,6 +351,127 @@ class Tools:
 
         return self.app.call("delete_draft", 0, {"path": path}, run)
 
+    # == tier 0: inventory additions (policy: inventory_edits) ===========================
+    # Add only: nothing here edits or deletes. Customers are never lab customers (a lab
+    # customer can be changed without approval), and a device may only name a login its
+    # customer already uses. Devices added here are recorded, and MCP connections never
+    # make first contact with them (see _mcp_added).
+
+    def add_customer(self, slug: str, name: str, credential: str):
+        def run(policy):
+            ws = self.app.workspace()
+            editor = self._inventory_editor(policy, ws)
+            _plain_text(name, "name", 100)
+            taken = slug in ws.customers or slug in policy.customers_blocked
+            if taken or slug == GLOBAL_CUSTOMER or not SLUG_RE.fullmatch(slug or ""):
+                # One message for taken, blocked and reserved: never confirm a blocked one.
+                raise ToolRefused(
+                    f"customer {slug!r} cannot be added: the slug is taken or not valid"
+                )
+            if not SLUG_RE.fullmatch(credential or ""):
+                raise ToolRefused(
+                    "credential must be a login name: lowercase letters, digits and dashes"
+                )
+            if credential in _logins_in_use(ws.customers.values()):
+                raise ToolRefused(
+                    f"login {credential!r} already belongs to another customer; a person can "
+                    "share a login between customers in the GUI"
+                )
+            try:
+                editor.create_customer(slug, name=name, credential=credential, lab=False)
+            except TsunamiError as exc:
+                raise ToolRefused(str(exc)) from None
+            self.app.inventory_changed()
+            return {
+                "customer": slug,
+                "created": True,
+                "lab": False,
+                "note": f"A person must add the login {credential!r} in Tsunami Credentials "
+                "before anything can connect to this customer's devices.",
+            }
+
+        args = {"slug": slug, "name": name, "credential": credential}
+        # No customer= here: the block-list check would answer "unknown customer" for a
+        # blocked slug, which would tell it apart from a free one.
+        return self.app.call("add_customer", 0, args, run)
+
+    def add_site(self, customer: str, site: str, vars: dict[str, Any] | None = None):  # noqa: A002
+        def run(policy):
+            ws = self.app.workspace()
+            editor = self._inventory_editor(policy, ws)
+            cust = self.app.visible_customer(policy, ws, customer)
+            if not SLUG_RE.fullmatch(site or ""):
+                raise ToolRefused("site must be lowercase letters, digits and dashes")
+            if site in cust.sites:
+                raise ToolRefused(f"site {site!r} already exists for {customer!r}")
+            values = {} if vars is None else vars
+            if not isinstance(values, dict):
+                raise ToolRefused("vars must be a mapping of variable names to values")
+            secretish = sorted(str(k) for k in values if _SECRET_KEY.search(str(k)))
+            if secretish:
+                raise ToolRefused(
+                    "vars never hold secrets; leave out " + ", ".join(repr(k) for k in secretish)
+                )
+            try:
+                editor.create_site(customer, site, vars_text=_yaml_text(values))
+            except TsunamiError as exc:
+                raise ToolRefused(str(exc)) from None
+            self.app.inventory_changed()
+            return {"customer": customer, "site": site, "created": True}
+
+        args = {"customer": customer, "site": site, "vars": vars}
+        return self.app.call("add_site", 0, args, run, customer=customer)
+
+    def add_devices(self, customer: str, devices: list[dict[str, Any]], create_sites: bool = False):
+        def run(policy):
+            ws = self.app.workspace()
+            editor = self._inventory_editor(policy, ws)
+            cust = self.app.visible_customer(policy, ws, customer)
+            if not isinstance(devices, list) or not devices:
+                raise ToolRefused("devices must be a non-empty list")
+            if len(devices) > MAX_DEVICE_ROWS:
+                raise ToolRefused(f"at most {MAX_DEVICE_ROWS} devices per call")
+            plan = _device_plan(ws.root, cust, devices, bool(create_sites))
+            try:
+                summary = apply_import(ws.root, customer, plan, editor=editor)
+            except TsunamiError as exc:
+                raise ToolRefused(str(exc)) from None
+            for row in plan.rows:
+                if row.importable:
+                    self.app.history.record_mcp_device(
+                        customer, row.fields["name"], str(row.fields["host"])
+                    )
+            if summary.imported:
+                self.app.inventory_changed()
+            return {
+                "customer": customer,
+                "imported": summary.imported,
+                "sites_created": summary.sites_created,
+                "rows": [
+                    {
+                        "row": r.number,
+                        "name": r.fields.get("name"),
+                        "status": r.status,
+                        "reason": r.reason,
+                    }
+                    for r in plan.rows
+                ],
+                "note": "You cannot make first contact with devices you added: a person must "
+                "trust their host keys in the Tsunami GUI (Inventory, Trust host keys) before "
+                "show, check or request_run can reach them.",
+            }
+
+        args = {"customer": customer, "devices": devices, "create_sites": create_sites}
+        return self.app.call("add_devices", 0, args, run, customer=customer)
+
+    def _inventory_editor(self, policy, ws) -> InventoryEditor:
+        if not policy.inventory_edits:
+            raise ToolRefused(
+                "adding to the inventory over MCP is turned off in Tsunami Settings (MCP, "
+                "Inventory)"
+            )
+        return InventoryEditor(ws.root)
+
     # == tier 1: read-only device access =================================================
 
     def check(
@@ -364,7 +509,9 @@ class Tools:
                 method=ConnectionMethod.SSH,
                 credential=self.app.secrets.get_login(cust.credential_for(dev)),
                 jump=self._jump(cust),
-                allow_new_host_key=policy.trust_new_host_keys,
+                allow_new_host_key=(
+                    policy.trust_new_host_keys and dev.name not in self._mcp_added(cust)
+                ),
             )
             transport = self.app.transport()
             session = transport.open(target)
@@ -478,6 +625,7 @@ class Tools:
                         actor=Actor.MCP,
                         job_id=job_id,
                         allow_new_host_key=policy.trust_new_host_keys,
+                        no_new_host_key=self._mcp_added(cust),
                         exact_exempt=self._exempt(entry, prompts),
                         customer=entry.play.customer,
                     )
@@ -497,6 +645,7 @@ class Tools:
                     actor=Actor.MCP,
                     job_id=job_id,
                     allow_new_host_key=policy.trust_new_host_keys,
+                    no_new_host_key=self._mcp_added(cust),
                     exact_exempt=self._exempt(entry, prompts),
                     customer=entry.play.customer,
                 ),
@@ -560,6 +709,7 @@ class Tools:
                     actor=Actor.MCP,
                     job_id=job_id,
                     allow_new_host_key=policy.trust_new_host_keys,
+                    no_new_host_key=self._mcp_added(cust),
                     exact_exempt=self._exempt(entry, prompts),
                     customer=entry.play.customer,
                 )
@@ -630,6 +780,12 @@ class Tools:
 
     def _await_approval(self, job_id: str) -> None:
         classify_request(self.app.history, job_id)  # ready for approval, or no_changes
+
+    def _mcp_added(self, cust) -> frozenset[str]:
+        """Devices Claude added to this customer whose host is still the one it gave. MCP
+        connections never record a first-contact host key for them."""
+        added = self.app.history.mcp_devices(cust.slug)
+        return frozenset(d.name for d in cust.devices if added.get(d.name) == str(d.host))
 
     def _jump(self, cust) -> JumpTarget | None:
         jh = cust.config.jump_host
@@ -741,6 +897,73 @@ class ToolProxy:
             return self._backend.call(name, {**dict(zip(params, args, strict=False)), **kwargs})
 
         return call
+
+
+def _plain_text(value: Any, what: str, limit: int) -> str:
+    if not isinstance(value, str) or not value.strip() or len(value) > limit:
+        raise ToolRefused(f"{what} must be text of 1 to {limit} characters")
+    if has_control_chars(value):
+        raise ToolRefused(f"{what} must not contain line breaks or control characters")
+    return value
+
+
+def _logins_in_use(customers: Any) -> set[str]:
+    """Every login name a customer, its sites, its devices or its jump host refers to."""
+    names: set[str] = set()
+    for cust in customers:
+        cfg = cust.config
+        names.add(cfg.credential)
+        names.update(cfg.site_credentials.values())
+        if cfg.jump_host is not None:
+            names.add(cfg.jump_host.credential)
+        names.update(d.credential for d in cust.devices if d.credential)
+    return names
+
+
+def _yaml_text(values: dict[str, Any]) -> str:
+    if not values:
+        return ""
+    out = io.StringIO()
+    yaml = YAML(typ="safe")
+    yaml.default_flow_style = False
+    yaml.dump(values, out)
+    return out.getvalue()
+
+
+def _device_plan(root: Path, cust: Any, devices: list[Any], create_sites: bool) -> ImportPlan:
+    """Check the rows as a CSV import does, plus one rule for MCP: a device may only name a
+    login its customer already uses, never another customer's."""
+    rows: list[tuple[int, list[str]]] = []
+    for number, device in enumerate(devices, start=1):
+        if not isinstance(device, dict):
+            raise ToolRefused(f"device {number} must be a mapping of fields")
+        unknown = sorted(set(map(str, device)) - _DEVICE_KEYS)
+        if unknown:
+            raise ToolRefused(f"device {number}: unknown field(s) {', '.join(unknown)}")
+        values = {**device, "role": device.get("role", device.get("type"))}
+        cells = ["" if values.get(f) is None else str(values[f]) for f in IMPORT_FIELDS]
+        if any(has_control_chars(cell) for cell in cells):
+            raise ToolRefused(f"device {number}: fields must not contain control characters")
+        rows.append((number, cells))
+    table = CsvTable(Path("mcp"), ",", list(IMPORT_FIELDS), rows)
+    mapping = ColumnMapping(columns={f: f for f in IMPORT_FIELDS})
+    # known_logins=None: MCP never probes Credential Manager, not even for names.
+    plan = preview(root, cust.slug, table, mapping, known_logins=None, create_sites=create_sites)
+    allowed = _logins_in_use([cust])
+    checked: list[RowResult] = []
+    for row in plan.rows:
+        login = row.fields.get("credential")
+        if row.importable and login and login not in allowed:
+            row = RowResult(
+                row.number,
+                row.fields,
+                IMPORT_ERROR,
+                f"login {login!r} is not used by {cust.slug}; leave credential out to use "
+                "the site's or the customer's login",
+            )
+        checked.append(row)
+    needed = {r.fields["site"] for r in checked if r.importable}
+    return ImportPlan(cust.slug, checked, [s for s in plan.new_sites if s in needed])
 
 
 def _yaml_customer(text: str) -> str | None:

@@ -1,0 +1,68 @@
+-------------------------
+Device ID: DSC-SW3.lab.local
+Entry address(es): 
+  IP address: 192.0.2.53
+Platform: Linux Unix,  Capabilities: Router Switch IGMP 
+Interface: Ethernet0/0,  Port ID (outgoing port): Ethernet0/1
+Holdtime : 175 sec
+
+Version :
+Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX_L2-ADVENTERPRISEK9-M), Version 17.18.2, RELEASE SOFTWARE (fc3)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2025 by Cisco Systems, Inc.
+Compiled Fri 19-Dec-25 03:28 by mcpre
+
+advertisement version: 2
+Peer Source MAC: aabb.cc00.bb10
+VTP Management Domain: ''
+Native VLAN: 10
+Duplex: full
+Management address(es): 
+  IP address: 192.0.2.53
+
+-------------------------
+Device ID: dsc-sw6.lab.local
+Entry address(es): 
+  IP address: 198.51.100.6
+Platform: Linux Unix,  Capabilities: Router Switch IGMP 
+Interface: Ethernet0/2,  Port ID (outgoing port): Ethernet0/0
+Holdtime : 136 sec
+
+Version :
+Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX_L2-ADVENTERPRISEK9-M), Version 17.18.2, RELEASE SOFTWARE (fc3)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2025 by Cisco Systems, Inc.
+Compiled Fri 19-Dec-25 03:28 by mcpre
+
+advertisement version: 2
+Peer Source MAC: aabb.cc00.bf00
+VTP Management Domain: ''
+Native VLAN: 20
+Duplex: full
+Management address(es): 
+  IP address: 198.51.100.6
+
+-------------------------
+Device ID: dsc-sw2.lab.local
+Entry address(es): 
+  IP address: 192.0.2.52
+Platform: Linux Unix,  Capabilities: Router Switch IGMP 
+Interface: Ethernet0/1,  Port ID (outgoing port): Ethernet0/2
+Holdtime : 174 sec
+
+Version :
+Cisco IOS Software [IOSXE], Linux Software (X86_64BI_LINUX_L2-ADVENTERPRISEK9-M), Version 17.18.2, RELEASE SOFTWARE (fc3)
+Technical Support: http://www.cisco.com/techsupport
+Copyright (c) 1986-2025 by Cisco Systems, Inc.
+Compiled Fri 19-Dec-25 03:28 by mcpre
+
+advertisement version: 2
+Peer Source MAC: aabb.cc00.ba20
+VTP Management Domain: ''
+Native VLAN: 10
+Duplex: full
+Management address(es): 
+  IP address: 192.0.2.52
+
+
+Total cdp entries displayed : 3

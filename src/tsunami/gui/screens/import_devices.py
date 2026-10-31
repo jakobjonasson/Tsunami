@@ -1,5 +1,7 @@
 """Import devices into a customer from a CSV file.
 
+save_example() writes an example CSV with every column (pick_save_path is its seam).
+
 open_import_dialog() picks a file (pick_csv_file, a seam for tests), then shows a dialog
 with the column mapping, a "create missing sites" switch and a preview of every row with
 its status. Nothing is written until Import; the dialog's save() writes only the rows
@@ -54,6 +56,7 @@ from tsunami.core.inventory_import import (
     auto_map,
     preview,
     read_csv,
+    write_example_csv,
 )
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.inventory import DEVICE_TYPES
@@ -90,6 +93,35 @@ def pick_csv_file(parent: QWidget | None = None) -> Path | None:
         "CSV files (*.csv *.tsv *.txt);;All files (*)",
     )
     return Path(name) if name else None
+
+
+def pick_save_path(parent: QWidget | None, suggested: str) -> Path | None:
+    """Ask where to save the example CSV. A seam: tests replace it."""
+    name, _ = QFileDialog.getSaveFileName(
+        parent, "Save example CSV", suggested, "CSV files (*.csv);;All files (*)"
+    )
+    return Path(name) if name else None
+
+
+def save_example(
+    shell: Shell, site: str | None = None, parent: QWidget | None = None
+) -> Path | None:
+    """Save an example import file (every column, placeholder devices) where the person
+    chooses. Returns the path written, or None if cancelled or it failed."""
+    if parent is None and isinstance(shell, QWidget):
+        parent = shell
+    path = pick_save_path(parent, str(Path.home() / "tsunami-devices-example.csv"))
+    if path is None:
+        return None
+    if not path.suffix:
+        path = path.with_suffix(".csv")
+    try:
+        write_example_csv(path, site or "site-a")
+    except (OSError, TsunamiError) as exc:
+        shell.notify(f"Could not save {path.name}: {exc}", "error")
+        return None
+    shell.notify(f"Saved an example CSV to {path}. Fill it in, then use Import devices from CSV.")
+    return path
 
 
 def open_import_dialog(
@@ -156,9 +188,15 @@ class ImportDevicesDialog(QDialog):
         self.file_label = QLabel()
         self.file_label.setObjectName("Muted")
         self.file_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+        self.example_button = QPushButton("Save example CSV…")
+        self.example_button.setToolTip("Save a file with every column this import understands")
+        self.example_button.clicked.connect(
+            lambda _=False: save_example(self.shell, self.site, self)
+        )
         self.change_button = QPushButton("Choose another file…")
         self.change_button.clicked.connect(lambda _=False: self.change_file())
         file_row.addWidget(self.file_label, 1)
+        file_row.addWidget(self.example_button)
         file_row.addWidget(self.change_button)
         outer.addLayout(file_row)
 

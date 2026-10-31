@@ -82,6 +82,7 @@ class JobContext:
     secret_values: Mapping[str, str] = field(default_factory=dict, repr=False)
     approved_hashes: Mapping[str, str] | None = None
     allow_new_host_key: bool = True
+    no_new_host_key: frozenset[str] = frozenset()  # labels refused a first-contact key
     serial_port: str | None = None  # chosen at run time when the play says port: ask
     # Per target label: why it has no login (a serial run goes on without one, since a
     # factory-default console needs none; the reason is logged before connecting).
@@ -193,7 +194,7 @@ class DevicePipeline:
             * (2 if method == ConnectionMethod.SERIAL else 1),
             serial_port=ctx.serial_port or _fixed_port(ctx.play.connection.port),
             baud=ctx.play.connection.baud or self.model_baud(),
-            allow_new_host_key=ctx.allow_new_host_key,
+            allow_new_host_key=ctx.allow_new_host_key and self.label not in ctx.no_new_host_key,
             cancel=ctx.cancel,
             log=self.log,
         )

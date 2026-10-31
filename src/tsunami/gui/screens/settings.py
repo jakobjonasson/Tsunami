@@ -90,6 +90,15 @@ def find_mcp_exe() -> Path | None:
     return None
 
 
+def _key_line(path: Path, key: str) -> int | None:
+    """The 1-based line of a top-level YAML key, or None if the file lacks it."""
+    try:
+        lines = path.read_text(encoding="utf-8").splitlines()
+    except (OSError, UnicodeDecodeError):
+        return None
+    return next((n for n, line in enumerate(lines, 1) if line.startswith(f"{key}:")), None)
+
+
 def _stamp(path: Path) -> tuple[int, int] | None:
     """(mtime, size) of a file, or None if it is missing. Detects an external edit."""
     try:
@@ -275,8 +284,19 @@ class SettingsTab(QWidget):
         row.addStretch(1)
         layout.addLayout(row)
 
-    def open_file(self, kind: str) -> bool:
-        """Open settings.json or mcp-policy.yml in VS Code, creating it first if missing."""
+    def open_allowlists(self) -> bool:
+        """Open mcp-policy.yml in VS Code at the `show_allowlist:` line."""
+        if self.is_dirty("policy"):
+            self.shell.notify(
+                "This tab has unsaved MCP changes. They are not in mcp-policy.yml until you "
+                "save; edits made in VS Code meanwhile will ask which copy to keep.",
+                "warning",
+            )
+        return self.open_file("policy", key="show_allowlist")
+
+    def open_file(self, kind: str, *, key: str | None = None) -> bool:
+        """Open settings.json or mcp-policy.yml in VS Code, creating it first if missing.
+        key: a top-level YAML key to open the file at, when the file has it."""
         path = self._path(kind)
         if not path.is_file():
             try:
@@ -288,7 +308,7 @@ class SettingsTab(QWidget):
                 self.shell.notify(f"{path.name} could not be created: {exc}", "error")
                 return False
             self._stamps[kind] = _stamp(path)
-        self.shell.open_in_vscode(path)
+        self.shell.open_in_vscode(path, _key_line(path, key) if key else None)
         return True
 
     # -- save bar ----------------------------------------------------------------------------------
@@ -368,6 +388,7 @@ class SettingsTab(QWidget):
             "apply": self.apply_combo.currentText(),
             "lab_allow_drafts": self.lab_drafts.isChecked(),
             "trust_new_host_keys": self.trust_keys.isChecked(),
+            "inventory_edits": self.inventory_edits.isChecked(),
             "customers_blocked": [s for s, b in self.blocked_boxes.items() if b.isChecked()],
             "show_allowlist": self.allow_lines.values(),
             "pipes": self.pipe_lines.values(),
@@ -399,6 +420,7 @@ class SettingsTab(QWidget):
             self.apply_combo.setCurrentText(policy.apply)
             self.lab_drafts.setChecked(policy.lab_allow_drafts)
             self.trust_keys.setChecked(policy.trust_new_host_keys)
+            self.inventory_edits.setChecked(policy.inventory_edits)
             self._rebuild_blocked(policy)
             self.allow_lines.set_values(policy.show_allowlist)
             self.pipe_lines.set_values(policy.pipes)
@@ -786,6 +808,13 @@ class SettingsTab(QWidget):
         self.lab_drafts = QCheckBox("Lab customers may receive draft plays")
         self.lab_drafts.toggled.connect(self._on_edit)
         form.addRow(self.lab_drafts)
+        self.inventory_edits = QCheckBox("Claude may add customers, sites and devices")
+        self.inventory_edits.setToolTip(
+            "Add only: Claude never edits or deletes inventory. Customers it adds are never "
+            "lab customers, and Claude cannot make first contact with a device it added."
+        )
+        self.inventory_edits.toggled.connect(self._on_edit)
+        form.addRow("Inventory", self.inventory_edits)
         layout.addLayout(form)
 
         layout.addWidget(QLabel("Customers hidden from MCP"))
@@ -793,7 +822,16 @@ class SettingsTab(QWidget):
         self._blocked_layout = QVBoxLayout()
         layout.addLayout(self._blocked_layout)
 
-        layout.addWidget(QLabel("Show allowlist (a command prefix per line)"))
+        allow_row = QHBoxLayout()
+        allow_row.addWidget(QLabel("Show allowlist (a command prefix per line)"), 1)
+        self.open_allowlists_button = QPushButton("Edit allowlists in VS Code")
+        self.open_allowlists_button.setToolTip(
+            "Open mcp-policy.yml at the show allowlist; the pipe list and hidden customers "
+            "are in the same file. Tsunami reloads it when you come back to this tab."
+        )
+        self.open_allowlists_button.clicked.connect(lambda _=False: self.open_allowlists())
+        allow_row.addWidget(self.open_allowlists_button)
+        layout.addLayout(allow_row)
         self.allow_lines = _FamilyLines()
         self.allow_lines.changed.connect(self._on_edit)
         layout.addWidget(self.allow_lines)
