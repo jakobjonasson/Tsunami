@@ -14,6 +14,7 @@ CTX = PromptContext(
     roles=frozenset({"access", "core"}),
     model_ids=frozenset({"c9300-48p", "cx6200-24g"}),
     family=PlatformFamily.IOS,
+    logins=frozenset({"netadmin2", "acme-netadmin"}),
 )
 CHOICES = ["alpha", "beta"]
 
@@ -415,6 +416,7 @@ VALID_FOR_CONTROL: dict[PromptType, tuple[object, dict[str, object]]] = {
     P.SITE: ("hq", {}),
     P.ROLE: ("core", {}),
     P.MODEL: ("c9300-48p", {}),
+    P.LOGIN: ("netadmin2", {}),
 }
 
 
@@ -476,7 +478,13 @@ def test_surrounding_spaces_stripped_for_text_types(ptype: PromptType) -> None:
 @pytest.mark.parametrize("family", list(PlatformFamily))
 @pytest.mark.parametrize("ptype", list(PromptType))
 def test_placeholder_round_trips(ptype: PromptType, family: PlatformFamily) -> None:
-    ctx = PromptContext(sites=CTX.sites, roles=CTX.roles, model_ids=CTX.model_ids, family=family)
+    ctx = PromptContext(
+        sites=CTX.sites,
+        roles=CTX.roles,
+        model_ids=CTX.model_ids,
+        family=family,
+        logins=CTX.logins,
+    )
     value = placeholder(ptype, context=ctx, choices=CHOICES)
     result = coerce(ptype, value, context=ctx, choices=CHOICES)
     assert result == value
@@ -499,6 +507,7 @@ def test_placeholder_round_trips(ptype: PromptType, family: PlatformFamily) -> N
         (P.SITE, {}, "branch"),
         (P.ROLE, {}, "access"),
         (P.MODEL, {}, "c9300-48p"),
+        (P.LOGIN, {}, "acme-netadmin"),
     ],
 )
 def test_placeholder_values(ptype: PromptType, kw: dict[str, object], expected: object) -> None:
@@ -531,8 +540,21 @@ def test_placeholder_interface(family: PlatformFamily, expected: str) -> None:
         (P.SITE, {}),
         (P.ROLE, {}),
         (P.MODEL, {}),
+        (P.LOGIN, {}),
     ],
 )
 def test_placeholder_raises_when_unavailable(ptype: PromptType, kw: dict[str, object]) -> None:
     with pytest.raises(PromptValueError):
         placeholder(ptype, context=PromptContext(), **kw)  # type: ignore[arg-type]
+
+
+# ---- login prompts --------------------------------------------------------
+
+
+@pytest.mark.parametrize("name", ["other-customers-login", "no-such-login", "NETADMIN2"])
+def test_a_login_outside_the_customer_reads_the_same(name: str) -> None:
+    with pytest.raises(PromptValueError) as caught:
+        run(P.LOGIN, name)
+    assert str(caught.value) == (
+        f"login {name!r} is not available to this customer; valid: acme-netadmin, netadmin2"
+    )

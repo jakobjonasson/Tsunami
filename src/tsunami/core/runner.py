@@ -34,6 +34,7 @@ from tsunami.core.events import (
     MaxFailReached,
 )
 from tsunami.core.issues import Severity, TsunamiError
+from tsunami.core.logins import allowed_logins
 from tsunami.core.models.inventory import Device
 from tsunami.core.models.jobs import TERMINAL_DEVICE_STATUSES, Actor, DeviceStatus, JobStatus
 from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
@@ -42,10 +43,12 @@ from tsunami.core.paths import AppPaths
 from tsunami.core.pipeline import DevicePipeline, JobContext
 from tsunami.core.redact import Redactor
 from tsunami.core.render.renderer import Renderer, RenderError
+from tsunami.core.render.secret_refs import LOGIN_PREFIX
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.services import collect_prompts, play_entry
 from tsunami.core.targets import resolve_targets
 from tsunami.core.transports.base import JumpTarget, Transport
+from tsunami.core.vault import VaultLocked
 
 log = logging.getLogger(__name__)
 
@@ -210,7 +213,7 @@ class Runner:
                 targets.append(_Target(device.name, device, values))
 
         # Validation render for every device before anything connects (run level step 4).
-        renderer = Renderer(self.workspace, self.app_settings)
+        renderer = Renderer(self.workspace, self.app_settings, self.secrets)
         problems = []
         for target in targets:
             try:
@@ -254,7 +257,7 @@ class Runner:
             jh = cust.config.jump_host
             jump = JumpTarget(jh.host, jh.port, self.secrets.get_login(jh.credential))
 
-        renderer = Renderer(self.workspace, self.app_settings)
+        renderer = Renderer(self.workspace, self.app_settings, self.secrets)
         secret_values: dict[str, str] = {}
         if request.mode == RunMode.APPLY:
             refs = set()
@@ -268,11 +271,28 @@ class Runner:
                 )
                 refs.update(rendering.secret_refs)
             for ref in sorted(refs):
+                if ref.startswith(LOGIN_PREFIX):  # login:<name>/password or /enable
+                    name, field = ref[len(LOGIN_PREFIX) :].split("/", 1)
+                    value = getattr(self.secrets.get_login(name), field)
+                    if not value:
+                        raise TsunamiError(f"login {name!r} has no {field} value")
+                    secret_values[ref] = value
+                    continue
                 customer, name = ref.split("/", 1)
                 secret_values[ref] = self.secrets.get_secret(customer, name)
 
         exact = list(self.secrets.secret_values(play.customer)) if _can_list(self.secrets) else []
         exact += list(secret_values.values())
+        # Every login this customer's plays may push, in every mode: a device can echo one.
+        # Usernames stay out, as for the connection logins.
+        for name in sorted(allowed_logins(cust)):
+            try:
+                pushed = self.secrets.get_login(name)
+            except VaultLocked:
+                raise  # never redact with a silently shorter list
+            except TsunamiError:
+                continue  # not saved: no play can push it either
+            exact += [v for v in (pushed.password, pushed.enable) if v]
         for cred in (*credentials.values(), jump.credential if jump else None):
             if cred is not None:
                 exact += [v for v in (cred.password, cred.enable) if v]
@@ -377,7 +397,7 @@ class Runner:
             results[target.label] = status
 
     def _render_only(self, job_id: str, entry: Any, targets: list[_Target], request) -> str:
-        renderer = Renderer(self.workspace, self.app_settings)
+        renderer = Renderer(self.workspace, self.app_settings, self.secrets)
         results = {}
         for target in targets:
             rendering = renderer.render(

@@ -20,7 +20,7 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.platforms import all_drivers
 
 _KINDS = {"plays": ("play", ".yml"), "snippets": ("snippet", ".j2")}
-_SECRET_RE = re.compile(r"\bsecret\s*\(")
+_SECRET_RE = re.compile(r"\b(secret|login)\s*\(")
 _PREFIX_RE = re.compile(r"""^(?:-\s+)*(?:(?:exec|config)\s*:\s*)?(?:-\s+)*["']?""")
 
 
@@ -77,8 +77,8 @@ def highlights(text: str) -> list[tuple[int, str, str]]:
     drivers = all_drivers()
     found: list[tuple[int, str, str]] = []
     for number, line in enumerate(text.splitlines(), start=1):
-        for _ in _SECRET_RE.finditer(line):
-            found.append((number, "secret", "secret()"))
+        for match in _SECRET_RE.finditer(line):
+            found.append((number, "secret", f"{match.group(1)}()"))
         stripped = _PREFIX_RE.sub("", line.strip()).rstrip("'\"")
         if not stripped:
             continue

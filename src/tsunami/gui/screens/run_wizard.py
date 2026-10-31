@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
 
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
+from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
 from tsunami.core.models.inventory import Device
 from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
@@ -334,6 +335,7 @@ class RunWizard(QWidget):
             frozenset(self.ctx.workspace.roles),  # type: ignore[union-attr]
             self.catalog.ids(),
             None,
+            self._pushable_logins(),
         )
         self._stage1_names = [
             n for n, p in self.play.prompts.items() if self.initial and p.type in FIRST_STAGE
@@ -521,7 +523,17 @@ class RunWizard(QWidget):
             frozenset(self.ctx.workspace.roles),  # type: ignore[union-attr]
             self.catalog.ids(),
             family,
+            self._pushable_logins(),
         )
+
+    def _pushable_logins(self) -> frozenset[str]:
+        """The logins a login prompt offers: those the customer allows that are saved."""
+        allowed = allowed_logins(self.cust)
+        try:
+            saved = set(self.ctx.secrets.list_logins())
+        except TsunamiError:
+            return allowed  # locked: the names are checked again when the play renders
+        return frozenset(allowed & saved)
 
     def _shared_family(self, stage1: dict[str, Any] | None = None) -> PlatformFamily | None:
         if self.initial:
@@ -723,7 +735,7 @@ class RunWizard(QWidget):
             return False
         assert self.ctx.workspace is not None
         workspace = self.ctx.workspace
-        renderer = Renderer(workspace, self.ctx.settings)
+        renderer = Renderer(workspace, self.ctx.settings, self.ctx.secrets)
         tags = self.selected_tags()
         shared = self._shared_raw()
         rendered: list[tuple[str, str]] = []

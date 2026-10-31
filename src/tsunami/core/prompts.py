@@ -28,6 +28,7 @@ class PromptContext:
     roles: frozenset[str] = frozenset()
     model_ids: frozenset[str] = frozenset()  # hardware catalog ids
     family: PlatformFamily | None = None  # required for `interface` prompts
+    logins: frozenset[str] = frozenset()  # logins the customer may push (core.logins)
 
 
 # C0 and C1 controls, DEL, and the Unicode line and paragraph separators: str.splitlines()
@@ -261,7 +262,19 @@ def coerce(
         return _member(raw, context.roles, "role")
     if ptype == PromptType.MODEL:
         return _member(raw, context.model_ids, "model")
+    if ptype == PromptType.LOGIN:
+        return _login(raw, context.logins)
     raise PromptValueError(f"unsupported prompt type: {ptype}")
+
+
+def _login(raw: object, valid: frozenset[str]) -> str:
+    # One message whether the login is missing, another customer's, or a blocked one's.
+    text = _text(raw)
+    if text not in valid:
+        raise PromptValueError(
+            f"login {text!r} is not available to this customer; valid: {_options(valid)}"
+        )
+    return text
 
 
 _PLACEHOLDER_INTERFACE = {
@@ -320,4 +333,6 @@ def placeholder(
         return _first(context.roles, "roles")
     if ptype == PromptType.MODEL:
         return _first(context.model_ids, "models")
+    if ptype == PromptType.LOGIN:
+        return _first(context.logins, "logins")
     raise PromptValueError(f"unsupported prompt type: {ptype}")

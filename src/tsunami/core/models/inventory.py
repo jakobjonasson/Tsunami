@@ -66,6 +66,11 @@ class CustomerFile(StrictModel):
     site_credentials: dict[Slug, Slug] = Field(
         {}, description="Default login credential per site; a device's own credential wins."
     )
+    push_logins: list[Slug] = Field(
+        [],
+        description="Logins this customer's plays may push with login() but Tsunami never "
+        "logs in with, such as a second admin account.",
+    )
 
 
 class Device(StrictModel):

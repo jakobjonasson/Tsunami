@@ -17,6 +17,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
+from PySide6.QtCore import Qt
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -27,6 +28,8 @@ from PySide6.QtWidgets import (
     QHBoxLayout,
     QLabel,
     QLineEdit,
+    QListWidget,
+    QListWidgetItem,
     QPlainTextEdit,
     QPushButton,
     QTreeWidget,
@@ -468,7 +471,8 @@ class SiteDialog(_EditDialog):
 
 
 class CustomerDialog(_EditDialog):
-    """New customer (slug is None) or edit one: name, login, lab flag, jump host."""
+    """New customer (slug is None) or edit one: name, login, lab flag, jump host, and the
+    logins its plays may push (push_logins)."""
 
     def __init__(
         self,
@@ -511,11 +515,37 @@ class CustomerDialog(_EditDialog):
         jump_form.addRow("Port", self.jump_port)
         jump_form.addRow("Login", self.jump_login)
 
+        self.push_group = QGroupBox("Logins plays may push")
+        push_layout = QVBoxLayout(self.push_group)
+        push_layout.setContentsMargins(14, 12, 14, 12)
+        push_hint = QLabel(
+            "Accounts this customer's plays may create on devices with login(), that Tsunami "
+            "does not log in with. The customer's own logins are always allowed."
+        )
+        push_hint.setObjectName("Muted")
+        push_hint.setWordWrap(True)
+        push_layout.addWidget(push_hint)
+        self.push_list = QListWidget()
+        current = set(config.push_logins) if config else set()
+        try:
+            names = set(ctx.secrets.list_logins())
+        except TsunamiError:
+            names = set()
+        for login_name in sorted(names | current):
+            item = QListWidgetItem(login_name)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            checked = login_name in current
+            item.setCheckState(Qt.CheckState.Checked if checked else Qt.CheckState.Unchecked)
+            self.push_list.addItem(item)
+        self.push_list.setFixedHeight(min(6, max(2, self.push_list.count())) * 24 + 8)
+        push_layout.addWidget(self.push_list)
+
         self.form.addRow("ID", self.slug_edit)  # the folder name; plays name the customer by it
         self.form.addRow("Name", self.name_edit)
         self.form.addRow("Login", self.login)
         self.form.addRow("", self.lab_check)
         self.form.addRow(self.jump_group)
+        self.form.addRow(self.push_group)
         if self.login.load_error:
             self.set_error(self.login.load_error)
 
@@ -537,10 +567,20 @@ class CustomerDialog(_EditDialog):
             raise ValueError("The jump host needs an IP address or DNS name.") from None
         return data
 
+    def push_logins(self) -> list[str] | None:
+        """The checked logins, sorted; None when there are none (the key is removed)."""
+        checked = [
+            self.push_list.item(i).text()
+            for i in range(self.push_list.count())
+            if self.push_list.item(i).checkState() == Qt.CheckState.Checked
+        ]
+        return sorted(checked) or None
+
     def save(self) -> bool:
         self.set_error("")
         name = self.name_edit.text().strip()
         credential = self.login.login()
+        push = self.push_logins()
         try:
             jump = self._jump_host()
             if not name:
@@ -557,8 +597,10 @@ class CustomerDialog(_EditDialog):
 
             def create() -> None:
                 editor.create_customer(slug, name=name, credential=credential, lab=lab)
-                if jump is not None:
-                    editor.update_customer(slug, jump_host=jump)
+                extra = {"jump_host": jump, "push_logins": push}
+                extra = {k: v for k, v in extra.items() if v is not None}
+                if extra:
+                    editor.update_customer(slug, **extra)
 
             return self._run(create, f"Added customer {slug}.")
         slug = self.slug
@@ -572,12 +614,19 @@ class CustomerDialog(_EditDialog):
                 "credential": old.jump_host.credential,
             }
         )
-        after = {"name": name, "credential": credential, "lab": lab, "jump_host": jump}
+        after = {
+            "name": name,
+            "credential": credential,
+            "lab": lab,
+            "jump_host": jump,
+            "push_logins": push,
+        }
         before = {
             "name": old.name if old else None,
             "credential": old.credential if old else None,
             "lab": old.lab if old else False,
             "jump_host": before_jump,
+            "push_logins": (sorted(old.push_logins) or None) if old else None,
         }
         changed = {k: v for k, v in after.items() if before[k] != v}
         if not changed:

@@ -30,7 +30,14 @@ from tsunami.core.prompts import PromptContext
 from tsunami.gui import theme, wheel
 
 VENDOR_TITLES = {"cisco": "Cisco", "aruba": "Aruba"}
-_COMBO_TYPES = {PromptType.CHOICE, PromptType.SITE, PromptType.ROLE, PromptType.MODEL}
+_COMBO_TYPES = {
+    PromptType.CHOICE,
+    PromptType.SITE,
+    PromptType.ROLE,
+    PromptType.MODEL,
+    PromptType.LOGIN,
+}
+LOGIN_HINT = "Pushes this login's current username and password."
 
 
 class PromptField(QWidget):
@@ -59,6 +66,11 @@ class PromptField(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(editor)
+        if prompt.type == PromptType.LOGIN:
+            hint = QLabel(LOGIN_HINT)
+            hint.setObjectName("Muted")
+            hint.setWordWrap(True)
+            layout.addWidget(hint)
         self._error = QLabel()
         self._error.setWordWrap(True)
         self._error.setVisible(False)
@@ -217,6 +229,11 @@ def make_prompt_widget(
         elif ptype == PromptType.SITE:
             combo, getter, setter = _combo_field(
                 name, prompt, [(s, s) for s in sorted(context.sites)]
+            )
+        elif ptype == PromptType.LOGIN:
+            # Login names only: never a username or password.
+            combo, getter, setter = _combo_field(
+                name, prompt, [(n, n) for n in sorted(context.logins)]
             )
         else:
             combo, getter, setter = _combo_field(

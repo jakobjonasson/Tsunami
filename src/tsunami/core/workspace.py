@@ -22,6 +22,7 @@ from pydantic import BaseModel, ValidationError
 
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import Finding, Issue, Severity, TsunamiError
+from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import (
     PLATFORM_FAMILY,
     SLUG_PATTERN,
@@ -661,6 +662,7 @@ class _Loader:
             roles=frozenset(ws.roles),
             model_ids=model_ids,
             family=family,
+            logins=allowed_logins(cust),
         )
         for name, prompt in play.prompts.items():
             default = prompt.default

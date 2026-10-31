@@ -60,6 +60,7 @@ class PromptType(StrEnum):
     SITE = "site"
     ROLE = "role"
     MODEL = "model"  # hardware catalog entry
+    LOGIN = "login"  # a saved login's name; templates read it through login()
 
 
 # Built-in variables an initial play may set, because its device is not in inventory.

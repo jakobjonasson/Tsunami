@@ -69,8 +69,12 @@ class _StoreChanges(QObject):
 _CHANGES = _StoreChanges()
 
 
+PUSHED = "Pushed by plays"  # a customer's push_logins: plays create it, nothing logs in
+
+
 def credential_usage(workspace: Workspace | None, name: str) -> list[tuple[str, str]]:
-    """Where a login is referenced: (kind, label) with kind Customer, Site, Device or Jump host.
+    """Where a login is referenced: (kind, label) with kind Customer, Site, Device, Jump host,
+    or Pushed by plays (a customer's push_logins).
 
     Only direct references (`customer.credential`, `site_credentials`, `device.credential`,
     the jump host's login), not devices that merely inherit it."""
@@ -88,21 +92,24 @@ def credential_usage(workspace: Workspace | None, name: str) -> list[tuple[str, 
             if cred == name
         )
         found.extend(("Device", f"{slug}/{d.name}") for d in inv.devices if d.credential == name)
+        if name in inv.config.push_logins:
+            found.append((PUSHED, slug))
     return found
 
 
 def usage_summary(usage: list[tuple[str, str]]) -> str:
     """e.g. "1 customer, 2 devices"; "" when unused."""
     parts = []
-    for kind, plural in (
-        ("Customer", "customers"),
-        ("Jump host", "jump hosts"),
-        ("Site", "sites"),
-        ("Device", "devices"),
+    for kind, singular, plural in (
+        ("Customer", "customer", "customers"),
+        ("Jump host", "jump host", "jump hosts"),
+        ("Site", "site", "sites"),
+        ("Device", "device", "devices"),
+        (PUSHED, "customer's plays", "customers' plays"),
     ):
         count = sum(1 for k, _ in usage if k == kind)
         if count:
-            parts.append(f"{count} {kind.lower() if count == 1 else plural}")
+            parts.append(f"{count} {singular if count == 1 else plural}")
     return ", ".join(parts)
 
 
@@ -427,9 +434,13 @@ class _CredentialsBase(QWidget):
         if name is None:
             return
         text = f"Delete login {name}?"
-        used = usage_summary(self.logins_used_by(name))
+        usage = self.logins_used_by(name)
+        used = usage_summary([u for u in usage if u[0] != PUSHED])
         if used:
             text += f"\n\nIt is still used by {used}; they will not be able to log in."
+        pushers = [label for kind, label in usage if kind == PUSHED]
+        if pushers:
+            text += f"\n\nPlays for {', '.join(pushers)} push it; they will fail until it exists."
         if QMessageBox.question(self, "Delete login", text) == QMessageBox.StandardButton.Yes:
             self.remove_login(name)
 

@@ -13,6 +13,7 @@ from typing import Any
 
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
+from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform
 from tsunami.core.models.play import GLOBAL_CUSTOMER, PromptType
 from tsunami.core.models.settings import AppSettings
@@ -93,7 +94,11 @@ def collect_prompts(
             platform = catalog.get(model).platform if model else None
         family = PLATFORM_FAMILY[platform] if platform else None
         return PromptContext(
-            frozenset(cust.sites), frozenset(workspace.roles), catalog.ids(), family
+            frozenset(cust.sites),
+            frozenset(workspace.roles),
+            catalog.ids(),
+            family,
+            allowed_logins(cust),
         )
 
     stages = (
@@ -147,11 +152,12 @@ def render_play(
     tags: Collection[str] | None = None,
     settings: AppSettings | None = None,
     customer: str | None = None,
+    secrets: Any = None,
 ) -> Rendering:
     """Render one play for one device (or a new device, for initial plays), masked.
-    customer binds a global play."""
+    customer binds a global play; secrets (the saved logins) is needed for login()."""
     entry = play_entry(workspace, play_path, customer)
     values = collect_prompts(workspace, entry, prompts or {}, device=device)
-    return Renderer(workspace, settings).render(
+    return Renderer(workspace, settings, secrets).render(
         entry, device=device, prompt_values=values, tags=tags
     )

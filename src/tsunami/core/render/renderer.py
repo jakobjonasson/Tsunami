@@ -28,6 +28,14 @@ import jinja2
 
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import Issue, Severity, TsunamiError
+from tsunami.core.logins import (
+    LoginRefError,
+    LoginView,
+    allowed_logins,
+    check_allowed,
+    read_login,
+    refusal,
+)
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform
 from tsunami.core.models.play import Play, PlayType, Prompt, PromptType, RollbackMode
 from tsunami.core.models.settings import AppSettings
@@ -53,6 +61,7 @@ PLACEHOLDER_FACTS = {
     "serial": "placeholder",
     "uptime": "placeholder",
 }
+PLACEHOLDER_USERNAME = "placeholder"  # login(name).username in validation renders
 # AOS-CX `checkpoint auto` accepts 1 to 60 minutes (design.md, Backup and rollback).
 MAX_REVERT_MINUTES = {"aos-cx": 60}
 
@@ -151,12 +160,67 @@ class Rendering:
         return [replace(s, lines=tuple(real(line, values) for line in s.lines)) for s in self.steps]
 
 
+class _Login:
+    """What login(name) gives a template: the username as text, the password and enable as
+    secret sentinels. The sandbox blocks underscore attributes, so _view stays hidden."""
+
+    def __init__(self, name: str, view: LoginView, collector: SecretCollector) -> None:
+        self._name, self._view, self._collector = name, view, collector
+
+    def __str__(self) -> str:
+        return self._name
+
+    @property
+    def username(self) -> str:
+        return self._view.username
+
+    @property
+    def password(self) -> str:
+        return self._collector.login_ref(self._name, "password")
+
+    @property
+    def enable(self) -> str:
+        if not self._view.has_enable:
+            raise LoginRefError(f"login {self._name!r} has no enable value")
+        return self._collector.login_ref(self._name, "enable")
+
+
+class _LoginFunction:
+    """login(name) in templates. The customer must allow the login (core.logins); the
+    username is read from the saved logins, or is a placeholder in validation renders."""
+
+    def __init__(
+        self, customer: Any, collector: SecretCollector, secrets: Any, *, validation: bool
+    ) -> None:
+        self.customer, self.collector = customer, collector
+        self.secrets, self.validation = secrets, validation
+        self._seen: dict[str, _Login] = {}
+
+    def __call__(self, name: object) -> _Login:
+        if self.customer is None:
+            raise LoginRefError(refusal(name, "?"))
+        name = check_allowed(name, self.customer)
+        if name not in self._seen:
+            if self.validation:
+                view = LoginView(PLACEHOLDER_USERNAME, True)
+            elif self.secrets is None:
+                raise LoginRefError("login() needs the saved logins, which this render lacks")
+            else:
+                view = read_login(self.secrets, name)  # the usual unlock message if locked
+            self._seen[name] = _Login(name, view, self.collector)
+        return self._seen[name]
+
+
 class Renderer:
     """Renders plays from one loaded workspace. Compiled templates are cached."""
 
-    def __init__(self, workspace: Any, settings: AppSettings | None = None) -> None:
+    def __init__(
+        self, workspace: Any, settings: AppSettings | None = None, secrets: Any = None
+    ) -> None:
         self.workspace = workspace  # tsunami.core.workspace.Workspace
         self.settings = settings or AppSettings()
+        # The saved logins, for login(name).username. Validation renders never read them.
+        self.secrets = secrets
         self.env = make_environment()
         self._templates: dict[tuple[str, str], jinja2.Template] = {}
 
@@ -196,7 +260,13 @@ class Renderer:
         if facts is not None or validation:
             variables["facts"] = dict(facts if facts is not None else PLACEHOLDER_FACTS)
         collector = SecretCollector(play.customer)
-        context = {**variables, "secret": collector}
+        login = _LoginFunction(
+            self.workspace.customers.get(play.customer),
+            collector,
+            None if validation else self.secrets,
+            validation=validation,
+        )
+        context = {**variables, "secret": collector, "login": login}
 
         steps = tuple(
             self._step(entry, play, i, context, collector, driver, platform, tags, validation)
@@ -461,10 +531,12 @@ def _validation_targets(workspace: Any, entry: Any) -> Iterator[tuple[str | None
         return
     catalog = load_catalog()
     sites, roles = frozenset(cust.sites), frozenset(workspace.roles)
+    logins = allowed_logins(cust)
     if play.type != PlayType.INITIAL:
         result = resolve_targets(play.targets, cust.devices, sites=sites, roles=roles)
         for device in result.devices:
-            context = PromptContext(sites, roles, catalog.ids(), PLATFORM_FAMILY[device.platform])
+            family = PLATFORM_FAMILY[device.platform]
+            context = PromptContext(sites, roles, catalog.ids(), family, logins)
             yield device.name, _placeholders(play.prompts, context), f"device {device.name}"
         return
     # A new device: one render per platform the play can stage.
@@ -487,7 +559,7 @@ def _validation_targets(workspace: Any, entry: Any) -> Iterator[tuple[str | None
             if s.snippet
         ):
             continue  # the model dropdown will not offer this platform
-        context = PromptContext(sites, roles, catalog.ids(), PLATFORM_FAMILY[platform])
+        context = PromptContext(sites, roles, catalog.ids(), PLATFORM_FAMILY[platform], logins)
         answers = _placeholders(play.prompts, context)
         if model_prompt:
             answers[model_prompt] = next(

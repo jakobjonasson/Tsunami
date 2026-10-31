@@ -39,6 +39,7 @@ from tsunami.core.inventory_import import (
     preview,
 )
 from tsunami.core.issues import Issue, Severity, TsunamiError
+from tsunami.core.logins import customer_logins, referenced_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
@@ -48,6 +49,7 @@ from tsunami.core.policy import PolicyError, check_show_command
 from tsunami.core.redact import supplied_values
 from tsunami.core.render.environment import TemplateError, compile_template, make_environment
 from tsunami.core.render.lookup import find_snippet
+from tsunami.core.render.secret_refs import LOGIN_PREFIX
 from tsunami.core.runner import Runner, RunRequest, play_hash
 from tsunami.core.services import play_entry, render_play
 from tsunami.core.showfilter import FilterError, apply_filter, compile_pattern, split_command
@@ -297,7 +299,12 @@ class Tools:
             rel = _rel(ws.root, real)
             self._check_play_customer(policy, ws, _read_text(real), customer)
             rendering = render_play(
-                ws, rel, device=device, prompts=prompts or {}, customer=customer
+                ws,
+                rel,
+                device=device,
+                prompts=prompts or {},
+                customer=customer,
+                secrets=self.app.secrets,
             )
             return {
                 "path": rel,
@@ -305,7 +312,7 @@ class Tools:
                 "platform": str(rendering.platform),
                 "lines": rendering.masked_lines(),
                 "text": rendering.masked_text(),
-                "secret_names": list(rendering.secret_refs),
+                "secret_names": secret_names(rendering.secret_refs),
                 "render_hash": rendering.render_hash(),
             }
 
@@ -372,7 +379,8 @@ class Tools:
                 raise ToolRefused(
                     "credential must be a login name: lowercase letters, digits and dashes"
                 )
-            if credential in _logins_in_use(ws.customers.values()):
+            # Any login another customer refers to, its jump host and push_logins included.
+            if credential in referenced_logins(ws.customers.values()):
                 raise ToolRefused(
                     f"login {credential!r} already belongs to another customer; a person can "
                     "share a login between customers in the GUI"
@@ -907,16 +915,13 @@ def _plain_text(value: Any, what: str, limit: int) -> str:
     return value
 
 
-def _logins_in_use(customers: Any) -> set[str]:
-    """Every login name a customer, its sites, its devices or its jump host refers to."""
-    names: set[str] = set()
-    for cust in customers:
-        cfg = cust.config
-        names.add(cfg.credential)
-        names.update(cfg.site_credentials.values())
-        if cfg.jump_host is not None:
-            names.add(cfg.jump_host.credential)
-        names.update(d.credential for d in cust.devices if d.credential)
+def secret_names(refs: Any) -> list[str]:
+    """The secrets a render uses: customer/name, or login:<name> once per login."""
+    names: list[str] = []
+    for ref in refs:
+        name = ref.split("/", 1)[0] if ref.startswith(LOGIN_PREFIX) else ref
+        if name not in names:
+            names.append(name)
     return names
 
 
@@ -949,7 +954,11 @@ def _device_plan(root: Path, cust: Any, devices: list[Any], create_sites: bool) 
     mapping = ColumnMapping(columns={f: f for f in IMPORT_FIELDS})
     # known_logins=None: MCP never probes Credential Manager, not even for names.
     plan = preview(root, cust.slug, table, mapping, known_logins=None, create_sites=create_sites)
-    allowed = _logins_in_use([cust])
+    # The logins this customer logs in with (its jump host's too); never push_logins,
+    # which Tsunami does not log in with.
+    allowed = customer_logins(cust)
+    if cust.config.jump_host is not None:
+        allowed.add(cust.config.jump_host.credential)
     checked: list[RowResult] = []
     for row in plan.rows:
         login = row.fields.get("credential")

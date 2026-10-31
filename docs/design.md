@@ -179,6 +179,7 @@ Inventory is customers, then sites, then devices, with roles as a cross-cutting 
 - `vars`: customer-level variables.
 - `role_vars`: map of role slug to variables, for customer-specific role defaults.
 - `site_credentials`: optional map of site slug to login credential name: the default login for devices at that site.
+- `push_logins`: optional list of login names this customer's plays may push with `login()` but Tsunami never logs in with, such as a second admin account. Only the GUI sets it (the customer dialog's "Logins plays may push"); no MCP tool can, so Claude cannot widen what a play may push. See login().
 
 ### devices.yml
 
@@ -350,6 +351,7 @@ Every prompt value, of any type, is rejected if it contains a line break or anot
 |`site`|A site slug of the play's customer|Slug|
 |`role`|A role slug|Slug|
 |`model`|A hardware catalog entry, chosen from a dropdown|Catalog id. Sets `platform` in initial plays|
+|`login`|A saved login the play's customer may push (see login()), chosen from a dropdown of names|The login's name. Templates read it with `login(name)`|
 
 Interface values must be written the way the platform's `show running-config` prints them, because diffs compare against it: full names on IOS (`GigabitEthernet1/0/1`, never `Gi1/0/1`), `1/1/1` on AOS-CX, and `1`, `A1`, `1/1`, or `Trk1` on AOS-S. The platform driver validates them. An `interface` prompt that is not `per_device` requires all targets to share one family.
 
@@ -496,6 +498,23 @@ Each platform driver has its own default sink patterns (see Platform drivers). T
 - `neighbor \S+ password`
 
 The list lives in code, in the platform drivers. Extra patterns can be added in `settings.json`, never in the workspace. Each must contain a `(?P<secret>...)` group marking the secret token; the redactor masks those lines too.
+
+### login()
+
+`login(name)` pushes a saved login (Credentials) to devices: a play can create a local account without saving its password a second time as a template secret. `name` is a `login` prompt's value or a literal, such as `login('netadmin2')`.
+
+|Field|Rendered as|Allowed where|
+|---|---|---|
+|`.username`|Plain text|Anywhere, including checks|
+|`.password`|A sentinel, exactly like `secret()`|Sink lines only|
+|`.enable`|A sentinel; a render error naming the login if it has none|Sink lines only|
+
+- **Which logins.** Login names are global, so a play may push a login only if its customer allows it: the logins it logs in with (its `credential`, `site_credentials` and devices' `credential`), plus its `push_logins`. A jump host's login is left out: it belongs to another machine, and pushing it would copy it onto every device. A play for every customer is checked against the customer it runs for. Validation renders check literal names and `login` prompt defaults; run time checks prompt answers, and the runner's validation render refuses anything else before a device is contacted. Every refusal reads the same, whether the login is missing, another customer's or a blocked customer's, so trying names over MCP tells them apart from nothing.
+- **When values are read.** The username is read from Credential Manager when a play renders (preview, check, apply, MCP render), because the preview, diff and checks show it; those renders need Tsunami unlocked. Validation renders use the username `placeholder` and never read the store. Password and enable are read for sending only in apply mode, next to `secret()` values, and never stored.
+- **Answers and history.** A `login` prompt's value is the login's name. Job history, approvals and re-runs store only the name; the dropdown shows names only, and only logins the customer allows that are saved.
+- **Approvals.** The render hash covers the username, so a username changed between Check and Apply fails the approval check. A changed password is not detected, as with `secret()`.
+- **Overwriting a login** changes what the next run pushes. The run wizard says so under the dropdown.
+- **MCP.** Claude may write plays that use `login()` and pass login names as prompt values, under the same rules. `render` and `check` show the username and mask the password; `secret_names` lists `login:<name>`. No tool lists login names.
 
 ### Example
 
@@ -737,7 +756,7 @@ Every encryption type (0, 5, 7, 8, 9) is redacted. Type 7 is reversible, so it c
 
 Every platform family's rules apply to all text, so output from a mislabelled device is still covered and both sides of a diff are treated alike. Keywords match regardless of case. A rule can depend on its top-level parent line: under `key chain` (IOS) or `keychain` (AOS-CX), ` key 1` is a key id, not a secret.
 
-**Exact-value layer.** At job start, load every secret value in the customer's namespace plus the login credential's password and enable values into an in-memory set. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear. A multi-line value also matches output with CRLF line ends.
+**Exact-value layer.** At job start, load every secret value in the customer's namespace plus the login credential's password and enable values into an in-memory set, together with the password and enable of every login the customer's plays may push (see login()), in every mode. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear. A multi-line value also matches output with CRLF line ends.
 
 MCP results use every stored secret and login password of every customer, not just the call's customer, and a call fails if the store cannot be read. One exception: a value Claude supplied in the same call (an argument, or a word of one; for `get_job`, an MCP job's prompt values) is not exact-redacted where it is echoed back. Redacting the echo of a correct guess would confirm the guess, so a prompt value or argument set to a candidate secret would work as an oracle. The pattern layer still applies, so sink lines stay masked. MCP jobs apply the same exception to their prompt values when the runner stores diffs and output. Audit rows always get the full redaction.
 
@@ -950,7 +969,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete.|
 |History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
-|Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed.|
+|Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed. Where a login is used includes customers whose plays push it (`push_logins`); deleting one warns about those plays.|
 |Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
 
 ### Behavior rules
@@ -1440,3 +1459,8 @@ Changes since the original draft, with reasons:
   - Settings: Edit allowlists in VS Code beside the show allowlist.
   - Credentials, Test now goes through the customer's jump host; it went direct, so on a network where another machine answered at the device's private address, that machine's key was recorded. A changed jump host key can be accepted in Trust host keys; before, the customer stayed unreachable until its line was deleted from the known_hosts file by hand.
   - Backups are no longer only a job's. Discovery saves each device's running config as it reads it, and Back up and check for drift on a site or customer saves first backups and reports drift since the newest backup (Backups: Drift check). Both save only when the config changed, ignoring comments, headers and `ntp clock-period`. The backups view names these backups instead of linking a job.
+- 0.5.2, pushing a saved login from a play:
+  - `login(name)` in templates and the `login` prompt type: a play can push a saved login's username and password (and enable) instead of a template secret plus a typed username. The password and enable are sentinels under the `secret()` sink rule; the username is plain text, read when the play renders.
+  - A customer allows the logins it logs in with (not its jump host's) plus a new `push_logins` list in `customer.yml`, set only in the GUI. Every refusal reads the same, so names cannot be probed. `core/logins.py` holds these sets; MCP's `add_customer` and `add_devices` keep their narrower meaning of a login in use.
+  - Every login a customer may push joins the job's exact-value layer in every mode, not only the ones a play uses in apply mode. The username stays out, as for connection logins, and is shown over MCP.
+  - Credentials lists `push_logins` under where a login is used, and draft reviews highlight `login()` as they do `secret()`.

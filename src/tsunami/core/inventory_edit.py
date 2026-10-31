@@ -42,6 +42,7 @@ CUSTOMER_KEYS = (
     "vars",
     "role_vars",
     "site_credentials",
+    "push_logins",
 )
 OPTIONAL_DEVICE_KEYS = frozenset({"port", "model", "credential", "vars"})
 
@@ -101,7 +102,7 @@ class InventoryEditor:
 
     def update_customer(self, slug: str, **fields: Any) -> None:
         """Set customer.yml fields; a None value removes an optional one (jump_host)."""
-        unknown = set(fields) - {"name", "credential", "lab", "jump_host"}
+        unknown = set(fields) - {"name", "credential", "lab", "jump_host", "push_logins"}
         if unknown:
             raise InventoryEditError(f"cannot edit customer field(s): {', '.join(sorted(unknown))}")
         doc = self._customer_doc(slug)

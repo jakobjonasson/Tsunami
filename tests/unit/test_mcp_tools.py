@@ -737,3 +737,52 @@ def test_a_person_changing_the_host_lifts_the_first_contact_rule(env):
     env.mock.add_device("sa-as09", running=["hostname sa-as09"])
     env.tools.show("acme", "sa-as09", "show version")
     assert env.recorder.targets[-1].allow_new_host_key is True
+
+
+# -- login() ----------------------------------------------------------------------------
+
+ADMIN2_PASSWORD = "Admin2-Pass-4321"
+LOGIN_PLAY = """name: add admin2
+type: push
+customer: acme
+targets:
+  devices: [sa-as01]
+prompts:
+  admin2:
+    type: login
+    default: netadmin2
+steps:
+  - config:
+      - username {{ login(admin2).username }} privilege 15 secret {{ login(admin2).password }}
+"""
+
+
+@pytest.fixture
+def login_env(env):
+    customer = env.root / "inventory/customers/acme/customer.yml"
+    customer.write_text(
+        customer.read_text(encoding="utf-8") + "push_logins: [netadmin2]\n", encoding="utf-8"
+    )
+    (env.root / "plays/push/add-admin2.yml").write_text(LOGIN_PLAY, encoding="utf-8")
+    env.app.secrets.set_login("netadmin2", LoginCredential("netadmin2", ADMIN2_PASSWORD))
+    return env
+
+
+def test_render_shows_the_username_and_masks_the_login_password(login_env):
+    result = login_env.tools.render("plays/push/add-admin2.yml", device="sa-as01")
+    [line] = result["lines"]  # the username in clear; MCP output redacts the mask again
+    assert line.startswith("username netadmin2 privilege 15 secret ")
+    assert result["secret_names"] == ["login:netadmin2"]
+    assert ADMIN2_PASSWORD not in str(result) and LOGIN_PASSWORD not in str(result)
+
+
+@pytest.mark.parametrize("name", ["lab-admin", "no-such-login", "acme-jump"])
+def test_a_login_outside_the_customer_is_refused_alike(login_env, name):
+    login_env.policy(customers_blocked=["lab"])  # lab-admin now belongs to a blocked customer
+    with pytest.raises(ToolRefused) as caught:
+        login_env.tools.render(
+            "plays/push/add-admin2.yml", device="sa-as01", prompts={"admin2": name}
+        )
+    message = str(caught.value)
+    assert f"login {name!r} is not available to this customer" in message
+    assert "customer 'lab'" not in message and "blocked" not in message  # nor who has it

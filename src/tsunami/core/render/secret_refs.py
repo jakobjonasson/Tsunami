@@ -6,6 +6,9 @@ After rendering, every sentinel must sit inside a sink span of the target platfo
 driver, or rendering fails. Displayed and stored copies swap sentinels for ********;
 only apply mode materializes real values, in memory, just before sending.
 
+login(name).password and .enable are sentinels from the same collector, recorded as
+`login:<name>/password` and `login:<name>/enable`, under the same rules.
+
 See design.md, Snippets and rendering: secret().
 """
 
@@ -21,6 +24,7 @@ from tsunami.core.platforms.base import PlatformDriver
 MASK = "********"
 _REF_RE = re.compile(r"(?P<customer>[a-z0-9][a-z0-9-]*)/(?P<name>[a-z0-9][a-z0-9-]*)")
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+LOGIN_PREFIX = "login:"  # login references; secret() cannot make one, it takes slugs only
 
 
 class SecretRefError(TsunamiError):
@@ -41,6 +45,10 @@ class SecretCollector:
     def __repr__(self) -> str:
         return f"SecretCollector({self.customer!r}, {len(self.refs)} refs)"
 
+    def login_ref(self, name: str, field: str) -> str:
+        """The sentinel for a login's password or enable (login() in core/render)."""
+        return self._sentinel_for(f"{LOGIN_PREFIX}{name}/{field}")
+
     def __call__(self, ref: object) -> str:
         if isinstance(ref, str) and _NAME_RE.fullmatch(ref):
             ref = f"{self.customer}/{ref}"  # secret('name'): this play's customer (global plays)
@@ -51,6 +59,9 @@ class SecretCollector:
             raise SecretRefError(
                 f"secret({ref!r}) belongs to another customer; this play is for {self.customer!r}"
             )
+        return self._sentinel_for(ref)
+
+    def _sentinel_for(self, ref: str) -> str:
         if ref not in self.refs:
             self.refs.append(ref)
         return f"{self._prefix}{self.refs.index(ref)}\x00"
@@ -72,15 +83,17 @@ class SecretCollector:
         """Every sentinel on the line must be whole and lie inside a driver sink span."""
         if self.altered(line):
             raise SecretRefError(
-                "secret() output was changed by a filter or expression; "
-                "use {{ secret('customer/name') }} as a whole value"
+                "secret() output was changed by a filter or expression; use "
+                "{{ secret('customer/name') }} or {{ login(name).password }} as a whole value"
             )
         sinks = driver.sink_spans(line, parent)
         for match in self._sentinel.finditer(line):
             start, end = match.span()
             if not any(s <= start and end <= e for s, e in sinks):
+                ref = self.refs[int(match.group(1))]
+                what = "login() password" if ref.startswith(LOGIN_PREFIX) else "secret()"
                 raise SecretRefError(
-                    f"secret() is not allowed here for {driver.family}: {self.mask(line).strip()!r}"
+                    f"{what} is not allowed here for {driver.family}: {self.mask(line).strip()!r}"
                 )
 
     def mask(self, text: str) -> str:
