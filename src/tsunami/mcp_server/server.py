@@ -22,7 +22,8 @@ Rules:
 - Changes to customer devices need a person to approve them in the Tsunami GUI. After
   request_run, show the user the per-device diff from get_job and tell them to approve it.
 - Drafts never reach a customer device until a person promotes them.
-- When Settings allow it, you can add customers, sites and devices (never edit or delete).
+- When Settings allow it, you can add customers, sites and devices directly. To edit or
+  remove a device, use propose_inventory_change: a person approves it in the GUI first.
   Before you can reach a device you added, a person must trust its host key in the GUI.
 - A play with `customer: global` runs for any customer: pass `customer` to render, check,
   compliance and request_run. Its secrets are written secret('name') and resolve to that
@@ -207,6 +208,22 @@ def build_server(backend: Any) -> Any:
         customer: str | None = None,
     ) -> dict[str, Any]:
         return tools.request_run(path, targets, prompts, tags, customer)
+
+    @server.tool(
+        annotations=requests,
+        description="Propose changes to existing devices of a customer: per device set role, host, site, platform and/or model (model null clears it), or remove true to delete it. Nothing changes until a person approves the proposal in the Tsunami GUI (Approvals), which shows each field before and after and that you asked; it expires if nobody does, and it fails whole if a device changed meanwhile. Always needs approval, lab customers too. reason: why, shown to the person as your own unverified words. Show the user the changes, then poll get_inventory_proposal. Only when Tsunami Settings allow inventory changes. A host you set is never contacted by you until a person trusts its host key in the GUI.",
+    )
+    def propose_inventory_change(
+        customer: str, changes: list[dict[str, Any]], reason: str | None = None
+    ) -> dict[str, Any]:
+        return tools.propose_inventory_change(customer, changes, reason)
+
+    @server.tool(
+        annotations=read_only,
+        description="A proposal's status (awaiting_approval, applied, denied, expired or failed) and its changes.",
+    )
+    def get_inventory_proposal(proposal_id: str) -> dict[str, Any]:
+        return tools.get_inventory_proposal(proposal_id)
 
     @server.tool(
         annotations=requests, description="Cancel a job you requested that has not started yet."

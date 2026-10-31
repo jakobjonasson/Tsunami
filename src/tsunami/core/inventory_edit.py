@@ -236,19 +236,43 @@ class InventoryEditor:
         if unknown:
             raise InventoryEditError(f"unknown device field(s): {', '.join(sorted(unknown))}")
         devices = self._devices_doc(customer)
-        item = self._find_device(devices.data, name)
-        for key, value in fields.items():
-            if value is None and key not in OPTIONAL_DEVICE_KEYS:
-                raise InventoryEditError(f"device field {key!r} is required")
-            if key == "port" and value == 22:
-                value = None  # the default stays implicit, as in hand-written files
-            _set_key(item, key, _plain(value), DEVICE_KEYS)
+        _set_device_fields(self._find_device(devices.data, name), fields)
         self._check_devices(customer, devices.data)
         dump_roundtrip(devices)
 
     def delete_device(self, customer: str, name: str) -> None:
         devices = self._devices_doc(customer)
         devices.data.remove(self._find_device(devices.data, name))
+        dump_roundtrip(devices)
+
+    def read_devices(self, customer: str) -> dict[str, dict[str, Any]]:
+        """The devices as written in devices.yml, by name, as plain dicts."""
+        return {
+            str(item["name"]): _to_plain(item)
+            for item in self._devices_doc(customer).data
+            if isinstance(item, Mapping) and "name" in item
+        }
+
+    def apply_device_changes(
+        self,
+        customer: str,
+        updates: Mapping[str, Mapping[str, Any]],
+        removals: Sequence[str] = (),
+    ) -> None:
+        """Edit and remove several devices with one validation and one write.
+
+        All or nothing: every change is checked against the whole result before the file
+        is written, so a proposal either lands entirely or not at all.
+        """
+        unknown = {k for fields in updates.values() for k in fields} - set(DEVICE_KEYS)
+        if unknown:
+            raise InventoryEditError(f"unknown device field(s): {', '.join(sorted(unknown))}")
+        devices = self._devices_doc(customer)
+        for name, fields in updates.items():
+            _set_device_fields(self._find_device(devices.data, name), fields)
+        for name in removals:
+            devices.data.remove(self._find_device(devices.data, name))
+        self._check_devices(customer, devices.data)
         dump_roundtrip(devices)
 
     # -- helpers ------------------------------------------------------------------------
@@ -379,6 +403,15 @@ def _block_seq() -> CommentedSeq:
     seq = CommentedSeq()
     seq.fa.set_block_style()
     return seq
+
+
+def _set_device_fields(item: CommentedMap, fields: Mapping[str, Any]) -> None:
+    for key, value in fields.items():
+        if value is None and key not in OPTIONAL_DEVICE_KEYS:
+            raise InventoryEditError(f"device field {key!r} is required")
+        if key == "port" and value == 22:
+            value = None  # the default stays implicit, as in hand-written files
+        _set_key(item, key, _plain(value), DEVICE_KEYS)
 
 
 def _set_key(mapping: CommentedMap, key: str, value: Any, order: tuple[str, ...]) -> None:

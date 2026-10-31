@@ -108,3 +108,60 @@ def test_play_edited_after_the_request_fails_every_device(
     statuses = {d["status"] for d in tools.get_job(job_id)["devices"]}
     assert str(DeviceStatus.SUCCESS) not in statuses
     assert "vlan 30" not in mock_transport.device("sa-as01").running
+
+
+# -- inventory proposals ------------------------------------------------------------------
+
+
+def propose(app, tools, app_paths) -> str:
+    save_policy(McpPolicy(enabled=True, inventory_edits=True), app_paths.policy_file)
+    result = tools.propose_inventory_change(
+        "acme",
+        [{"device": "sa-as01", "role": "distribution", "host": "203.0.113.77"}],
+        reason="the site survey says so",
+    )
+    return result["proposal_id"]
+
+
+def devices_text(workspace_root) -> str:
+    return (workspace_root / "inventory/customers/acme/devices.yml").read_text(encoding="utf-8")
+
+
+def test_proposal_card_shows_source_and_before_after_and_approval_applies(
+    mcp, main_window, gui_ctx, app_paths, workspace_root, qtbot
+):
+    app, tools = mcp
+    before = devices_text(workspace_root)
+    proposal_id = propose(app, tools, app_paths)
+    view = approvals_view(main_window)
+    qtbot.waitUntil(lambda: view.list.count() == 1, timeout=10_000)  # the 2 s poller
+    assert devices_text(workspace_root) == before
+
+    card = view.open_request(proposal_id)
+    table = card.changes
+    rows = [[table.item(r, c).text() for c in range(4)] for r in range(table.rowCount())]
+    assert rows == [
+        ["sa-as01", "role", "access", "distribution"],
+        ["sa-as01", "host", "203.0.113.11", "203.0.113.77"],
+    ]
+    shown = " ".join(label.text() for label in card.findChildren(type(card.status_label)))
+    assert "Claude, over MCP" in shown and "the site survey says so" in shown
+
+    card.approve_button.click()
+    assert tools.get_inventory_proposal(proposal_id)["status"] == "applied"
+    assert "203.0.113.77" in devices_text(workspace_root)
+
+
+def test_proposal_denied_in_the_gui_changes_nothing(
+    mcp, main_window, app_paths, workspace_root, qtbot
+):
+    app, tools = mcp
+    before = devices_text(workspace_root)
+    proposal_id = propose(app, tools, app_paths)
+    view = approvals_view(main_window)
+    qtbot.waitUntil(lambda: view.list.count() == 1, timeout=10_000)
+
+    view.open_request(proposal_id).deny_button.click()
+    assert tools.get_inventory_proposal(proposal_id)["status"] == "denied"
+    assert devices_text(workspace_root) == before
+    qtbot.waitUntil(lambda: view.list.count() == 0, timeout=10_000)

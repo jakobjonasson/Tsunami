@@ -27,9 +27,10 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tsunami.core import approvals
+from tsunami.core import approvals, inventory_proposals
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.jobs import JobStatus
+from tsunami.core.models.proposals import ProposalStatus
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import ActivityItem, Shell
@@ -199,6 +200,142 @@ class ApprovalCard(QWidget):
         self.ctx.jobs_changed.emit()
 
 
+PROPOSAL_NOTE = (
+    "Claude proposed these inventory changes. Nothing has changed yet: review each device's "
+    "before and after, then approve or deny."
+)
+SOURCES = {"mcp": "Claude, over MCP"}
+
+
+class ProposalCard(QWidget):
+    """One inventory proposal: source, each field before and after, Approve and Deny."""
+
+    def __init__(self, ctx: AppContext, shell: Shell, proposal_id: str) -> None:
+        super().__init__()
+        self.ctx = ctx
+        self.shell = shell
+        self.proposal_id = proposal_id
+        proposal = ctx.history.get_inventory_proposal(proposal_id)
+        self.proposal = proposal
+
+        root = QVBoxLayout(self)
+        root.setContentsMargins(16, 16, 16, 16)
+        title = QLabel(f"Approve inventory change: {proposal.customer}")
+        title.setObjectName("Title")
+        root.addWidget(title)
+        note = QLabel(PROPOSAL_NOTE)
+        note.setObjectName("Muted")
+        note.setWordWrap(True)
+        root.addWidget(note)
+
+        details = QFrame()
+        details.setObjectName("Card")
+        grid = QVBoxLayout(details)
+        for label, value in (
+            ("Customer", proposal.customer),
+            ("Requested by", SOURCES.get(proposal.source, proposal.source)),
+            ("Requested", _local(proposal.created_at)),
+            ("Reason given (Claude's words, unverified)", proposal.reason or "(none)"),
+            ("Devices", ", ".join(c["device"] for c in proposal.changes)),
+        ):
+            line = QLabel(f"{label}: {value}")
+            line.setWordWrap(True)
+            grid.addWidget(line)
+        root.addWidget(details)
+
+        rows = [
+            (c["device"], field["field"], field["before"], field["after"], c["remove"])
+            for c, described in zip(
+                proposal.changes, inventory_proposals.describe(proposal.changes), strict=True
+            )
+            for field in described["fields"]
+        ]
+        self.changes = QTableWidget(len(rows), 4)
+        self.changes.setHorizontalHeaderLabels(["Device", "Field", "Before", "After"])
+        self.changes.verticalHeader().setVisible(False)
+        self.changes.horizontalHeader().setStretchLastSection(True)
+        self.changes.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
+        p = theme.current()
+        for row, (device, field_name, before, after, removed) in enumerate(rows):
+            shown_after = "(device removed)" if removed else (after if after is not None else "-")
+            cells = (device, field_name, before if before is not None else "-", shown_after)
+            for column, text in enumerate(cells):
+                item = QTableWidgetItem(str(text))
+                if column == 2:
+                    item.setForeground(QColor(p.error))
+                elif column == 3:
+                    item.setForeground(QColor(p.error if removed else p.success))
+                self.changes.setItem(row, column, item)
+        root.addWidget(self.changes, 1)
+
+        buttons = QHBoxLayout()
+        self.status_label = QLabel("")
+        self.status_label.setObjectName("Muted")
+        self.status_label.setWordWrap(True)
+        buttons.addWidget(self.status_label, 1)
+        self.deny_button = QPushButton("Deny")
+        self.deny_button.setProperty("danger", "true")
+        self.approve_button = QPushButton("Approve")
+        self.approve_button.setProperty("primary", "true")
+        buttons.addWidget(self.deny_button)
+        buttons.addWidget(self.approve_button)
+        root.addLayout(buttons)
+        self.approve_button.clicked.connect(self.approve)
+        self.deny_button.clicked.connect(self.deny)
+
+        if proposal.status != ProposalStatus.AWAITING_APPROVAL:
+            self._settle(proposal.status)
+
+    def _settle(self, status: ProposalStatus) -> None:
+        self.status_label.setText(f"This proposal is {_text(status)}.")
+        self.approve_button.setEnabled(False)
+        self.deny_button.setEnabled(False)
+
+    def _key(self) -> str:
+        return f"approval:{self.proposal_id}"
+
+    def approve(self) -> None:
+        count = len(self.proposal.changes)
+        if not _confirm(
+            self,
+            "Approve inventory change",
+            f"Change {count} device(s) of customer {self.proposal.customer} in the inventory?",
+        ):
+            return
+        try:
+            inventory_proposals.approve_proposal(
+                self.ctx.history,
+                self.ctx.workspace.root,
+                self.proposal_id,
+                approved_by=self.ctx.windows_user(),
+            )
+        except TsunamiError as exc:
+            self._settle(self.ctx.history.get_inventory_proposal(self.proposal_id).status)
+            self.shell.notify(str(exc), "error")
+            self.ctx.jobs_changed.emit()
+            return
+        self.ctx.reload_workspace()
+        self.shell.close_tab(self._key())
+        self.ctx.jobs_changed.emit()
+
+    def deny(self) -> None:
+        if not _confirm(
+            self,
+            "Deny inventory change",
+            f"Deny the proposed changes to customer {self.proposal.customer}?",
+        ):
+            return
+        try:
+            inventory_proposals.deny_proposal(
+                self.ctx.history, self.proposal_id, denied_by=self.ctx.windows_user()
+            )
+        except TsunamiError as exc:
+            self.shell.notify(str(exc), "error")
+            return
+        self.shell.close_tab(self._key())
+        self.ctx.jobs_changed.emit()
+
+
 class ApprovalsView(QWidget):
     def __init__(self, ctx: AppContext, shell: Shell) -> None:
         super().__init__()
@@ -233,7 +370,20 @@ class ApprovalsView(QWidget):
 
     def refresh(self) -> None:
         jobs = self.ctx.history.list_jobs(status=JobStatus.AWAITING_APPROVAL)
+        proposals = self.ctx.history.list_inventory_proposals(
+            status=ProposalStatus.AWAITING_APPROVAL
+        )
         self.list.clear()
+        for proposal in proposals:
+            count = len(proposal.changes)
+            item = QListWidgetItem(
+                f"Inventory change\n"
+                f"{proposal.customer} - {count} device(s)\n"
+                f"Requested {_local(proposal.created_at)}"
+            )
+            item.setData(Qt.ItemDataRole.UserRole, proposal.id)
+            item.setToolTip("Claude proposed changes to the inventory")
+            self.list.addItem(item)
         for job in jobs:
             count = len(self.ctx.history.devices(job.id))
             text = (
@@ -245,15 +395,26 @@ class ApprovalsView(QWidget):
             item.setData(Qt.ItemDataRole.UserRole, job.id)
             item.setToolTip(job.play_path)
             self.list.addItem(item)
-        self.count_label.setText(f"{len(jobs)} pending")
-        self.empty.setVisible(not jobs)
-        self.list.setVisible(bool(jobs))
+        total = len(jobs) + len(proposals)
+        self.count_label.setText(f"{total} pending")
+        self.empty.setVisible(not total)
+        self.list.setVisible(bool(total))
 
     def _open(self, item: QListWidgetItem) -> None:
         self.open_request(item.data(Qt.ItemDataRole.UserRole))
 
     def open_request(self, job_id: str) -> QWidget:
-        job = self.ctx.history.get_job(job_id)
+        """Open a run request's card, or an inventory proposal's if the id is one."""
+        try:
+            job = self.ctx.history.get_job(job_id)
+        except TsunamiError:
+            proposal = self.ctx.history.get_inventory_proposal(job_id)
+            return self.shell.open_tab(
+                f"approval:{job_id}",
+                f"Approve: inventory, {proposal.customer}",
+                lambda: ProposalCard(self.ctx, self.shell, job_id),
+                "inbox",
+            )
         return self.shell.open_tab(
             f"approval:{job_id}",
             f"Approve: {_play_name(job.play_path)}",

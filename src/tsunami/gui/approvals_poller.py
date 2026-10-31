@@ -13,6 +13,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QTimer, Signal
 
 from tsunami.core.models.jobs import JobStatus
+from tsunami.core.models.proposals import ProposalStatus
 
 log = logging.getLogger(__name__)
 POLL_MS = 2000
@@ -43,15 +44,26 @@ class ApprovalsPoller(QObject):
         history = self.ctx.history
         try:
             changed = bool(history.expire_approvals(older_than_minutes=self.expiry_minutes))
+            changed |= bool(
+                history.expire_inventory_proposals(older_than_minutes=self.expiry_minutes)
+            )
             changed |= bool(history.mark_interrupted())
-            pending = history.list_jobs(status=JobStatus.AWAITING_APPROVAL, limit=500)
+            # Run requests and inventory proposals wait in the same list.
+            pending = [
+                j.id for j in history.list_jobs(status=JobStatus.AWAITING_APPROVAL, limit=500)
+            ] + [
+                p.id
+                for p in history.list_inventory_proposals(
+                    status=ProposalStatus.AWAITING_APPROVAL, limit=500
+                )
+            ]
         except Exception:  # noqa: BLE001 - a busy database must not break the UI
             log.warning("approvals poll failed", exc_info=True)
             return
-        for job in pending:
-            if job.id not in self._seen:
-                self._seen.add(job.id)
-                self.new_request.emit(job.id)
+        for request_id in pending:
+            if request_id not in self._seen:
+                self._seen.add(request_id)
+                self.new_request.emit(request_id)
                 self.ctx.approvals_changed.emit(len(pending))
         if changed:
             self.ctx.jobs_changed.emit()

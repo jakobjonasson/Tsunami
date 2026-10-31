@@ -72,9 +72,10 @@ def test_migrations_apply(hist: History, db_path: Path):
         "mcp_drafts",
         "device_facts",
         "mcp_devices",
+        "inventory_proposals",
     } <= tables
     assert "device_leases" in tables
-    assert raw(db_path, "SELECT version FROM schema_version") == [(4,)]
+    assert raw(db_path, "SELECT version FROM schema_version") == [(5,)]
 
 
 def test_wal_and_busy_timeout(hist: History):
@@ -90,7 +91,7 @@ def test_reopen_is_idempotent(db_path: Path, clock: FakeClock):
     h2 = History(db_path, clock=clock)
     assert h2.get_job(job_id).id == job_id
     h2.close()
-    assert raw(db_path, "SELECT version FROM schema_version") == [(4,)]
+    assert raw(db_path, "SELECT version FROM schema_version") == [(5,)]
 
 
 def test_newer_database_is_refused(db_path: Path, clock: FakeClock):

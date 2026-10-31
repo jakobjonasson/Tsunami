@@ -38,12 +38,20 @@ from tsunami.core.inventory_import import (
     apply_import,
     preview,
 )
+from tsunami.core.inventory_proposals import (
+    MAX_PENDING,
+    SOURCE_MCP,
+    build_changes,
+    check_applies,
+    describe,
+)
 from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.logins import customer_logins, referenced_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
 from tsunami.core.models.policy import has_control_chars
+from tsunami.core.models.proposals import ProposalStatus
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
 from tsunami.core.policy import PolicyError, check_show_command
 from tsunami.core.redact import supplied_values
@@ -88,8 +96,12 @@ TOOL_NAMES = frozenset(
         "add_customer",
         "add_site",
         "add_devices",
+        "propose_inventory_change",
+        "get_inventory_proposal",
     }
 )
+MAX_REASON = 500
+MAX_PENDING_PROPOSALS = MAX_PENDING
 
 
 class Tools:
@@ -475,10 +487,79 @@ class Tools:
     def _inventory_editor(self, policy, ws) -> InventoryEditor:
         if not policy.inventory_edits:
             raise ToolRefused(
-                "adding to the inventory over MCP is turned off in Tsunami Settings (MCP, "
+                "changing the inventory over MCP is turned off in Tsunami Settings (MCP, "
                 "Inventory)"
             )
         return InventoryEditor(ws.root)
+
+    # == tier 2: inventory proposals (policy: inventory_edits) ===========================
+    # Edits and removals of existing devices. Nothing is written here: the proposal waits
+    # in history.db until a person approves it in the GUI, for lab customers too.
+
+    def propose_inventory_change(
+        self, customer: str, changes: list[dict[str, Any]], reason: str | None = None
+    ):
+        def run(policy):
+            ws = self.app.workspace()
+            editor = self._inventory_editor(policy, ws)
+            self.app.visible_customer(policy, ws, customer)
+            note = "" if reason is None else _plain_text(reason, "reason", MAX_REASON)
+            waiting = self.app.history.list_inventory_proposals(
+                status=ProposalStatus.AWAITING_APPROVAL, limit=MAX_PENDING_PROPOSALS
+            )
+            if len(waiting) >= MAX_PENDING_PROPOSALS:
+                raise ToolRefused(
+                    "too many inventory proposals are waiting for approval; ask the user to "
+                    "review them in Tsunami (Approvals)"
+                )
+            try:
+                stored = build_changes(editor.read_devices(customer), changes)
+                check_applies(ws.root, customer, stored)
+            except TsunamiError as exc:
+                raise ToolRefused(str(exc)) from None
+            redactor = self.app.full_redactor()
+            for change in stored:
+                for value in change["set"].values():
+                    if value is not None and redactor.text(value) != value:
+                        raise ToolRefused("a proposed value looks like a secret; refused")
+            proposal_id = self.app.history.create_inventory_proposal(
+                customer=customer,
+                source=SOURCE_MCP,
+                reason=redactor.text(note),
+                changes=stored,
+            )
+            return {
+                "proposal_id": proposal_id,
+                "status": str(ProposalStatus.AWAITING_APPROVAL),
+                "changes": describe(stored),
+                "note": "Nothing has changed. A person must approve this in the Tsunami GUI "
+                "(Approvals); it expires if nobody does. Show the user the changes, and poll "
+                "get_inventory_proposal for the outcome.",
+            }
+
+        args = {"customer": customer, "changes": changes, "reason": reason}
+        return self.app.call("propose_inventory_change", 2, args, run, customer=customer)
+
+    def get_inventory_proposal(self, proposal_id: str):
+        def run(policy):
+            try:
+                proposal = self.app.history.get_inventory_proposal(proposal_id)
+            except TsunamiError:
+                proposal = None
+            if proposal is None or proposal.customer in policy.customers_blocked:
+                raise ToolRefused(f"unknown proposal {proposal_id!r}")
+            return {
+                "proposal_id": proposal.id,
+                "customer": proposal.customer,
+                "status": str(proposal.status),
+                "created_at": proposal.created_at.isoformat(),
+                "decided_by": proposal.decided_by,
+                "error": proposal.error,
+                "changes": describe(proposal.changes),
+            }
+
+        args = {"proposal_id": proposal_id}
+        return self.app.call("get_inventory_proposal", 0, args, run)
 
     # == tier 1: read-only device access =================================================
 

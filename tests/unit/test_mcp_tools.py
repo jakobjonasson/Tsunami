@@ -15,6 +15,9 @@ import pytest
 
 from tsunami.core.approvals import approve
 from tsunami.core.history import History
+from tsunami.core.inventory_edit import InventoryEditor
+from tsunami.core.inventory_proposals import MAX_PENDING, approve_proposal, deny_proposal
+from tsunami.core.issues import TsunamiError
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.policy import McpPolicy
 from tsunami.core.models.settings import AppSettings, save_settings
@@ -391,8 +394,10 @@ def test_server_registers_tools_and_calls_them(env):
 
     server = build_server(env.app)
     tools = {t.name: t for t in asyncio.run(server.list_tools())}
-    assert len(tools) == 21
+    assert len(tools) == 23
     assert tools["add_devices"].annotations.read_only_hint is False
+    assert tools["propose_inventory_change"].annotations.read_only_hint is False
+    assert tools["get_inventory_proposal"].annotations.read_only_hint is True
     assert tools["show"].annotations.read_only_hint is True
     assert tools["request_run"].annotations.read_only_hint is False
 
@@ -786,3 +791,204 @@ def test_a_login_outside_the_customer_is_refused_alike(login_env, name):
     message = str(caught.value)
     assert f"login {name!r} is not available to this customer" in message
     assert "customer 'lab'" not in message and "blocked" not in message  # nor who has it
+
+
+# -- inventory proposals (propose_inventory_change) --------------------------------------
+
+
+def devices_file(env) -> str:
+    return (env.root / "inventory/customers/acme/devices.yml").read_text(encoding="utf-8")
+
+
+@pytest.fixture
+def prop_env(env):
+    env.policy(inventory_edits=True)
+    (env.root / "inventory/customers/acme/sites/site-b.yml").write_text("{}\n", encoding="utf-8")
+    env.original = devices_file(env)
+    return env
+
+
+def propose(env, *changes, **kwargs):
+    return env.tools.propose_inventory_change("acme", list(changes), **kwargs)
+
+
+def test_a_proposal_changes_nothing_until_approved(prop_env):
+    env = prop_env
+    result = propose(
+        env,
+        {"device": "sa-as01", "role": "distribution", "host": "203.0.113.99"},
+        {"device": "sa-as02", "remove": True},
+        reason="the documentation says so",
+    )
+    assert result["status"] == "awaiting_approval"
+    by_device = {c["device"]: c for c in result["changes"]}
+    assert by_device["sa-as01"]["fields"] == [
+        {"field": "role", "before": "access", "after": "distribution"},
+        {"field": "host", "before": "203.0.113.11", "after": "203.0.113.99"},
+    ]
+    assert by_device["sa-as02"]["action"] == "remove"
+    assert devices_file(env) == env.original
+
+    stored = env.history.get_inventory_proposal(result["proposal_id"])
+    assert (stored.source, stored.customer) == ("mcp", "acme")
+    assert stored.reason == "the documentation says so"
+    assert env.tools.list_devices("acme")["devices"][0]["role"] == "access"
+
+
+def test_approval_applies_all_changes_and_denial_applies_none(prop_env):
+    env = prop_env
+    changes = (
+        {"device": "sa-as01", "role": "distribution", "site": "site-b"},
+        {"device": "sa-as02", "remove": True},
+    )
+    denied = propose(env, *changes)["proposal_id"]
+    deny_proposal(env.history, denied, denied_by="tech1")
+    assert devices_file(env) == env.original
+    with pytest.raises(TsunamiError, match="not awaiting approval"):
+        approve_proposal(env.history, env.root, denied, approved_by="tech1")
+    assert devices_file(env) == env.original
+
+    approved = propose(env, *changes)["proposal_id"]
+    done = approve_proposal(env.history, env.root, approved, approved_by="tech1")
+    assert (done.status, done.decided_by) == ("applied", "tech1")
+    [device] = env.tools.list_devices("acme")["devices"]
+    assert (device["name"], device["role"], device["site"]) == ("sa-as01", "distribution", "site-b")
+    assert env.tools.get_inventory_proposal(approved)["status"] == "applied"
+    assert env.tools.get_inventory_proposal(denied)["status"] == "denied"
+    with pytest.raises(TsunamiError, match="not awaiting approval"):
+        approve_proposal(env.history, env.root, approved, approved_by="tech1")
+
+
+def test_an_expired_proposal_changes_nothing(prop_env):
+    env = prop_env
+    proposal_id = propose(env, {"device": "sa-as01", "role": "distribution"})["proposal_id"]
+    assert env.history.expire_inventory_proposals(older_than_minutes=0) == [proposal_id]
+    with pytest.raises(TsunamiError, match="expired"):
+        approve_proposal(env.history, env.root, proposal_id, approved_by="tech1")
+    assert devices_file(env) == env.original
+    assert env.tools.get_inventory_proposal(proposal_id)["status"] == "expired"
+
+
+def test_a_device_changed_after_the_proposal_fails_it_whole(prop_env):
+    env = prop_env
+    proposal_id = propose(
+        env,
+        {"device": "sa-as01", "role": "distribution"},
+        {"device": "sa-as02", "role": "distribution"},
+    )["proposal_id"]
+    InventoryEditor(env.root).update_device("acme", "sa-as02", {"role": "core"})
+    changed = devices_file(env)
+    with pytest.raises(TsunamiError, match="sa-as02 was changed"):
+        approve_proposal(env.history, env.root, proposal_id, approved_by="tech1")
+    assert devices_file(env) == changed  # sa-as01 was not touched either
+    stored = env.history.get_inventory_proposal(proposal_id)
+    assert stored.status == "failed" and "sa-as02" in stored.error
+
+
+def test_a_host_a_proposal_sets_is_never_first_contacted_over_mcp(prop_env):
+    env = prop_env
+    proposal_id = propose(env, {"device": "sa-as01", "host": "203.0.113.50"})["proposal_id"]
+    assert env.history.mcp_devices("acme") == {}
+    approve_proposal(env.history, env.root, proposal_id, approved_by="tech1")
+    assert env.history.mcp_devices("acme") == {"sa-as01": "203.0.113.50"}
+
+
+def test_lab_customers_need_approval_too(prop_env):
+    env = prop_env
+    lab_devices = env.root / "inventory/customers/lab/devices.yml"
+    before = lab_devices.read_text(encoding="utf-8")
+    result = env.tools.propose_inventory_change("lab", [{"device": "lab-sw1", "remove": True}])
+    assert result["status"] == "awaiting_approval"
+    assert lab_devices.read_text(encoding="utf-8") == before
+
+
+@pytest.mark.parametrize(
+    ("change", "message"),
+    [
+        ({"device": "nope", "role": "core"}, "unknown device"),
+        ({"device": "sa-as01"}, "nothing to change"),
+        ({"device": "sa-as01", "role": "access"}, "already has role"),
+        ({"device": "sa-as01", "role": "no-such-role"}, "not a device type or role"),
+        ({"device": "sa-as01", "site": "nowhere"}, "does not exist"),
+        ({"device": "sa-as01", "host": "bad host!"}, "IP address or DNS name"),
+        ({"device": "sa-as01", "model": "no-such-model"}, "not in the catalog"),
+        ({"device": "sa-as01", "credential": "x"}, "unknown field"),
+        ({"device": "sa-as01", "port": 2222}, "unknown field"),
+        ({"device": "sa-as01", "remove": True, "role": "core"}, "cannot be combined"),
+        ({"device": "sa-as01", "remove": "yes"}, "remove must be true"),
+        ({"device": "sa-as01", "role": None}, "role must be text"),
+        ({"device": "sa-as01", "role": "co\nre"}, "control characters"),
+    ],
+)
+def test_bad_proposals_are_refused_and_queue_nothing(prop_env, change, message):
+    env = prop_env
+    with pytest.raises(ToolRefused, match=message):
+        propose(env, change)
+    assert env.history.list_inventory_proposals() == []
+    assert devices_file(env) == env.original
+
+
+def test_a_platform_that_does_not_fit_the_model_is_refused(prop_env):
+    env = prop_env
+    InventoryEditor(env.root).update_device("acme", "sa-as01", {"model": "cisco-c9300"})
+    with pytest.raises(ToolRefused, match="ios-xe"):
+        propose(env, {"device": "sa-as01", "platform": "aos-cx"})
+    assert env.history.list_inventory_proposals() == []
+
+
+def test_a_proposal_cannot_name_a_device_twice(prop_env):
+    env = prop_env
+    with pytest.raises(ToolRefused, match="already in this proposal"):
+        propose(env, {"device": "sa-as01", "role": "core"}, {"device": "sa-as01", "role": "ap"})
+    assert env.history.list_inventory_proposals() == []
+
+
+def test_a_model_can_be_cleared_with_null(prop_env):
+    env = prop_env
+    InventoryEditor(env.root).update_device("acme", "sa-as01", {"model": "cisco-c9300"})
+    proposal_id = propose(env, {"device": "sa-as01", "model": None})["proposal_id"]
+    approve_proposal(env.history, env.root, proposal_id, approved_by="tech1")
+    assert env.tools.list_devices("acme")["devices"][0]["model"] is None
+
+
+def test_proposals_need_the_policy_switch_and_a_visible_customer(prop_env):
+    env = prop_env
+    env.policy(inventory_edits=False)
+    with pytest.raises(ToolRefused, match="turned off"):
+        propose(env, {"device": "sa-as01", "role": "core"})
+    env.policy(inventory_edits=True, customers_blocked=["acme"])
+    with pytest.raises(ToolRefused, match="unknown customer"):
+        propose(env, {"device": "sa-as01", "role": "core"})
+    assert env.history.list_inventory_proposals() == []
+
+
+def test_a_blocked_customers_proposal_looks_unknown(prop_env):
+    env = prop_env
+    proposal_id = propose(env, {"device": "sa-as01", "role": "core"})["proposal_id"]
+    env.policy(inventory_edits=True, customers_blocked=["acme"])
+    with pytest.raises(ToolRefused) as caught:
+        env.tools.get_inventory_proposal(proposal_id)
+    assert str(caught.value) == f"unknown proposal {proposal_id!r}"
+    with pytest.raises(ToolRefused, match="unknown proposal"):
+        env.tools.get_inventory_proposal("nope")
+
+
+def test_the_reason_is_redacted_before_it_is_stored(prop_env):
+    env = prop_env
+    result = propose(env, {"device": "sa-as01", "role": "core"}, reason=f"key is {TACACS}")
+    assert TACACS not in env.history.get_inventory_proposal(result["proposal_id"]).reason
+
+
+def test_a_secret_cannot_be_smuggled_in_as_a_value(prop_env):
+    env = prop_env
+    with pytest.raises(ToolRefused, match="looks like a secret"):
+        propose(env, {"device": "sa-as01", "host": TACACS})  # a valid host name
+    assert env.history.list_inventory_proposals() == []
+
+
+def test_too_many_waiting_proposals_are_refused(prop_env):
+    env = prop_env
+    for _ in range(MAX_PENDING):
+        propose(env, {"device": "sa-as01", "role": "core"})
+    with pytest.raises(ToolRefused, match="too many"):
+        propose(env, {"device": "sa-as01", "role": "core"})
