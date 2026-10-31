@@ -46,3 +46,20 @@ Subagents get one work package from the implementation plan. Each one:
 - reports spec ambiguities back instead of resolving them
 
 Subagents do not edit `docs/design.md`.
+
+## Running from GitHub Actions
+
+When running in GitHub Actions (not a local session):
+
+- Work on a branch and open a pull request. Never push to main.
+- The runner is Linux with no GUI, no Windows, no credential vault, no CML lab
+  and no network devices. Do not claim anything was tested that needs those.
+- Run whatever tests can run on Linux and say in the PR which ones ran.
+- If the change needs manual verification (GUI flows, the frozen Windows
+  build, Credential Manager, the named pipe, or a run against the CML test
+  bed), add a "Manual verification" section to the PR description with exact
+  steps and expected results, mention @jakobjonasson, and add the label
+  `needs-manual-test`.
+- If you find related work that is out of scope for the issue, open a new
+  issue for it instead of expanding the PR.
+- Never put real customer names, hostnames or IPs in issues, PRs or commits.
