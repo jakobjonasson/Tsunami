@@ -15,6 +15,7 @@ from pathlib import Path
 
 import pytest
 
+from tsunami.core.backups import DISCOVERY_TAG, list_backups
 from tsunami.core.discovery import (
     Discovery,
     DiscoveryRequest,
@@ -341,6 +342,7 @@ class FakeDevice:
     banner: str = IOS_XE_BANNER
     error: Exception | None = None
     model: str | None = None
+    config: str | Exception = "ntp server 192.0.2.123"
 
 
 class FakeSession:
@@ -359,6 +361,11 @@ class FakeSession:
         else:
             text = "% Invalid input detected at '^' marker."
         return ExecResult(command, text)
+
+    def running_config(self) -> str:
+        if isinstance(self.device.config, Exception):
+            raise self.device.config
+        return f"hostname {self.device.hostname}\n{self.device.config}\nend\n"
 
     def close(self) -> None:
         pass
@@ -452,7 +459,7 @@ def request(**overrides) -> DiscoveryRequest:
     return DiscoveryRequest(**values)
 
 
-def run(root, devices=None, *, events=None, **overrides):
+def run(root, devices=None, *, events=None, paths=None, **overrides):
     transport = FakeTransport(devices if devices is not None else lab())
     history = FakeHistory()
     report = discover(
@@ -462,6 +469,7 @@ def run(root, devices=None, *, events=None, **overrides):
         transport=transport,
         history=history,
         on_event=events.append if events is not None else None,
+        paths=paths,
     )
     return report, transport, history
 
@@ -657,3 +665,53 @@ def test_requests_that_cannot_run(root):
         Discovery(root, request(seeds=()), login=LOGIN, transport=FakeTransport({}))
     with pytest.raises(TsunamiError):
         Discovery(root, request(site="Bad Site"), login=LOGIN, transport=FakeTransport({}))
+
+
+# -- backups ------------------------------------------------------------------------------
+
+
+def test_discovery_saves_each_learned_devices_config(root, app_paths):
+    devices = lab()
+    devices["192.0.2.2"].config = f"username admin secret {LOGIN.password}"
+    report, _, _ = run(root, devices, backup=True, paths=app_paths)
+    learned = {v.name: v.backup for v in report.visits if v.status == VisitStatus.ADDED}
+    assert set(learned) == {"site-sw1", "site-sw2", "site-sw3", "site-sw4", "edge-r1"}
+    assert set(learned.values()) == {"first backup"}
+    [entry] = list_backups(app_paths, "acme", "site-sw3")
+    assert entry.job_id == DISCOVERY_TAG
+    assert entry.path.read_text(encoding="utf-8").startswith("hostname SITE-SW3\n")
+    # Nothing from the backup reaches the report, the secret least of all.
+    assert LOGIN.password not in repr(report)
+
+
+def test_a_second_discovery_finds_no_change(root, app_paths):
+    run(root, backup=True, paths=app_paths)
+    seeds = tuple(Seed(f"192.0.2.{n}", Platform.IOS_XE, None) for n in (1, 2))
+    report, _, _ = run(root, add=False, seeds=seeds, scope=(), backup=True, paths=app_paths)
+    assert {v.name: v.backup for v in report.visits} == {
+        "site-sw1": "no change",
+        "site-sw2": "no change",
+    }
+    assert len(list_backups(app_paths, "acme", "site-sw1")) == 1
+
+
+def test_a_failed_backup_is_noted_and_the_device_still_added(root, app_paths):
+    devices = lab()
+    devices["192.0.2.1"].config = OSError(f"channel closed (password {LOGIN.password})")
+    report, _, _ = run(root, devices, backup=True, paths=app_paths)
+    seed = next(v for v in report.visits if v.name == "site-sw1")
+    assert seed.status == VisitStatus.ADDED
+    assert seed.backup.startswith("failed:") and LOGIN.password not in seed.backup
+    assert list_backups(app_paths, "acme", "site-sw1") == []
+    assert "site-sw2" in devices_yml(root)  # the chain went on
+
+
+def test_no_backups_unless_asked(root, app_paths):
+    report, _, _ = run(root, paths=app_paths)
+    assert {v.backup for v in report.visits} == {""}
+    assert not app_paths.backups_dir.exists() or not any(app_paths.backups_dir.iterdir())
+
+
+def test_backups_need_the_backups_folder(root):
+    with pytest.raises(TsunamiError, match="backups folder"):
+        Discovery(root, request(backup=True), login=LOGIN, transport=FakeTransport({}))

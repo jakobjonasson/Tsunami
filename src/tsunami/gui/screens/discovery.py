@@ -2,11 +2,11 @@
 (core/discovery.py).
 
 A tab per site. Discover: seeds (addresses typed in, and/or the site's own devices), a
-scope of networks to follow neighbors into, the type for new devices, the login, and hop
-and device limits; Start logs in to each device, adds it to the site and follows its new
-neighbors. Check for unlearned neighbors: reads the site's devices and lists neighbors
-the inventory lacks, adding nothing. Both list every neighbor that was not learned, with
-the reason.
+scope of networks to follow neighbors into, the type for new devices, the login, hop
+and device limits, and whether to back up each device's config; Start logs in to each
+device, adds it to the site, saves its config and follows its new neighbors. Check for
+unlearned neighbors: reads the site's devices and lists neighbors the inventory lacks,
+adding nothing. Both list every neighbor that was not learned, with the reason.
 
 Device output is untrusted; it reaches this tab only as table text.
 """
@@ -50,12 +50,12 @@ from tsunami.core.discovery import (
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import Platform
 from tsunami.core.models.inventory import DEVICE_TYPES
-from tsunami.core.transports.base import JumpTarget
 from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
+from tsunami.gui.screens.backups import secret_redactor
 from tsunami.gui.shell import Shell
 
-DEVICE_COLUMNS = ["Device", "Host", "Platform", "Model", "Version", "Status", "Detail"]
+DEVICE_COLUMNS = ["Device", "Host", "Platform", "Model", "Version", "Status", "Backup", "Detail"]
 UNLEARNED_COLUMNS = ["Neighbor", "Address", "Seen from", "Ports", "Reason", "Detail"]
 CONNECT_TIMEOUT = 10.0
 COMMAND_TIMEOUT = 60.0
@@ -157,6 +157,7 @@ class DiscoveryTab(QWidget):
             else "Logs in to each seed, adds it to this site, and follows its CDP and LLDP "
             "neighbors inside the scope until no new device is left. Neighbors that are not "
             "followed are listed with the reason. New host keys are recorded, as in a run."
+            " Each device's running config can be saved as a backup as it is read."
         )
         explain.setObjectName("Muted")
         explain.setWordWrap(True)
@@ -188,6 +189,12 @@ class DiscoveryTab(QWidget):
         self.hops_spin.setValue(5)
         self.max_spin = wheel.SpinBox()
         self.max_spin.setRange(1, MAX_DEVICES)
+        self.backup_check = QCheckBox("Save each device's running config as a backup")
+        self.backup_check.setToolTip(
+            "Its first backup, or a new one when the config differs from its newest backup. "
+            "Backups hold secrets in clear text and stay on this PC (Backups on the device)."
+        )
+        self.backup_check.setChecked(True)
         self.max_spin.setValue(MAX_DEVICES)
         limits.addWidget(QLabel("Hops"))
         limits.addWidget(self.hops_spin)
@@ -203,6 +210,7 @@ class DiscoveryTab(QWidget):
         form.addRow("Login", self.login_combo)
         if not check_only:
             form.addRow("Limits", limits)
+            form.addRow("", self.backup_check)
         layout.addLayout(form)
 
         row = QHBoxLayout()
@@ -343,14 +351,8 @@ class DiscoveryTab(QWidget):
             max_hops=self.hops_spin.value(),
             max_devices=self.max_spin.value(),
             device_credential=None if login == default else login,
+            backup=self.backup_check.isChecked(),
         )
-
-    def _jump(self) -> JumpTarget | None:
-        inv = self._inventory()
-        jh = inv.config.jump_host if inv is not None else None
-        if jh is None:
-            return None
-        return JumpTarget(str(jh.host), jh.port, self.ctx.secrets.get_login(jh.credential))
 
     def start(self) -> bool:
         if self.running or self.ctx.workspace_path is None:
@@ -360,7 +362,8 @@ class DiscoveryTab(QWidget):
             request = self.build_request()
             login_name = self.login_combo.currentData() or ""
             login = self.ctx.secrets.get_login(login_name)
-            jump = self._jump()
+            jump = self.ctx.jump_target(self.customer)
+            redactor = secret_redactor(self.ctx) if request.backup else None
         except TsunamiError as exc:
             self.set_error(str(exc))
             return False
@@ -381,6 +384,9 @@ class DiscoveryTab(QWidget):
                 cancel=threading.Event(),
                 connect_timeout=CONNECT_TIMEOUT,
                 command_timeout=COMMAND_TIMEOUT,
+                paths=self.ctx.paths,
+                keep=self.ctx.settings.backup_retention,
+                redactor=redactor,
             )
         except TsunamiError as exc:
             self.set_error(str(exc))
@@ -431,6 +437,7 @@ class DiscoveryTab(QWidget):
             visit.model or "",
             visit.version or "",
             str(visit.status),
+            visit.backup,
             visit.detail,
         ]
         self._append(self.devices_table, values, status_col=5, color=color)
@@ -463,6 +470,7 @@ class DiscoveryTab(QWidget):
             self.login_combo,
             self.hops_spin,
             self.max_spin,
+            self.backup_check,
         ):
             widget.setEnabled(idle)
         self.site_devices_check.setEnabled(idle and bool(self.site_devices()))

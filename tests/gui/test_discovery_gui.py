@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import pytest
 
+from tsunami.core.backups import list_backups
 from tsunami.core.policy import load_policy
 from tsunami.core.transports.base import AuthenticationError, ExecResult, UnreachableError
 from tsunami.gui.screens import discovery, import_devices, settings
@@ -33,6 +34,9 @@ class Session:
         if command == "show cdp neighbors detail":
             return ExecResult(command, "\n".join(self.neighbors))
         return ExecResult(command, "% LLDP is not enabled")
+
+    def running_config(self) -> str:
+        return f"hostname {self.hostname}"
 
     def close(self) -> None:
         pass
@@ -112,6 +116,8 @@ def test_discover_adds_the_chain_and_lists_unlearned_neighbors(qtbot, gui_ctx, m
     columns = discovery.DEVICE_COLUMNS
     assert column(tab.devices_table, "Device", columns) == ["new-sw1", "new-sw2", ""]
     assert column(tab.devices_table, "Status", columns) == ["added", "added", "login failed"]
+    assert column(tab.devices_table, "Backup", columns) == ["first backup", "first backup", ""]
+    assert [e.job_id for e in list_backups(gui_ctx.paths, "acme", "new-sw2")] == ["discovery"]
     unlearned = discovery.UNLEARNED_COLUMNS
     reasons = dict(
         zip(
@@ -265,3 +271,20 @@ def test_inventory_edits_switch_is_saved_to_the_policy(main_window, gui_ctx):
     tab.inventory_edits.setChecked(True)
     assert tab.save_all()
     assert load_policy(gui_ctx.paths.policy_file).inventory_edits is True
+
+
+def test_discovery_without_backups(qtbot, gui_ctx, main_window):
+    use(gui_ctx, Transport({"192.0.2.1": ("new-sw1", [])}))
+    tab = open_discovery_tab(gui_ctx, main_window, "acme", "site-b")
+    assert tab.backup_check.isChecked()  # on by default
+    tab.backup_check.setChecked(False)
+    tab.seeds_edit.setText("192.0.2.1")
+    assert tab.start()
+    wait_done(qtbot, tab)
+    assert column(tab.devices_table, "Backup", discovery.DEVICE_COLUMNS) == [""]
+    assert list_backups(gui_ctx.paths, "acme", "new-sw1") == []
+
+
+def test_check_only_offers_no_backup(gui_ctx, main_window):
+    tab = open_discovery_tab(gui_ctx, main_window, "acme", "site-a", check_only=True)
+    assert not tab.build_request().backup

@@ -97,7 +97,8 @@ class HostKeyStore:
                     return False
                 raise HostKeyMismatchError(
                     f"{name}: host key changed (on file {fingerprint(old)}, "
-                    f"device presented {fingerprint(key)}); accept it in the GUI if expected"
+                    f"now {fingerprint(key)}); if expected, accept it in Inventory, "
+                    "the customer, Trust host keys"
                 )
             if not allow_new:
                 raise HostKeyMismatchError(

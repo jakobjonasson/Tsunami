@@ -751,6 +751,22 @@ Accepted residual: if a secret is also stored in plain text somewhere the exact 
 - They live under the user profile in `%LOCALAPPDATA%\Tsunami\backups`.
 - The GUI shows them redacted, with a reveal toggle. No MCP tool can read them.
 - Encrypting backups at rest with DPAPI is deferred.
+- File names are `<UTC stamp>_<tag>.cfg`. A job's backup is tagged with its job id. Discovery tags its backups `discovery` and the drift check tags its own `drift`. A second backup in the same second takes the next second's stamp, so none is overwritten.
+- Retention (the last 30 per device, a setting) applies to every backup, whoever took it.
+
+#### Drift check
+
+Back up and check for drift (Inventory, on a site or a customer) reads each device's running config with its own login and sends nothing else (`core/drift.py`).
+
+- A device with no backup gets its first one.
+- Otherwise its config is compared with its newest backup, whoever took it. A new backup is saved only when something changed, so retention keeps real history rather than copies.
+- The comparison skips comments, blank lines, the headers above the config (`Building configuration...`, the byte count) and lines the device rewrites on its own (`ntp clock-period` on IOS). A timestamp comment is therefore never drift.
+- The diff is computed on redacted text, as in the backups viewer. A change to secret values alone shows as `secrets changed`, with no diff.
+- The diff stays in memory and is shown in the tab. Double-click a device to open its backups.
+
+Discovery uses the same comparison. With "Save each device's running config as a backup" (on by default), each device's config is read on the visit's own session and saved once the device is in the inventory. A backup that fails is noted in the Backup column and never fails the visit. Check for unlearned neighbors takes no backups.
+
+A play was the other option. It was not chosen because plays render and push templates through approval, and a drift check only reads.
 
 ## MCP interface
 
@@ -927,7 +943,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |---|---|
 |View|Purpose|
 |Workspace|Open or init a workspace. Shows schema version, a lint summary of every file, and reload.|
-|Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Context menus edit the inventory, import devices from CSV (Save example CSV writes a file with every column), trust host keys, and on a site run Discover devices (CDP/LLDP) and Check for unlearned neighbors.|
+|Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Context menus edit the inventory, import devices from CSV (Save example CSV writes a file with every column), trust host keys, and on a site run Discover devices (CDP/LLDP) and Check for unlearned neighbors. Back up and check for drift (on a site, or a customer for all its sites) opens a tab that starts at once: it lists each device as first backup, changed, secrets changed, no change, or the reason it was not read. Selecting a changed device shows the redacted diff since its previous backup (Backups: Drift check). The tree keeps what was collapsed when the workspace reloads.|
 |Plays|Plays grouped by type and customer, with validation status, a read-only YAML view, and a Run button.|
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
@@ -955,7 +971,7 @@ Machine-local data lives in `%LOCALAPPDATA%\Tsunami` and settings in `%APPDATA%\
 %LOCALAPPDATA%\Tsunami\
 ├─ history.db
 ├─ known_hosts\<customer>
-├─ backups\<customer>\<device>\<UTC timestamp>_<jobid>.cfg
+├─ backups\<customer>\<device>\<UTC timestamp>_<job id, discovery or drift>.cfg
 └─ logs\
    ├─ app.log
    ├─ mcp.log
@@ -982,7 +998,9 @@ Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `
 - Trust on first use, recorded per customer in `known_hosts\<customer>` in OpenSSH known_hosts format, keyed the way paramiko looks keys up (`host`, or `[host]:port` for ports other than 22). Files are per customer because customers reuse private address ranges, so one shared file would match one customer's key against another customer's device. Jump hosts are recorded in their customer's file too.
 - Before the first login to a host with no recorded key, the transport opens an unauthenticated paramiko transport (directly, or over the jump host's `direct-tcpip` channel), reads the server key, and records it. Credentials are only ever sent to a host whose key is on file.
 - Netmiko then connects with `ssh_strict=True`, `alt_host_keys=True`, and `alt_key_file` set to a private copy of this host's entry. Netmiko accepts any host key by default, so these must always be set. The copy exists because Netmiko reads its key file during login, outside Tsunami's lock, and Windows refuses to replace a file another thread has open.
-- A later mismatch fails the device with `hostkey_mismatch`. Only the GUI can accept a new key, after showing old and new fingerprints. MCP-initiated jobs can never accept one.
+- A later mismatch fails the device with `hostkey_mismatch`. Only the GUI can accept a new key, after showing old and new fingerprints. MCP-initiated jobs can never accept one. The error names where to accept it: Inventory, the customer, Trust host keys.
+- A jump host's changed key is accepted the same way. Trust host keys reads the jump host's key directly when the jump connection fails on a mismatch, and lists it as a `(jump host)` row above the devices. Until it is accepted, every device behind it is unreachable.
+- Every GUI connection to a customer's device goes through its jump host, the Credentials Test button included (`AppContext.jump_target`). A direct attempt at a private address could reach another machine and record that machine's key as the device's.
 
 ### Retention
 
@@ -1420,3 +1438,5 @@ Changes since the original draft, with reasons:
   - Site discovery over CDP and LLDP (`core/discovery.py`, Inventory, a site, Discover devices). It starts from seed addresses and/or the site's devices and logs in with one login (the site's default, or another chosen login, which is then written on each added device). For each device it reads facts and neighbors, adds the device to the site, and follows new neighbors breadth first. A neighbor is followed only if it is inside the scope (networks the person lists; the seeds' /24s by default), advertises a management address, is a switch or router, and has a platform Tsunami supports. It stops at a hop limit and a device limit (200). Every neighbor not learned is listed with the reason. New host keys are recorded, as in a GUI run. Names come from the device's hostname, slugged. A name clash with another host is reported, not added. A router-only neighbor is added as `router`, the rest as the chosen type. Check for unlearned neighbors reads the site's devices and lists neighbors the inventory lacks, adding nothing. The IOS parsers come from IOL 17.18 output (CML); IOL switches advertise `Router Switch IGMP`, so only a router-only neighbor becomes `router`. The AOS-CX (LLDP only) and AOS-S parsers are unverified on hardware.
   - MCP inventory additions (`add_customer`, `add_site`, `add_devices`), behind the new policy switch `inventory_edits` (off by default). The design said MCP writes only to `drafts/`. Additions are useful when Claude reads a customer's documentation, and the constraints keep them from widening what Claude can reach: add only, never a lab customer, logins limited to the customer's own, and no first contact with a device Claude added (`history.db` migration 004, `mcp_devices`). Runs gained a per-device refusal of first-contact keys (`RunRequest.no_new_host_key`).
   - Settings: Edit allowlists in VS Code beside the show allowlist.
+  - Credentials, Test now goes through the customer's jump host; it went direct, so on a network where another machine answered at the device's private address, that machine's key was recorded. A changed jump host key can be accepted in Trust host keys; before, the customer stayed unreachable until its line was deleted from the known_hosts file by hand.
+  - Backups are no longer only a job's. Discovery saves each device's running config as it reads it, and Back up and check for drift on a site or customer saves first backups and reports drift since the newest backup (Backups: Drift check). Both save only when the config changed, ignoring comments, headers and `ntp clock-period`. The backups view names these backups instead of linking a job.

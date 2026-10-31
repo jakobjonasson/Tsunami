@@ -87,7 +87,10 @@ class JumpConnection:
                 transport_factory=transport_class(legacy),
             )
         except paramiko.BadHostKeyException:
-            raise HostKeyMismatchError(f"jump host {jump.host}: host key changed") from None
+            raise HostKeyMismatchError(
+                f"jump host {jump.host}: host key changed; if expected, accept it in "
+                "Inventory, the customer, Trust host keys"
+            ) from None
         except paramiko.AuthenticationException:
             raise AuthenticationError(f"jump host {jump.host}: login failed") from None
         except (paramiko.SSHException, OSError) as exc:

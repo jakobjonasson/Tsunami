@@ -401,6 +401,8 @@ class InventoryView(QWidget):
 
     def refresh(self) -> None:
         colors = theme.current()
+        collapsed = self._collapsed()
+        scroll = self.tree.verticalScrollBar().value()
         self.tree.clear()
         ws = self.ctx.workspace
         self.hint.setVisible(ws is None)
@@ -439,7 +441,26 @@ class InventoryView(QWidget):
                     tip += f"  model {dev.model}"
                 d_item.setToolTip(0, tip + f"  login {customer.credential_for(dev)}")
         self.tree.expandAll()
+        for item in self._branches():
+            if item.data(0, _KIND_ROLE) in collapsed:
+                item.setExpanded(False)
         self._apply_filter()
+        self.tree.verticalScrollBar().setValue(scroll)
+
+    def _branches(self) -> list[QTreeWidgetItem]:
+        """Customer and site items that have children."""
+        found = []
+        for i in range(self.tree.topLevelItemCount()):
+            c_item = self.tree.topLevelItem(i)
+            for item in [c_item, *(c_item.child(j) for j in range(c_item.childCount()))]:
+                if item.childCount():
+                    found.append(item)
+        return found
+
+    def _collapsed(self) -> set[tuple[str, ...]]:
+        """What the person collapsed, kept across a reload. New customers and sites, and
+        those that had nothing in them, open expanded."""
+        return {item.data(0, _KIND_ROLE) for item in self._branches() if not item.isExpanded()}
 
     def _apply_filter(self) -> None:
         needle = self.filter_box.text().strip().lower()
@@ -498,6 +519,7 @@ class InventoryView(QWidget):
             add("Add site…", "add", self.new_site, kind[1])
             add("Import devices from CSV…", "cloud-upload", self.import_devices, kind[1])
             add("Save example CSV…", "save", self.save_example_csv)
+            add("Back up and check for drift", "git-compare", self.check_drift, kind[1])
             add("Trust host keys…", "key", self.trust_host_keys, kind[1])
             add("Properties…", "info", self.edit_customer, kind[1])
             menu.addSeparator()
@@ -521,6 +543,7 @@ class InventoryView(QWidget):
                 kind[1],
                 kind[2],
             )
+            add("Back up and check for drift", "git-compare", self.check_drift, kind[1], kind[2])
             add("Trust host keys…", "key", self.trust_host_keys, kind[1], kind[2])
             add("Edit…", "edit", self.edit_site, kind[1], kind[2])
             add("View settings", "info", self.view_site, kind[1], kind[2])
@@ -554,6 +577,11 @@ class InventoryView(QWidget):
         from tsunami.gui.screens.discovery import open_discovery_tab
 
         open_discovery_tab(self.ctx, self.shell, customer, site, check_only=True)
+
+    def check_drift(self, customer: str, site: str | None = None) -> None:
+        from tsunami.gui.screens.drift import open_drift_tab
+
+        open_drift_tab(self.ctx, self.shell, customer, site)
 
     def trust_host_keys(self, customer: str, site: str | None = None) -> None:
         from tsunami.gui.screens.host_keys import open_trust_tab

@@ -492,6 +492,13 @@ class _CredentialsBase(QWidget):
         except TsunamiError as exc:
             self.shell.notify(str(exc), "error")
             return False
+        try:
+            # The device is reached as a run reaches it. Going direct to a private address
+            # could reach another machine and record its key as the device's.
+            jump = self.ctx.jump_target(customer)
+        except TsunamiError as exc:
+            self.shell.notify(f"The jump host's login is needed: {exc}", "error")
+            return False
         target = ConnectTarget(
             customer=customer,
             device=device.name,
@@ -500,6 +507,7 @@ class _CredentialsBase(QWidget):
             platform=device.platform,
             method=ConnectionMethod.SSH,
             credential=credential,
+            jump=jump,
         )
         self.test_label.setText(f"Testing {name} on {customer}/{device_name}…")
         QThreadPool.globalInstance().start(_TestTask(self._test_signals, self.ctx, name, target))

@@ -10,13 +10,14 @@ import paramiko
 import pytest
 
 from tsunami.core.hostkey_trust import (
+    JUMP_HOST,
     DeviceAddress,
     Outcome,
     accept_changed,
     trust_host_keys,
 )
 from tsunami.core.secret_store import LoginCredential
-from tsunami.core.transports.base import JumpTarget, UnreachableError
+from tsunami.core.transports.base import HostKeyMismatchError, JumpTarget, UnreachableError
 from tsunami.core.transports.hostkeys import HostKeyStore, fingerprint
 
 KEY_A = paramiko.ECDSAKey.generate()
@@ -180,6 +181,52 @@ def test_an_unreachable_jump_host_marks_every_device(app_paths):
     )
     assert {r.outcome for r in results} == {Outcome.UNREACHABLE}
     assert "jump host" in results[0].detail
+
+
+def changed_jump_factory(target, store):
+    raise HostKeyMismatchError("jump host 198.51.100.10: host key changed")
+
+
+def test_a_changed_jump_host_key_is_reported_so_it_can_be_accepted(app_paths, monkeypatch):
+    opener_hosts(monkeypatch)
+    store = HostKeyStore(app_paths.known_hosts_file("acme"))
+    store.check("198.51.100.10", 22, KEY_A, allow_new=True)  # the key on file
+    seen = []
+    results = trust_host_keys(
+        app_paths,
+        "acme",
+        DEVICES,
+        jump=JumpTarget("198.51.100.10", 22, LoginCredential("u", "p")),
+        probe=fake_probe({"198.51.100.10": KEY_B}),
+        jump_factory=changed_jump_factory,
+        on_result=lambda r: seen.append(r.device),
+    )
+    jump, *devices = results
+    assert (jump.device, jump.host, jump.outcome) == (JUMP_HOST, "198.51.100.10", Outcome.CHANGED)
+    assert jump.known_fingerprint == fingerprint(KEY_A) and jump.fingerprint == fingerprint(KEY_B)
+    assert [d.device for d in devices] == [d.name for d in DEVICES]
+    assert {d.outcome for d in devices} == {Outcome.UNREACHABLE}
+    assert "accept it" in devices[0].detail
+    assert seen[0] == JUMP_HOST
+    assert store.known_keys("198.51.100.10", 22)[KEY_A.get_name()] == KEY_A  # untouched
+
+    accept_changed(app_paths, "acme", jump)
+    assert store.known_keys("198.51.100.10", 22)[KEY_B.get_name()] == KEY_B
+
+
+def test_a_changed_jump_host_that_cannot_be_probed_marks_every_device(app_paths, monkeypatch):
+    opener_hosts(monkeypatch)
+    results = trust_host_keys(
+        app_paths,
+        "acme",
+        DEVICES,
+        jump=JumpTarget("198.51.100.10", 22, LoginCredential("u", "p")),
+        probe=fake_probe({}, unreachable={"198.51.100.10"}),
+        jump_factory=changed_jump_factory,
+    )
+    assert [r.device for r in results] == [d.name for d in DEVICES]
+    assert {r.outcome for r in results} == {Outcome.UNREACHABLE}
+    assert "host key changed" in results[0].detail
 
 
 def test_the_real_probe_reads_the_key_and_never_logs_in(app_paths, monkeypatch):

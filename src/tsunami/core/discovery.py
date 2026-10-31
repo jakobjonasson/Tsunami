@@ -7,6 +7,11 @@ goes breadth first until nothing new is left, the hop limit or the device limit.
 Check-only mode visits the given devices and reports their neighbors that are not in the
 inventory, without following or adding anything.
 
+With `backup` set, each device's running config is read on the same session and
+saved as a backup once the device is in the inventory: its first backup, or a new one
+when it differs from the newest (backups.save_if_changed). A backup that fails is noted
+on the device; it never fails the visit.
+
 Every neighbor that was not learned is reported with the reason: outside the scope, no
 management address, not a switch or router, a platform Tsunami does not support, a hop
 or device limit, or a visit that failed (unreachable, login failed, host key changed).
@@ -34,6 +39,7 @@ from enum import StrEnum
 from pathlib import Path
 from typing import Any
 
+from tsunami.core.backups import DISCOVERY_TAG, BackupError, save_if_changed
 from tsunami.core.catalog import load_catalog
 from tsunami.core.facts import Facts, detect_platform, facts_commands, parse_facts
 from tsunami.core.inventory_edit import InventoryEditError, InventoryEditor
@@ -41,6 +47,7 @@ from tsunami.core.inventory_import import load_snapshot
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily, require_slug
 from tsunami.core.models.play import ConnectionMethod
+from tsunami.core.paths import AppPaths
 from tsunami.core.redact import Redactor, redact_exception
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports.base import (
@@ -420,6 +427,7 @@ class DiscoveryRequest:
     max_hops: int = 5
     max_devices: int = MAX_DEVICES
     device_credential: str | None = None  # written on added devices when set
+    backup: bool = False  # save each inventory device's running config
 
 
 @dataclass(frozen=True)
@@ -433,6 +441,7 @@ class DeviceVisit:
     hop: int = 0
     neighbors: int = 0
     detail: str = ""
+    backup: str = ""  # what happened to its config backup ("" when none was taken)
 
 
 @dataclass(frozen=True)
@@ -492,6 +501,8 @@ class _Outcome:
     platform: Platform | None = None
     hostname: str | None = None
     neighbors: list[Neighbor] = field(default_factory=list)
+    running: str | None = field(default=None, repr=False)  # unredacted; only for the backup
+    backup_error: str = ""
 
 
 def parse_scope(text: str) -> tuple[ipaddress.IPv4Network | ipaddress.IPv6Network, ...]:
@@ -540,6 +551,9 @@ class Discovery:
         connect_timeout: float = 15,
         command_timeout: float = 60,
         allow_new_host_key: bool = True,
+        paths: AppPaths | None = None,  # where backups go, when request.backup
+        keep: int = 30,  # backups kept per device
+        redactor: Redactor | None = None,  # every stored secret; the login is added
     ) -> None:
         require_slug(request.customer)
         require_slug(request.site)
@@ -547,6 +561,8 @@ class Discovery:
             raise TsunamiError("discovery needs at least one seed device")
         if request.add and not request.scope:
             raise TsunamiError("discovery needs a scope: the networks it may follow neighbors into")
+        if request.backup and paths is None:
+            raise TsunamiError("discovery needs the backups folder to save configs")
         self.root = Path(root)
         self.request = request
         self.login = login
@@ -560,7 +576,10 @@ class Discovery:
         self.connect_timeout = connect_timeout
         self.command_timeout = command_timeout
         self.allow_new_host_key = allow_new_host_key
-        self.redactor = Redactor([login.password, login.enable or ""])
+        login_values = [login.password, login.enable or ""]
+        self.redactor = redactor.with_values(login_values) if redactor else Redactor(login_values)
+        self.paths = paths
+        self.keep = keep
         self.visits: list[DeviceVisit] = []
         self.unlearned: list[Unlearned] = []
         self._names: dict[str, str] = {}  # inventory name -> host
@@ -678,6 +697,11 @@ class Discovery:
                 outcome.neighbors += parse_neighbors(
                     family, command, session.send_exec(command).output
                 )
+            if self.request.backup and not self.cancel_event.is_set():
+                try:
+                    outcome.running = session.running_config()
+                except Exception as exc:  # noqa: BLE001 - noted on the device, never fatal
+                    outcome.backup_error = redact_exception(exc, self.redactor)
             return outcome
         except Exception as exc:  # noqa: BLE001 - one device failing never stops the run
             return _Outcome(item, VisitStatus.FAILED, redact_exception(exc, self.redactor))
@@ -706,6 +730,7 @@ class Discovery:
             status, detail = self._add(item, name, platform, model)
         if status in LEARNED and self.history is not None:
             self._record_facts(name, platform, outcome.facts)
+        backup = self._backup(item, name, platform, outcome) if status in LEARNED else ""
         self._emit(
             DeviceVisit(
                 host=item.host,
@@ -717,6 +742,7 @@ class Discovery:
                 hop=item.hop,
                 neighbors=len(outcome.neighbors),
                 detail=detail,
+                backup=backup,
             )
         )
         if status not in LEARNED:
@@ -787,6 +813,35 @@ class Discovery:
             e.id for e in load_catalog().match_reported_model(facts.model) if e.platform == platform
         ]
         return matches[0] if len(matches) == 1 else None
+
+    def _backup(self, item: _Item, name: str, platform: Platform, outcome: _Outcome) -> str:
+        """Save the config read on the visit under the device's inventory name."""
+        if not self.request.backup:
+            return ""
+        if outcome.backup_error:
+            return f"failed: {outcome.backup_error}"
+        if outcome.running is None:
+            return ""
+        inventory_name = item.known_name or self._hosts.get(item.host)
+        if inventory_name is None:
+            return ""  # check only, and the device is not in the inventory
+        assert self.paths is not None
+        try:
+            saved = save_if_changed(
+                self.paths,
+                self.request.customer,
+                inventory_name,
+                outcome.running,
+                PLATFORM_FAMILY[platform],
+                self.redactor,
+                tag=DISCOVERY_TAG,
+                keep=self.keep,
+            )
+        except (BackupError, TsunamiError, OSError) as exc:
+            return f"failed: {self._text(exc)}"
+        finally:
+            outcome.running = None
+        return saved.summary
 
     def _record_facts(self, name: str, platform: Platform, facts: Facts) -> None:
         redact = self.redactor.text

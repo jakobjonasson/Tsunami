@@ -3,7 +3,8 @@
 A tab per customer (or site): Start reads every device's SSH host key without logging
 in, through the customer's jump host if it has one. New keys are recorded, known keys
 are left alone, and a key that changed is listed with both fingerprints. Only "Accept
-new key…", after a confirmation that shows both, replaces a changed key.
+new key…", after a confirmation that shows both, replaces a changed key. A jump host
+whose key changed gets a row of its own at the top, accepted the same way.
 """
 
 from __future__ import annotations
@@ -28,6 +29,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.hostkey_trust import (
+    JUMP_HOST,
     DeviceAddress,
     KeyProbe,
     Outcome,
@@ -35,7 +37,6 @@ from tsunami.core.hostkey_trust import (
     trust_host_keys,
 )
 from tsunami.core.issues import TsunamiError
-from tsunami.core.transports.base import JumpTarget
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import Shell
@@ -156,24 +157,18 @@ class HostKeysTab(QWidget):
             if self.site is None or d.site == self.site
         ]
 
-    def _jump(self) -> JumpTarget | None:
-        ws = self.ctx.workspace
-        inv = ws.customers.get(self.customer) if ws else None
-        jh = inv.config.jump_host if inv else None
-        if jh is None:
-            return None
-        login = self.ctx.secrets.get_login(jh.credential)  # TsunamiError if locked/missing
-        return JumpTarget(str(jh.host), jh.port, login)
-
     def start(self) -> bool:
         if self.running or not self.devices:
             return False
         try:
-            jump = self._jump()
+            jump = self.ctx.jump_target(self.customer)
         except TsunamiError as exc:
             self.shell.notify(f"The jump host's login is needed: {exc}", "error")
             return False
         self.results.clear()
+        if JUMP_HOST in self._rows:
+            self.table.removeRow(self._rows[JUMP_HOST])
+            self._reindex()
         for i in range(self.table.rowCount()):
             for col in (2, 3, 4):
                 self.table.item(i, col).setText("")
@@ -211,9 +206,18 @@ class HostKeysTab(QWidget):
     def _on_result(self, result: KeyProbe) -> None:
         self.results[result.device] = result
         row = self._rows.get(result.device)
+        if row is None and result.device == JUMP_HOST:
+            self.table.insertRow(0)
+            for col, text in enumerate([JUMP_HOST, result.host, "", "", ""]):
+                self.table.setItem(0, col, QTableWidgetItem(text))
+            self._reindex()
+            row = 0
         if row is not None:
             self._show(row, result)
         self._refresh_progress()
+
+    def _reindex(self) -> None:
+        self._rows = {self.table.item(i, 0).text(): i for i in range(self.table.rowCount())}
 
     def _on_finished(self) -> None:
         self.running = False
@@ -258,10 +262,15 @@ class HostKeysTab(QWidget):
         result = self.selected()
         if result is None or result.outcome != Outcome.CHANGED:
             return False
+        who = (
+            f"The jump host ({result.host})"
+            if result.device == JUMP_HOST
+            else f"{result.device} ({result.host})"
+        )
         answer = QMessageBox.question(
             self,
             "Accept new host key",
-            f"{result.device} ({result.host}) presented a different host key.\n\n"
+            f"{who} presented a different host key.\n\n"
             f"On file:   {result.known_fingerprint}\n"
             f"Presented: {result.fingerprint}\n\n"
             "Accept it only if you know why it changed (the device was replaced or "
@@ -279,7 +288,8 @@ class HostKeysTab(QWidget):
             result.port,
             Outcome.RECORDED,
             fingerprint=result.fingerprint,
-            detail="new key accepted",
+            detail="new key accepted"
+            + ("; start again to read the devices" if result.device == JUMP_HOST else ""),
         )
         self._on_result(accepted)
         self._refresh_buttons()
@@ -303,7 +313,7 @@ class HostKeysTab(QWidget):
         if not total:
             self.progress.setText("No devices here.")
             return
-        done = len(self.results)
+        done = len(self.results) - (JUMP_HOST in self.results)
         counts = self.counts()
         parts = [f"{n} {name}" for name, n in sorted(counts.items(), key=lambda kv: -kv[1])]
         if not self.running and not done:

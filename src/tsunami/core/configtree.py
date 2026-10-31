@@ -44,9 +44,15 @@ class _Builder:
         return ConfigNode(self.text, tuple(c.freeze() for c in self.children), self.line)
 
 
+def is_header_line(text: str, family: PlatformFamily) -> bool:
+    """A line the device prints above its config (`Building configuration...`, the byte
+    count), which is not config."""
+    return text.lower().startswith(_PREFIX_DROP[family])
+
+
 def _is_noise(text: str, family: PlatformFamily, indent: int) -> bool:
     low = text.lower()
-    if low.startswith(_PREFIX_DROP[family]):
+    if is_header_line(low, family):
         return True
     if family is PlatformFamily.IOS and indent == 0:
         return low == "end" or bool(_IOS_VERSION.match(low))

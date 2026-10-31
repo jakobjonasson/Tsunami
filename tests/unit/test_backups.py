@@ -8,13 +8,19 @@ from pathlib import Path
 import pytest
 
 from tsunami.core.backups import (
+    DISCOVERY_TAG,
+    DRIFT_TAG,
     BackupError,
+    Change,
     backup_folder,
     diff_redacted,
     list_backups,
     parse_name,
     read_redacted,
+    save_if_changed,
+    write_backup,
 )
+from tsunami.core.models.common import PlatformFamily
 from tsunami.core.redact import Redactor
 
 LOGIN_PASSWORD = "Login-Pass-1234"
@@ -178,3 +184,101 @@ def test_secret_removed_or_added_by_exact_value_is_masked_in_diff(app_paths):
     diff = diff_redacted(old, new, Redactor(["Tok-Exact-0001", "Tok-Exact-0002"]))
     assert "Tok-Exact" not in diff
     assert "+ ntp server b" in diff
+
+
+# -- saving: discovery and the drift check ----------------------------------------------
+
+IOS = PlatformFamily.IOS
+
+
+def _ios(ntp: str, enable: str, *, stamp: str = "10:00:00", clock: str = "17179869") -> str:
+    return (
+        "Building configuration...\n\n"
+        f"Current configuration : {1000 + len(ntp)} bytes\n"
+        "!\n"
+        f"! Last configuration change at {stamp} UTC Fri Oct 30 2026 by netadmin\n"
+        "!\n"
+        "version 17.18\n"
+        f"ntp clock-period {clock}\n" + _config(ntp, enable)
+    )
+
+
+def _save(paths, text, redactor, *, tag=DRIFT_TAG, keep=30, family=IOS):
+    return save_if_changed(paths, "acme", "sa-as01", text, family, redactor, tag=tag, keep=keep)
+
+
+def test_first_save_is_the_first_backup(app_paths, redactor):
+    saved = _save(app_paths, _ios("192.0.2.99", ENABLE_SECRET), redactor, tag=DISCOVERY_TAG)
+    assert saved.change is Change.FIRST and saved.previous is None
+    assert saved.path is not None and saved.path.name.endswith("_discovery.cfg")
+    assert ENABLE_SECRET in saved.path.read_text(encoding="utf-8")  # saved unredacted
+    [entry] = list_backups(app_paths, "acme", "sa-as01")
+    assert entry.job_id == DISCOVERY_TAG
+
+
+def test_comments_headers_and_clock_period_are_not_drift(app_paths, redactor):
+    first = _save(app_paths, _ios("192.0.2.99", ENABLE_SECRET), redactor)
+    again = _ios("192.0.2.99", ENABLE_SECRET, stamp="11:30:00", clock="17180000")
+    saved = _save(app_paths, again.replace("\n", "\r\n"), redactor)
+    assert saved.change is Change.UNCHANGED
+    assert saved.path is None and saved.previous is not None
+    assert saved.previous.path == first.path
+    assert len(list_backups(app_paths, "acme", "sa-as01")) == 1  # nothing new written
+
+
+def test_a_changed_line_saves_a_backup_and_a_redacted_diff(app_paths, redactor):
+    _write(app_paths, "20260101T010101Z", "job1", _ios("192.0.2.99", ENABLE_SECRET))
+    saved = _save(app_paths, _ios("192.0.2.100", NEW_ENABLE_SECRET), redactor)
+    assert saved.change is Change.CHANGED
+    assert (saved.added, saved.removed) == (1, 1)
+    assert saved.summary == "changed: +1 -1"
+    lines = saved.diff.split("\n")
+    assert "- ntp server 192.0.2.99" in lines and "+ ntp server 192.0.2.100" in lines
+    assert not any("Last configuration change" in line for line in lines)
+    for clear in CLEAR:
+        assert clear not in saved.diff
+    assert [e.job_id for e in list_backups(app_paths, "acme", "sa-as01")] == [DRIFT_TAG, "job1"]
+
+
+def test_only_a_secret_changed(app_paths, redactor):
+    _write(app_paths, "20260101T010101Z", "job1", _ios("192.0.2.99", ENABLE_SECRET))
+    saved = _save(app_paths, _ios("192.0.2.99", NEW_ENABLE_SECRET), redactor)
+    assert saved.change is Change.SECRETS
+    assert saved.diff == "" and saved.path is not None  # saved, so the next check is exact
+
+
+def test_saving_keeps_only_the_newest_backups(app_paths, redactor):
+    for n in range(4):
+        _write(app_paths, f"2026010{n + 1}T010101Z", f"job{n}", _ios(f"192.0.2.{n}", "x"))
+    saved = _save(app_paths, _ios("192.0.2.200", "x"), redactor, keep=3)
+    names = [e.path.name for e in list_backups(app_paths, "acme", "sa-as01")]
+    assert len(names) == 3 and names[0] == saved.path.name
+
+
+def test_aos_s_comments_are_ignored(app_paths, redactor):
+    config = "; J9850A Configuration Editor; Created on release #KB.16.11\n" + (
+        'hostname "sw1"\nvlan 10\n   name "data"\n   exit\n'
+    )
+    family = PlatformFamily.AOS_S
+    _save(app_paths, "Running configuration:\n" + config, redactor, family=family)
+    later = config.replace("KB.16.11", "KB.16.12")
+    assert _save(app_paths, later, redactor, family=family).change is Change.UNCHANGED
+
+
+@pytest.mark.parametrize("tag", ["", "../x", "a b", "-x"])
+def test_bad_tag_is_refused(app_paths, tag):
+    with pytest.raises(BackupError):
+        write_backup(app_paths, "acme", "sa-as01", "hostname x\n", tag, keep=5)
+
+
+def test_save_needs_a_redactor(app_paths):
+    with pytest.raises(BackupError):
+        save_if_changed(app_paths, "acme", "sa-as01", "x", IOS, None, tag=DRIFT_TAG, keep=5)
+
+
+def test_two_backups_in_one_second_are_both_kept(app_paths):
+    first = write_backup(app_paths, "acme", "sa-as01", "hostname a", DRIFT_TAG, keep=5)
+    second = write_backup(app_paths, "acme", "sa-as01", "hostname b", DRIFT_TAG, keep=5)
+    assert first != second
+    assert first.read_text(encoding="utf-8") == "hostname a"
+    assert list_backups(app_paths, "acme", "sa-as01")[0].path == second

@@ -9,6 +9,9 @@ login made) and checked against the customer's known_hosts with trust on first u
 - A key that differs from the one on file is NEVER replaced here. It is reported with
   both fingerprints; replacing it is a separate, explicit accept_changed() that the GUI
   asks the person to confirm.
+- The jump host's key is kept in the same file. If it changed, the jump host is reported
+  first, as a JUMP_HOST result that can be accepted the same way, and every device
+  behind it as unreachable.
 
 No device login is ever sent: probe_host_key stops after the key exchange.
 
@@ -37,6 +40,7 @@ from tsunami.core.transports.base import (
 from tsunami.core.transports.hostkeys import HostKeyStore, fingerprint, probe_host_key
 
 MAX_WORKERS = 10  # matches the jump host channel cap (OpenSSH MaxSessions defaults to 10)
+JUMP_HOST = "(jump host)"  # the device name of the jump host's result; never a device slug
 
 
 class Outcome(StrEnum):
@@ -81,7 +85,8 @@ def trust_host_keys(
     jump_factory: Callable[[ConnectTarget, HostKeyStore], Any] | None = None,
 ) -> list[KeyProbe]:
     """Probe every device's host key and record new ones. Results come back in device
-    order; on_result is called as each finishes (from worker threads)."""
+    order, after a JUMP_HOST result if the jump host's key changed; on_result is called
+    as each finishes (from worker threads)."""
     cancel = cancel or threading.Event()
     store = HostKeyStore(paths.known_hosts_file(customer))
     connection = None
@@ -105,8 +110,18 @@ def trust_host_keys(
         try:
             connection = make(target, store)
         except ConnectError as exc:
-            results = [
-                KeyProbe(d.name, d.host, d.port, Outcome.UNREACHABLE, detail=str(exc))
+            results = []
+            detail = str(exc)
+            if isinstance(exc, HostKeyMismatchError):
+                # Probe the jump host itself so its changed key can be accepted like a
+                # device's; until then nothing behind it can be reached.
+                address = DeviceAddress(JUMP_HOST, jump.host, jump.port)
+                probed = _probe_one(store, address, None, connect_timeout, legacy, probe)
+                if probed.outcome == Outcome.CHANGED:
+                    results.append(probed)
+                    detail = "the jump host's key changed; accept it, then start again"
+            results += [
+                KeyProbe(d.name, d.host, d.port, Outcome.UNREACHABLE, detail=detail)
                 for d in devices
             ]
             for result in results:

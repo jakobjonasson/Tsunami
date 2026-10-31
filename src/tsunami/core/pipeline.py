@@ -16,9 +16,9 @@ import threading
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
-from pathlib import Path
 from typing import Any
 
+from tsunami.core.backups import write_backup
 from tsunami.core.catalog import load_catalog
 from tsunami.core.checks import run_check
 from tsunami.core.diff import diff_config
@@ -504,12 +504,14 @@ class DevicePipeline:
         ctx = self.ctx
         running = self.session.running_config()
         self.running_size = len(running.encode("utf-8"))
-        folder = ctx.paths.backups_dir / ctx.play.customer / self.device.name
-        folder.mkdir(parents=True, exist_ok=True)
-        stamp = datetime.now(UTC).strftime("%Y%m%dT%H%M%SZ")
-        path = folder / f"{stamp}_{ctx.job_id}.cfg"
-        path.write_text(running, encoding="utf-8", newline="\n")
-        _prune(folder, ctx.app_settings.backup_retention)
+        path = write_backup(
+            ctx.paths,
+            ctx.play.customer,
+            self.device.name,
+            running,
+            ctx.job_id,
+            keep=ctx.app_settings.backup_retention,
+        )
         return str(path)
 
     def benign(self, family) -> list[str]:
@@ -534,12 +536,6 @@ def changes_device(diff_text: str | None, render_masked: str | None) -> bool:
 
 def _fixed_port(port: str | None) -> str | None:
     return None if port in (None, "ask") else port
-
-
-def _prune(folder: Path, keep: int) -> None:
-    backups = sorted(folder.glob("*.cfg"))
-    for old in backups[: max(0, len(backups) - keep)]:
-        old.unlink(missing_ok=True)
 
 
 _OUTPUT_KEEP = 200_000  # characters of a device's log kept in history

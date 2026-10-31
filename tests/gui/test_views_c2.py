@@ -8,6 +8,7 @@ import pytest
 from PySide6.QtWidgets import QMessageBox
 from tests.gui.conftest import LOGIN_PASSWORD, TACACS_SECRET, all_widget_text
 
+from tsunami.core.issues import TsunamiError
 from tsunami.core.models.settings import load_settings
 from tsunami.core.policy import load_policy
 from tsunami.gui.screens import credentials, settings
@@ -274,3 +275,46 @@ def test_register_in_development_shows_notice(main_window, monkeypatch):
     tab.refresh_claude()
     assert not tab.register_button.isEnabled()
     assert "not found" in tab.claude_notice.text()
+
+
+def test_login_test_goes_through_the_customers_jump_host(
+    cred_view, gui_ctx, qtbot, monkeypatch, notes
+):
+    from tsunami.core.inventory_edit import InventoryEditor
+
+    InventoryEditor(gui_ctx.workspace_path).update_customer(
+        "acme", jump_host={"host": "198.51.100.10", "port": 2200, "credential": "acme-netadmin"}
+    )
+    gui_ctx.reload_workspace(block=True)
+    targets = []
+
+    class Session:
+        def close(self):
+            pass
+
+    class FakeTransport:
+        def __init__(self, paths, settings):
+            pass
+
+        def open(self, target):
+            targets.append(target)
+            return Session()
+
+        def close(self):
+            pass
+
+    monkeypatch.setattr(credentials, "DeviceTransport", FakeTransport)
+    customer, device = cred_view.devices_using("acme-netadmin")[0]
+    assert cred_view.start_test("acme-netadmin", customer, device)
+    qtbot.waitUntil(lambda: cred_view.last_test_result is not None, timeout=5000)
+    [target] = targets
+    assert (target.jump.host, target.jump.port) == ("198.51.100.10", 2200)
+    assert target.jump.credential.username == "netadmin"
+
+    def locked(customer):
+        raise TsunamiError("Tsunami is locked")
+
+    monkeypatch.setattr(gui_ctx, "jump_target", locked)
+    assert not cred_view.start_test("acme-netadmin", customer, device)
+    assert len(targets) == 1  # never tried direct
+    assert any("jump host" in m and level == "error" for m, level in notes)

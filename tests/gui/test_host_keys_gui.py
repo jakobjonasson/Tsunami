@@ -5,7 +5,7 @@ from __future__ import annotations
 import paramiko
 from PySide6.QtWidgets import QMessageBox
 
-from tsunami.core.hostkey_trust import KeyProbe, Outcome
+from tsunami.core.hostkey_trust import JUMP_HOST, KeyProbe, Outcome
 from tsunami.core.issues import TsunamiError
 from tsunami.gui.screens import host_keys
 from tsunami.gui.screens.host_keys import HostKeysTab, open_trust_tab
@@ -110,12 +110,62 @@ def test_a_jump_host_whose_login_is_unavailable_stops_before_probing(
     monkeypatch.setattr(host_keys, "trust_host_keys", fake_trust({}, calls))
     tab = open_trust_tab(gui_ctx, main_window, "acme")
 
-    def locked():
+    def locked(customer):
         raise TsunamiError("Tsunami is locked")
 
-    monkeypatch.setattr(tab, "_jump", locked)
+    monkeypatch.setattr(gui_ctx, "jump_target", locked)
     warned: list[str] = []
     monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: warned.append(text))
     assert not tab.start()
     assert calls == []
     assert warned and "jump host" in warned[0] and "locked" in warned[0]
+
+
+def test_a_changed_jump_host_key_gets_its_own_row_to_accept(
+    qtbot, main_window, gui_ctx, monkeypatch
+):
+    def trust(paths, customer, devices, *, on_result=None, **kw):
+        results = [
+            KeyProbe(
+                JUMP_HOST,
+                "198.51.100.10",
+                22,
+                Outcome.CHANGED,
+                fingerprint="SHA256:new",
+                known_fingerprint="SHA256:old",
+                key=KEY,
+            ),
+            *(
+                KeyProbe(d.name, d.host, d.port, Outcome.UNREACHABLE, detail="accept it")
+                for d in devices
+            ),
+        ]
+        for result in results:
+            on_result(result)
+        return results
+
+    monkeypatch.setattr(host_keys, "trust_host_keys", trust)
+    accepted: list = []
+    monkeypatch.setattr(host_keys, "accept_changed", lambda p, c, r: accepted.append(r.host))
+    tab = open_trust_tab(gui_ctx, main_window, "acme")
+    _run(qtbot, tab)
+    rows = [tab.table.item(r, 0).text() for r in range(tab.table.rowCount())]
+    assert rows == [JUMP_HOST, "sa-as01", "sa-as02"]
+    assert tab.table.item(0, 2).text() == "changed"
+    assert tab.table.item(1, 2).text() == "unreachable"
+    assert tab.progress.text().startswith("2 of 2")  # the jump host is not a device
+
+    asked: list[str] = []
+    monkeypatch.setattr(
+        QMessageBox,
+        "question",
+        lambda parent, title, text, *a, **k: asked.append(text) or QMessageBox.StandardButton.Yes,
+    )
+    tab.table.selectRow(0)
+    assert tab.accept_selected()
+    assert accepted == ["198.51.100.10"]
+    assert asked[0].startswith("The jump host (198.51.100.10)")
+    assert "start again" in tab.table.item(0, 4).text()
+
+    _run(qtbot, tab)  # starting again drops the old jump host row before the new results
+    assert [tab.table.item(r, 0).text() for r in range(tab.table.rowCount())] == rows

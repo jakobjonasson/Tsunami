@@ -20,6 +20,7 @@ from tsunami.core.models.jobs import ALARM_DEVICE_STATUSES
 from tsunami.core.models.settings import AppSettings, save_settings
 from tsunami.core.paths import AppPaths
 from tsunami.core.runner import Runner
+from tsunami.core.transports.base import JumpTarget
 from tsunami.core.workspace import Workspace, load_workspace
 
 
@@ -130,6 +131,17 @@ class AppContext(QObject):
             app_settings=self.settings,
             **kwargs,
         )
+
+    def jump_target(self, customer: str) -> JumpTarget | None:
+        """The customer's jump host with its login, or None if it has none. Every connection
+        to the customer's devices goes through it, a run's or a test's alike. TsunamiError
+        if the login cannot be read (locked or missing)."""
+        ws = self.workspace
+        inv = ws.customers.get(customer) if ws is not None else None
+        jh = inv.config.jump_host if inv is not None else None
+        if jh is None:
+            return None
+        return JumpTarget(str(jh.host), jh.port, self.secrets.get_login(jh.credential))
 
     def make_transport(self) -> Any:
         """A device transport for one run (tests inject one through transport_factory)."""

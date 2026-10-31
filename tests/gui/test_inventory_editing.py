@@ -344,6 +344,7 @@ def test_menu_contents(main_window):
         "Save example CSV…",
         "Discover devices (CDP/LLDP)…",
         "Check for unlearned neighbors",
+        "Back up and check for drift",
         "Trust host keys…",
         "Edit…",
         "View settings",
@@ -354,6 +355,7 @@ def test_menu_contents(main_window):
         "Add site…",
         "Import devices from CSV…",
         "Save example CSV…",
+        "Back up and check for drift",
         "Trust host keys…",
         "Properties…",
         "Delete…",
@@ -428,6 +430,37 @@ def test_filter_keeps_empty_site_visible_when_cleared(main_window, gui_ctx):
     assert _find(view.tree, "acme", "site-empty").isHidden()
     view.filter_box.setText("")
     assert not _find(view.tree, "acme", "site-empty").isHidden()
+
+
+def test_reload_keeps_what_was_collapsed(main_window, gui_ctx):
+    editor = inventory_dialogs.make_editor(gui_ctx)
+    editor.create_customer("globex", name="Globex", credential="acme-netadmin")
+    main_window.refresh_all()
+    tree = _view(main_window).tree
+    _find(tree, "acme", "site-a").setExpanded(False)
+    editor.create_customer("initech", name="Initech", credential="acme-netadmin")
+    editor.create_site("globex", "hq")
+    editor.add_devices(
+        "globex",
+        [
+            {
+                "name": "hq-sw1",
+                "host": "192.0.2.9",
+                "site": "hq",
+                "platform": "ios",
+                "role": "access",
+            }
+        ],
+    )
+    main_window.refresh_all()
+    assert not _find(tree, "acme", "site-a").isExpanded()
+    assert _find(tree, "acme").isExpanded()
+    assert _find(tree, "globex").isExpanded()  # was empty, so it opens
+    assert _find(tree, "globex", "hq").isExpanded()  # new
+    _find(tree, "acme").setExpanded(False)
+    main_window.refresh_all()
+    assert not _find(tree, "acme").isExpanded()
+    assert not _find(tree, "acme", "site-a").isExpanded()
 
 
 def test_new_site_with_login_and_vars(main_window, gui_ctx, dialogs):

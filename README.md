@@ -53,6 +53,7 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 | `core/transports/` | SSH (Netmiko, jump hosts, host-key pinning, `legacy_ssh.py` SHA-1 fallback), console, mock |
 | `core/vault.py`, `secret_store.py` | The Tsunami password and the encrypted Credential Manager store |
 | `core/discovery.py` | Site discovery over CDP and LLDP: the chain run and the neighbor parsers |
+| `core/backups.py`, `drift.py` | Config backups: saving, comparing (redacted), and the drift check |
 | `core/approvals.py`, `history.py`, `migrations/` | Approval flow (ready / no_changes), `history.db` |
 | `core/inventory_edit.py`, `drafts.py`, `pathguard.py` | GUI inventory edits, draft promotion, MCP path checks |
 | `src/tsunami/gui/` | PySide6 GUI: `main_window.py` (VS Code-style shell), `lock.py` (password and auto-lock), `screens/` (one module per view) |

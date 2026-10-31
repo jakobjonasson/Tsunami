@@ -35,12 +35,14 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.backups import (
+    RUN_TAGS,
     BackupEntry,
     BackupError,
     diff_redacted,
     list_backups,
     read_redacted,
 )
+from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
 from tsunami.core.redact import Redactor
 from tsunami.core.vault import VaultLocked
@@ -56,7 +58,8 @@ log = logging.getLogger(__name__)
 LOCKED_TEXT = "Unlock Tsunami to view backups"
 NO_BACKUPS_TEXT = (
     "No backups yet for this device.\n"
-    "Tsunami saves one before each change it applies, while backups are on for the play."
+    "Tsunami saves one before each change it applies, while backups are on for the play, "
+    "and when discovery or a drift check reads the device."
 )
 HINT_TEXT = (
     "Select a backup to view it.\nSelect two, or choose one and press Compare, to see what changed."
@@ -70,6 +73,23 @@ NEWEST = "Newest backup"
 
 _ENTRY_ROLE = Qt.ItemDataRole.UserRole
 _PAGE_MESSAGE, _PAGE_CONTENT, _PAGE_DIFF = 0, 1, 2
+
+
+def secret_redactor(ctx: AppContext) -> Redactor:
+    """A redactor holding every stored secret and login plus the user's extra rules, or
+    TsunamiError naming why it cannot be built. Fails closed: if any stored value cannot
+    be read, there is no redactor."""
+    lock = getattr(ctx, "lock", None)
+    if lock is not None and not lock.unlocked:
+        raise TsunamiError("Tsunami is locked.")
+    try:
+        values = list(ctx.secrets.all_secret_values())
+    except VaultLocked:
+        raise TsunamiError("Tsunami is locked.") from None
+    except Exception:  # noqa: BLE001
+        log.warning("cannot read the credential store to build a redactor", exc_info=True)
+        raise TsunamiError("The credential store cannot be read.") from None
+    return Redactor(values, extra_rules=ctx.settings.extra_rules())
 
 
 def reveal_in_folder(path: Path) -> None:
@@ -224,12 +244,15 @@ class BackupsTab(QWidget):
         taken.setData(_ENTRY_ROLE, entry)
         taken.setToolTip(entry.taken_at.strftime("%Y-%m-%d %H:%M:%S UTC"))
         self.table.setItem(row, 0, taken)
-        link = QPushButton(entry.job_id[:8])
-        link.setObjectName("Link")
-        link.setCursor(Qt.CursorShape.PointingHandCursor)
-        link.setToolTip(f"Open job {entry.job_id}")
-        link.clicked.connect(lambda _=False, j=entry.job_id: self.shell.open_job(j))
-        self.table.setCellWidget(row, 1, link)
+        if entry.job_id in RUN_TAGS:  # taken by discovery or a drift check, not a job
+            self.table.setItem(row, 1, QTableWidgetItem(RUN_TAGS[entry.job_id]))
+        else:
+            link = QPushButton(entry.job_id[:8])
+            link.setObjectName("Link")
+            link.setCursor(Qt.CursorShape.PointingHandCursor)
+            link.setToolTip(f"Open job {entry.job_id}")
+            link.clicked.connect(lambda _=False, j=entry.job_id: self.shell.open_job(j))
+            self.table.setCellWidget(row, 1, link)
         size = QTableWidgetItem(format_size(entry.size))
         size.setTextAlignment(Qt.AlignmentFlag.AlignLeft | Qt.AlignmentFlag.AlignVCenter)
         self.table.setItem(row, 2, size)
@@ -250,17 +273,12 @@ class BackupsTab(QWidget):
         """The customer's redactor, or the text to show instead when it cannot be built.
 
         Fails closed: if any stored value cannot be read, nothing is shown."""
-        lock = getattr(self.ctx, "lock", None)
-        if lock is not None and not lock.unlocked:
-            return LOCKED_TEXT
         try:
-            values = list(self.ctx.secrets.all_secret_values())
-        except VaultLocked:
-            return LOCKED_TEXT
-        except Exception:  # noqa: BLE001
-            log.warning("cannot read the credential store to show a backup", exc_info=True)
+            return secret_redactor(self.ctx)
+        except TsunamiError as exc:
+            if "locked" in str(exc):
+                return LOCKED_TEXT
             return "Backups cannot be shown: the credential store cannot be read."
-        return Redactor(values, extra_rules=self.ctx.settings.extra_rules())
 
     def _say(self, text: str, caption: str = "") -> None:
         self.content_view.clear()
@@ -288,6 +306,8 @@ class BackupsTab(QWidget):
 
     @staticmethod
     def _label(entry: BackupEntry) -> str:
+        if entry.job_id in RUN_TAGS:
+            return f"{_local_time(entry.taken_at)} ({RUN_TAGS[entry.job_id].lower()})"
         return f"{_local_time(entry.taken_at)} (job {entry.job_id[:8]})"
 
     def _show_one(self, entry: BackupEntry) -> None:

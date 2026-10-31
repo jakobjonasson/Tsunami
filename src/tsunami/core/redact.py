@@ -51,6 +51,8 @@ class Redactor:
         self, exact_values: Iterable[str] = (), *, extra_rules: Iterable[LineRule] = ()
     ) -> None:
         drivers = all_drivers()
+        extra_rules = tuple(extra_rules)
+        self._extra_count = len(extra_rules)
         self._rules = (*(r for d in drivers for r in d.secret_rules), *extra_rules)
         self._blocks = tuple(b for d in drivers for b in d.secret_blocks)
         values = {v for v in exact_values if isinstance(v, str) and len(v) >= MIN_EXACT_LENGTH}
@@ -64,6 +66,11 @@ class Redactor:
 
     def __repr__(self) -> str:
         return f"Redactor({len(self._exact)} exact values)"
+
+    def with_values(self, values: Iterable[str]) -> Redactor:
+        """This redactor plus more exact values (the logins a run uses)."""
+        extra = self._rules[len(self._rules) - self._extra_count :] if self._extra_count else ()
+        return Redactor([*self._exact, *values], extra_rules=extra)
 
     def line(self, line: str) -> str:
         """Pattern layer for one line (no block state), then the exact-value layer."""
