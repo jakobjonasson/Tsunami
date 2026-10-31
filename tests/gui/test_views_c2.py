@@ -318,3 +318,46 @@ def test_login_test_goes_through_the_customers_jump_host(
     assert not cred_view.start_test("acme-netadmin", customer, device)
     assert len(targets) == 1  # never tried direct
     assert any("jump host" in m and level == "error" for m, level in notes)
+
+
+def _edit_policy_on_disk(path, old: str, new: str) -> None:
+    import os
+    import time
+
+    path.write_text(path.read_text(encoding="utf-8").replace(old, new), encoding="utf-8")
+    later = time.time_ns() + 2_000_000_000  # a coarse file clock must still see a change
+    os.utime(path, ns=(later, later))
+
+
+def test_an_allowlist_edit_on_disk_survives_saving_other_settings(main_window, gui_ctx):
+    from tsunami.core.policy import save_policy
+
+    save_policy(load_policy(gui_ctx.paths.policy_file), gui_ctx.paths.policy_file)
+    tab = _tab(main_window)  # opened before the edit below
+    _edit_policy_on_disk(gui_ctx.paths.policy_file, "- show version", "- show license summary")
+    tab.retention_spin.setValue(12)
+    assert tab.save_general()  # writes settings.json only
+    policy = load_policy(gui_ctx.paths.policy_file)
+    assert "show license summary" in policy.show_allowlist[settings.PlatformFamily.IOS]
+    ios = tab.allow_lines.edits[settings.PlatformFamily.IOS].toPlainText()
+    assert "show license summary" in ios  # the tab took the file's new list
+    tab.rate_limit.setValue(tab.rate_limit.value() + 1)
+    assert tab.save_mcp()  # and saving the policy keeps it
+    policy = load_policy(gui_ctx.paths.policy_file)
+    assert "show license summary" in policy.show_allowlist[settings.PlatformFamily.IOS]
+
+
+def test_every_save_refuses_to_write_over_a_policy_changed_on_disk(main_window, gui_ctx, notes):
+    from tsunami.core.policy import save_policy
+
+    save_policy(load_policy(gui_ctx.paths.policy_file), gui_ctx.paths.policy_file)
+    tab = _tab(main_window)
+    tab.rate_limit.setValue(tab.rate_limit.value() + 1)  # an unsaved MCP edit
+    _edit_policy_on_disk(gui_ctx.paths.policy_file, "- show version", "- show license summary")
+    assert not tab.save_mcp()
+    assert notes[-1] == (
+        "A settings file changed on disk. Reload it or keep your edits, then save.",
+        "warning",
+    )
+    policy = load_policy(gui_ctx.paths.policy_file)
+    assert "show license summary" in policy.show_allowlist[settings.PlatformFamily.IOS]

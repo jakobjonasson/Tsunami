@@ -569,7 +569,20 @@ class SettingsTab(QWidget):
             return None
 
     def _commit(self, settings_keys: tuple[str, ...], policy: bool) -> bool:
-        """Validate everything first, then write the files; nothing is written if any is bad."""
+        """Validate everything first, then write the files; nothing is written if any is bad.
+
+        Every save path comes through here, so none writes over a file that changed on disk
+        (an edit in VS Code, say) until the person reloads it or keeps their edits."""
+        self.check_external()
+        writing = {"settings"} if settings_keys else set()
+        if policy:
+            writing.add("policy")
+        if any(k in self._conflicts or (k in self._errors and self.is_dirty(k)) for k in writing):
+            self.shell.notify(
+                "A settings file changed on disk. Reload it or keep your edits, then save.",
+                "warning",
+            )
+            return False
         new_settings = new_policy = None
         if settings_keys:
             new_settings = self._validate_settings(settings_keys)
@@ -635,12 +648,6 @@ class SettingsTab(QWidget):
     def save_all(self) -> bool:
         """Write whichever file has unsaved edits; refuses when the file changed on disk."""
         self.check_external()
-        if self._conflicts or any(self.is_dirty(k) for k in self._errors):
-            self.shell.notify(
-                "A settings file changed on disk. Reload it or keep your edits, then save.",
-                "warning",
-            )
-            return False
         keys = SETTINGS_KEYS if self.is_dirty("settings") else ()
         policy = self.is_dirty("policy")
         if not keys and not policy:

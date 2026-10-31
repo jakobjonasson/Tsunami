@@ -850,7 +850,7 @@ Lab exception: if the customer has `lab: true` and policy says `apply: lab_only`
 
 ### Policy file
 
-The policy file is `%APPDATA%\Tsunami\mcp-policy.yml`. It is edited only through the GUI Settings screen, and the MCP server has no write path to it.
+The policy file is `%APPDATA%\Tsunami\mcp-policy.yml`. It is edited in the GUI Settings screen or by hand (Edit allowlists in VS Code opens it). Settings reloads the file when it is shown or the app regains focus, and every save refuses to write over a change made on disk until the person reloads or keeps their edits, so neither editor silently loses the other's change. The MCP server has no write path to it.
 
 ```yaml
 enabled: true

@@ -1,6 +1,7 @@
 # Tsunami MCP policy (design.md, MCP interface: Policy file).
-# Copied to %APPDATA%\Tsunami\mcp-policy.yml on first run. Edit it only through the GUI
-# Settings screen; the MCP server has no write path to it. Re-read on every tool call.
+# Copied to %APPDATA%\Tsunami\mcp-policy.yml on first run. Edit it here or in the GUI
+# Settings screen: Settings reloads this file when shown and asks before saving over a
+# change made here. The MCP server has no write path to it. Re-read on every tool call.
 enabled: false             # MCP stays off until you turn it on
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
