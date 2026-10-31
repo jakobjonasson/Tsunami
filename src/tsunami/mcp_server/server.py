@@ -151,6 +151,13 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=writes,
+        description="Add a custom role (device type) that add_devices can then use, with optional role variables (no secrets: keys like password, secret or key are refused). role: lowercase letters, digits, dashes; built-in types (core, distribution, access, wlc, ap, router) cannot be redefined. Only when Tsunami Settings allow inventory additions. Add only.",
+    )
+    def add_role(role: str, vars: dict[str, Any] | None = None) -> dict[str, Any]:  # noqa: A002
+        return tools.add_role(role, vars)
+
+    @server.tool(
+        annotations=writes,
         description="Add devices to a customer, checked like a CSV import: each device has name, host, site, role (device type: core, distribution, access, wlc, ap, router or a custom role) and platform (ios, ios-xe, aos-cx, aos-s), optionally model (catalog id), port and credential (only a login this customer already uses). Returns a status per row; rows with errors are left out, rows already present are skipped. create_sites adds missing sites. Only when Tsunami Settings allow inventory additions. You cannot connect to a device you added until a person trusts its host key in the GUI.",
     )
     def add_devices(

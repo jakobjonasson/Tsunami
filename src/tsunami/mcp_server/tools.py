@@ -41,6 +41,7 @@ from tsunami.core.inventory_import import (
 from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.logins import customer_logins, referenced_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
+from tsunami.core.models.inventory import DEVICE_TYPES
 from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
 from tsunami.core.models.policy import has_control_chars
@@ -87,6 +88,7 @@ TOOL_NAMES = frozenset(
         "cancel_job",
         "add_customer",
         "add_site",
+        "add_role",
         "add_devices",
     }
 )
@@ -429,6 +431,33 @@ class Tools:
 
         args = {"customer": customer, "site": site, "vars": vars}
         return self.app.call("add_site", 0, args, run, customer=customer)
+
+    def add_role(self, role: str, vars: dict[str, Any] | None = None):  # noqa: A002
+        def run(policy):
+            ws = self.app.workspace()
+            editor = self._inventory_editor(policy, ws)
+            if not SLUG_RE.fullmatch(role or ""):
+                raise ToolRefused("role must be lowercase letters, digits and dashes")
+            if role in DEVICE_TYPES:
+                raise ToolRefused(f"role {role!r} is a built-in device type and cannot be redefined")
+            if role in ws.roles:
+                raise ToolRefused(f"role {role!r} already exists")
+            values = {} if vars is None else vars
+            if not isinstance(values, dict):
+                raise ToolRefused("vars must be a mapping of variable names to values")
+            secretish = sorted(str(k) for k in values if _SECRET_KEY.search(str(k)))
+            if secretish:
+                raise ToolRefused(
+                    "vars never hold secrets; leave out " + ", ".join(repr(k) for k in secretish)
+                )
+            try:
+                editor.create_role(role, vars_text=_yaml_text(values))
+            except TsunamiError as exc:
+                raise ToolRefused(str(exc)) from None
+            self.app.inventory_changed()
+            return {"role": role, "created": True}
+
+        return self.app.call("add_role", 0, {"role": role, "vars": vars}, run)
 
     def add_devices(self, customer: str, devices: list[dict[str, Any]], create_sites: bool = False):
         def run(policy):

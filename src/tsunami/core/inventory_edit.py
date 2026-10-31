@@ -178,6 +178,19 @@ class InventoryEditor:
         self._set_site_credential(customer, site, None)
         self.recycle(path)
 
+    # -- roles --------------------------------------------------------------------------
+
+    def create_role(self, role: str, *, vars_text: str = "") -> None:
+        """Add inventory/roles/<role>.yml. Built-in device types cannot be redefined."""
+        if role in DEVICE_TYPES:
+            raise InventoryEditError(f"role {role!r} is a built-in device type")
+        path = self.root / ROLES / f"{_slug(role, 'role')}.yml"
+        if path.exists():
+            raise InventoryEditError(f"role {role!r} already exists")
+        text = self._checked_vars_text(vars_text, path)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(text, encoding="utf-8", newline="\n")
+
     # -- devices ------------------------------------------------------------------------
 
     def add_device(self, customer: str, fields: Mapping[str, Any]) -> None:

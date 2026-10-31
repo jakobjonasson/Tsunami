@@ -144,7 +144,7 @@ The workspace is a plain folder, normally a git repo, that the app points at. Ev
 
 - Slugs (customer folders, site files, role files, device names, snippet names) match `^[a-z0-9][a-z0-9-]*$`. Customer slugs appear in credential and secret names.
 - YAML files use `.yml`. Snippets use `.j2`.
-- `drafts/` is the only place the MCP server can write plays and snippets. A draft becomes live only when a person promotes it in the GUI, which moves it to the matching path under `plays/` or `snippets/`. The one exception is inventory additions (`add_customer`, `add_site`, `add_devices`), off unless the policy sets `inventory_edits: true`; they add and never edit or delete (see MCP interface: Tools).
+- `drafts/` is the only place the MCP server can write plays and snippets. A draft becomes live only when a person promotes it in the GUI, which moves it to the matching path under `plays/` or `snippets/`. The one exception is inventory additions (`add_customer`, `add_site`, `add_role`, `add_devices`), off unless the policy sets `inventory_edits: true`; they add and never edit or delete (see MCP interface: Tools).
 - `workspace.yml` holds the workspace name, `schema_version`, default platform, and default batch size. It holds nothing that affects MCP permissions.
 - The app refuses a workspace whose `schema_version` is newer than it understands, and offers a migration for older ones.
 
@@ -820,6 +820,7 @@ A play was the other option. It was not chosen because plays render and push tem
 |`delete_draft(path)`|0|Confirmation. Only under `drafts/`|
 |`add_customer(slug, name, credential)`|0|Confirmation. Policy `inventory_edits` only. Never a lab customer; the login name must not belong to another customer|
 |`add_site(customer, site, vars?)`|0|Confirmation. Policy `inventory_edits` only. Vars keys that look secret are refused|
+|`add_role(role, vars?)`|0|Confirmation. Creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Policy `inventory_edits` only. Slug name; built-in types and existing roles are refused; secret-looking vars keys are refused|
 |`add_devices(customer, devices, create_sites?)`|0|Status per row, checked as a CSV import. Policy `inventory_edits` only. A device may name only a login its customer already uses|
 |`check(path, targets?, prompts)`|1|Job id. Results hold per-device diffs|
 |`compliance(path)`|1|Job id. Results hold missing and extra lines|
@@ -1464,3 +1465,4 @@ Changes since the original draft, with reasons:
   - A customer allows the logins it logs in with (not its jump host's) plus a new `push_logins` list in `customer.yml`, set only in the GUI. Every refusal reads the same, so names cannot be probed. `core/logins.py` holds these sets; MCP's `add_customer` and `add_devices` keep their narrower meaning of a login in use.
   - Every login a customer may push joins the job's exact-value layer in every mode, not only the ones a play uses in apply mode. The username stays out, as for connection logins, and is shown over MCP.
   - Credentials lists `push_logins` under where a login is used, and draft reviews highlight `login()` as they do `secret()`.
+- MCP `add_role(role, vars?)` (tier 0, `inventory_edits`, add only) creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Built-in device types cannot be redefined; secret-looking vars keys are refused as in `add_site`. Chosen over a `create_roles` option on `add_devices` to keep each tool to one kind of write.
