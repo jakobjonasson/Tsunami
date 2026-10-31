@@ -2,4 +2,4 @@
 
 # Single source of the version. Read by hatchling at build time; not looked up through
 # importlib.metadata at runtime, because frozen builds lose package metadata.
-__version__ = "0.5.2"
+__version__ = "0.5.3"

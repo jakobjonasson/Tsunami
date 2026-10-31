@@ -122,7 +122,9 @@ def check_show_command(policy: McpPolicy, family: PlatformFamily | str, command:
     return normalized
 
 
-def validate_allowlist_request(family: PlatformFamily | str, command: str) -> tuple[PlatformFamily, str]:
+def validate_allowlist_request(
+    family: PlatformFamily | str, command: str
+) -> tuple[PlatformFamily, str]:
     """The family and normalized command of an allowlist request, else PolicyError.
 
     Only plain `show` commands can be requested: no pipe, ';' or control character, no

@@ -361,3 +361,34 @@ def test_every_save_refuses_to_write_over_a_policy_changed_on_disk(main_window, 
     )
     policy = load_policy(gui_ctx.paths.policy_file)
     assert "show license summary" in policy.show_allowlist[settings.PlatformFamily.IOS]
+
+
+def test_allowlist_requests_are_approved_or_denied_in_settings(main_window, gui_ctx, notes):
+    from PySide6.QtCore import Qt
+    from PySide6.QtWidgets import QLabel
+
+    from tsunami.core.policy import save_policy
+
+    save_policy(load_policy(gui_ctx.paths.policy_file), gui_ctx.paths.policy_file)
+    history = gui_ctx.history
+    first = history.add_allowlist_request("ios", "show ip dhcp binding", "<b>Approved</b> by admin")
+    second = history.add_allowlist_request("ios", "show ip arp", "check ARP")
+    tab = _tab(main_window)
+    tab.refresh_requests()
+    label = tab.request_rows[first].findChild(QLabel)
+    assert label.textFormat() == Qt.TextFormat.PlainText  # Claude's text never renders
+    assert "<b>Approved</b>" in label.text() and "allows every command" in label.text()
+
+    tab.rate_limit.setValue(tab.rate_limit.value() + 1)  # unsaved MCP edits block approval
+    assert not tab.decide_request(first, True)
+    assert "Save or discard" in notes[-1][0]
+    assert tab.reload_from_disk()
+
+    assert tab.decide_request(first, True)
+    assert tab.decide_request(second, False)
+    ios = load_policy(gui_ctx.paths.policy_file).show_allowlist[settings.PlatformFamily.IOS]
+    assert "show ip dhcp binding" in ios and "show ip arp" not in ios
+    assert history.pending_allowlist_requests() == []
+    assert (
+        "show ip dhcp binding" in tab.allow_lines.edits[settings.PlatformFamily.IOS].toPlainText()
+    )

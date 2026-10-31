@@ -29,7 +29,7 @@ By hand: `uv sync --locked --group build`, then `uv run pyinstaller packaging/ts
 ```powershell
 dist\Tsunami\tsunami-mcp.exe --selftest
 $p = Start-Process dist\Tsunami\tsunami.exe --selftest -Wait -PassThru; $p.ExitCode   # windowed: exit code only
-uv run python packaging/smoke_mcp.py dist\Tsunami\tsunami-mcp.exe                      # expects 21 tools
+uv run python packaging/smoke_mcp.py dist\Tsunami\tsunami-mcp.exe                      # expects every tool in TOOL_NAMES
 ```
 
 Launch check for the GUI: set `QT_QPA_PLATFORM=offscreen`, start `tsunami.exe`, wait a few seconds, confirm it is still running and `%LOCALAPPDATA%\Tsunami\logs\app.log` has no traceback.

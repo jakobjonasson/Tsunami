@@ -893,7 +893,12 @@ class SettingsTab(QWidget):
             row = QWidget()
             h = QHBoxLayout(row)
             h.setContentsMargins(0, 0, 0, 0)
-            label = QLabel(f"[{req['family']}] {req['command']}: {req['reason']}")
+            label = QLabel(
+                f"[{req['family']}] {req['command']}  (allows every command starting with "
+                f"it)\nClaude's reason: {req['reason']}"
+            )
+            # Claude wrote the reason: never let it render as rich text in an approval prompt.
+            label.setTextFormat(Qt.TextFormat.PlainText)
             label.setWordWrap(True)
             label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
             h.addWidget(label, 1)
@@ -920,9 +925,7 @@ class SettingsTab(QWidget):
                 )
                 return False
             try:
-                added = add_allowlist_entry(
-                    self._path("policy"), req["family"], req["command"]
-                )
+                added = add_allowlist_entry(self._path("policy"), req["family"], req["command"])
                 parsed = load_policy(self._path("policy"))
             except (TsunamiError, OSError) as exc:
                 self.shell.notify(f"The policy was not saved: {exc}", "error")

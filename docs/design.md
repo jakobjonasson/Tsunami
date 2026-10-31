@@ -821,7 +821,7 @@ A play was the other option. It was not chosen because plays render and push tem
 |`add_customer(slug, name, credential)`|0|Confirmation. Policy `inventory_edits` only. Never a lab customer; the login name must not belong to another customer|
 |`add_site(customer, site, vars?)`|0|Confirmation. Policy `inventory_edits` only. Vars keys that look secret are refused|
 |`add_role(role, vars?)`|0|Confirmation. Creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Policy `inventory_edits` only. Slug name; built-in types and existing roles are refused; secret-looking vars keys are refused|
-|`add_devices(customer, devices, create_sites?)`|0|Status per row, checked as a CSV import. Policy `inventory_edits` only. A device may name only a login its customer already uses|
+|`add_devices(customer, devices, create_sites?, create_roles?)`|0|Status per row, checked as a CSV import. Policy `inventory_edits` only. A device may name only a login its customer already uses `create_roles` creates the custom roles the rows name, so a batch with a new role succeeds in one call; a role is kept only if a row using it is imported, and built-in types are never redefined.|
 |`check(path, targets?, prompts)`|1|Job id. Results hold per-device diffs|
 |`compliance(path)`|1|Job id. Results hold missing and extra lines|
 |`show(customer, device, command)`|1|Redacted output. Allowlisted commands only|
@@ -1466,7 +1466,12 @@ Changes since the original draft, with reasons:
   - A customer allows the logins it logs in with (not its jump host's) plus a new `push_logins` list in `customer.yml`, set only in the GUI. Every refusal reads the same, so names cannot be probed. `core/logins.py` holds these sets; MCP's `add_customer` and `add_devices` keep their narrower meaning of a login in use.
   - Every login a customer may push joins the job's exact-value layer in every mode, not only the ones a play uses in apply mode. The username stays out, as for connection logins, and is shown over MCP.
   - Credentials lists `push_logins` under where a login is used, and draft reviews highlight `login()` as they do `secret()`.
-- MCP `add_role(role, vars?)` (tier 0, `inventory_edits`, add only) creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Built-in device types cannot be redefined; secret-looking vars keys are refused as in `add_site`. Chosen over a `create_roles` option on `add_devices` to keep each tool to one kind of write.
-- Show allowlist requests:
-  - Default ios allowlist gains `show switch`, `show power inline`, `show license summary`, `show vrrp brief` and `show mac address-table`. Only new policy files get them; an existing `mcp-policy.yml` keeps its list.
-  - New tool `request_allowlist_addition` and migration `005_allowlist_requests.sql`. The policy changes only when a person approves in Settings.
+- 0.5.3, MCP inventory roles and show allowlist requests (issues 1 and 3):
+  - MCP `add_role(role, vars?)` (tier 0, `inventory_edits`, add only) creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Built-in device types cannot be redefined; secret-looking vars keys are refused as in `add_site`. Chosen over a `create_roles` option on `add_devices` to keep each tool to one kind of write.
+  - Show allowlist requests:
+    - Default ios allowlist gains `show switch`, `show power inline`, `show license summary`, `show vrrp brief` and `show mac address-table`. Only new policy files get them; an existing `mcp-policy.yml` keeps its list.
+    - New tool `request_allowlist_addition` and migration `005_allowlist_requests.sql`. The policy changes only when a person approves in Settings.
+  - `add_devices` gains `create_roles`, so a batch with a new custom role succeeds in one call.
+  - Settings shows each allowlist request as plain text (Claude writes the reason) and says that approving allows every command starting with it.
+  - Tests and the packaging smoke test compare the registered tools with `TOOL_NAMES` instead of a hard-coded count.
+  - Every Settings save path refuses to write over a policy changed on disk; the policy file's header no longer says to edit it only in the GUI.

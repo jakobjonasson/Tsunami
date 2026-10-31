@@ -49,6 +49,7 @@ Built after Phase 6 at the user's request, each with tests and a design.md revis
 - GUI polish: teal-blue accent, welcome page, app icon in title bars and tray, refresh button and F5 on every side bar view.
 - 0.5.1: example CSV for device import; site discovery over CDP/LLDP and Check for unlearned neighbors (`core/discovery.py`, `gui/screens/discovery.py`), checked end to end against an IOL chain lab in CML; MCP `add_customer`, `add_site` and `add_devices` behind the policy switch `inventory_edits`; Edit allowlists in VS Code in Settings; discovery saves each device's config, and Back up and check for drift on a site or customer (`core/drift.py`, `gui/screens/drift.py`) saves first backups and reports drift since the newest. Discovery's AOS-CX and AOS-S parsers still need real output (the hardware testing in Open items, 1).
 - 0.5.2: `login()` and the `login` prompt type push a saved login from a play (`core/logins.py`, renderer, runner); `push_logins` in `customer.yml` and the customer dialog. Still to do: run the rewritten `tb-add-admin2.yml` on the CML test bed.
+- 0.5.3: MCP `add_role` and `add_devices(create_roles=True)` (issue 1); five more default ios show commands and `request_allowlist_addition`, approved in Settings (issue 3).
 
 ---
 

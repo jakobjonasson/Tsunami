@@ -23,7 +23,7 @@ from tsunami.core.secret_store import KeyringSecretStore, LoginCredential
 from tsunami.core.transports.mock import MockTransport
 from tsunami.core.workspace import load_workspace
 from tsunami.mcp_server.enforcement import McpApp, ToolRefused
-from tsunami.mcp_server.tools import Tools
+from tsunami.mcp_server.tools import TOOL_NAMES, Tools
 
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "workspace"
 PLAY = "plays/push/add-vlan.yml"
@@ -306,7 +306,14 @@ def test_allowlist_request_is_queued_not_applied(env):
 
 @pytest.mark.parametrize(
     "command",
-    ["configure terminal", "write memory", "show ip route | tee x", "show a; reload", "show", "sh run"],
+    [
+        "configure terminal",
+        "write memory",
+        "show ip route | tee x",
+        "show a; reload",
+        "show",
+        "sh run",
+    ],
 )
 def test_allowlist_request_refuses_non_show(env, command):
     with pytest.raises(ToolRefused):
@@ -442,7 +449,7 @@ def test_server_registers_tools_and_calls_them(env):
 
     server = build_server(env.app)
     tools = {t.name: t for t in asyncio.run(server.list_tools())}
-    assert len(tools) == 21
+    assert set(tools) == TOOL_NAMES  # every tool is registered, and nothing else
     assert tools["add_devices"].annotations.read_only_hint is False
     assert tools["show"].annotations.read_only_hint is True
     assert tools["request_run"].annotations.read_only_hint is False
@@ -861,3 +868,33 @@ def test_a_login_outside_the_customer_is_refused_alike(login_env, name):
     message = str(caught.value)
     assert f"login {name!r} is not available to this customer" in message
     assert "customer 'lab'" not in message and "blocked" not in message  # nor who has it
+
+
+def test_add_devices_can_create_a_new_role_in_the_same_call(env):
+    env.policy(inventory_edits=True)
+    rows = [
+        {**NEW_DEVICE, "role": "plant-core"},
+        {**NEW_DEVICE, "name": "sa-as10", "platform": "junos", "role": "plant-edge"},
+    ]
+    result = env.tools.add_devices("acme", rows, create_roles=True)
+    assert result["imported"] == 1
+    assert result["roles_created"] == ["plant-core"]  # plant-edge's only row failed
+    roles = env.root / "inventory/roles"
+    assert (roles / "plant-core.yml").is_file()
+    assert not (roles / "plant-edge.yml").exists()
+    assert load_workspace(env.root).customers["acme"].device("sa-as09").role == "plant-core"
+
+
+def test_add_devices_without_create_roles_refuses_an_unknown_role(env):
+    env.policy(inventory_edits=True)
+    result = env.tools.add_devices("acme", [{**NEW_DEVICE, "role": "plant-core"}])
+    assert result["imported"] == 0 and result["roles_created"] == []
+    assert "unknown type" in result["rows"][0]["reason"]
+    assert not (env.root / "inventory/roles/plant-core.yml").exists()
+
+
+def test_create_roles_never_redefines_a_built_in_type(env):
+    env.policy(inventory_edits=True)
+    result = env.tools.add_devices("acme", [{**NEW_DEVICE, "role": "core"}], create_roles=True)
+    assert result["roles_created"] == []
+    assert not (env.root / "inventory/roles/core.yml").exists()

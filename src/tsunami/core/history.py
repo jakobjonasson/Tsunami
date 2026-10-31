@@ -551,7 +551,8 @@ class History:
         """Queue a request, or return the id of an identical pending one."""
         with self._tx() as conn:
             row = conn.execute(
-                "SELECT id FROM allowlist_requests WHERE status='pending' AND family=? AND command=?",
+                "SELECT id FROM allowlist_requests"
+                " WHERE status='pending' AND family=? AND command=?",
                 (family, command),
             ).fetchone()
             if row:

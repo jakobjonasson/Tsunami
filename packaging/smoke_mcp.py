@@ -15,7 +15,10 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-EXPECTED_TOOLS = 21
+from tsunami.mcp_server.tools import TOOL_NAMES
+
+# The frozen server must list exactly the tools the source defines; never a hard-coded count.
+EXPECTED_TOOLS = len(TOOL_NAMES)
 DEFAULT_EXE = Path(__file__).parents[1] / "dist" / "Tsunami" / "tsunami-mcp.exe"
 
 
@@ -33,8 +36,9 @@ async def smoke(exe: Path) -> int:
                 result = await session.list_tools()
                 names = sorted(tool.name for tool in result.tools)
     print(f"{len(names)} tools: {', '.join(names)}")
-    if len(names) != EXPECTED_TOOLS:
-        print(f"expected {EXPECTED_TOOLS} tools", file=sys.stderr)
+    if set(names) != TOOL_NAMES:
+        missing, extra = sorted(TOOL_NAMES - set(names)), sorted(set(names) - TOOL_NAMES)
+        print(f"expected {EXPECTED_TOOLS} tools; missing {missing}, extra {extra}", file=sys.stderr)
         return 1
     print("smoke ok")
     return 0

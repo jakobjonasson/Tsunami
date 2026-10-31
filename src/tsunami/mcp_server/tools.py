@@ -440,7 +440,9 @@ class Tools:
             if not SLUG_RE.fullmatch(role or ""):
                 raise ToolRefused("role must be lowercase letters, digits and dashes")
             if role in DEVICE_TYPES:
-                raise ToolRefused(f"role {role!r} is a built-in device type and cannot be redefined")
+                raise ToolRefused(
+                    f"role {role!r} is a built-in device type and cannot be redefined"
+                )
             if role in ws.roles:
                 raise ToolRefused(f"role {role!r} already exists")
             values = {} if vars is None else vars
@@ -460,7 +462,13 @@ class Tools:
 
         return self.app.call("add_role", 0, {"role": role, "vars": vars}, run)
 
-    def add_devices(self, customer: str, devices: list[dict[str, Any]], create_sites: bool = False):
+    def add_devices(
+        self,
+        customer: str,
+        devices: list[dict[str, Any]],
+        create_sites: bool = False,
+        create_roles: bool = False,
+    ):
         def run(policy):
             ws = self.app.workspace()
             editor = self._inventory_editor(policy, ws)
@@ -469,22 +477,37 @@ class Tools:
                 raise ToolRefused("devices must be a non-empty list")
             if len(devices) > MAX_DEVICE_ROWS:
                 raise ToolRefused(f"at most {MAX_DEVICE_ROWS} devices per call")
-            plan = _device_plan(ws.root, cust, devices, bool(create_sites))
+            # create_roles: custom roles the rows name are created first, so the rows
+            # validate, and removed again if no row that uses them is imported.
+            new_roles = _new_roles(devices, ws) if create_roles else []
+            for role in new_roles:
+                try:
+                    editor.create_role(role)
+                except TsunamiError as exc:
+                    raise ToolRefused(str(exc)) from None
             try:
+                plan = _device_plan(ws.root, cust, devices, bool(create_sites))
                 summary = apply_import(ws.root, customer, plan, editor=editor)
-            except TsunamiError as exc:
+            except (TsunamiError, ToolRefused) as exc:
+                _remove_roles(ws.root, new_roles)
+                if isinstance(exc, ToolRefused):
+                    raise
                 raise ToolRefused(str(exc)) from None
+            used = {r.fields.get("role") for r in plan.rows if r.importable}
+            _remove_roles(ws.root, [r for r in new_roles if r not in used])
+            new_roles = [r for r in new_roles if r in used]
             for row in plan.rows:
                 if row.importable:
                     self.app.history.record_mcp_device(
                         customer, row.fields["name"], str(row.fields["host"])
                     )
-            if summary.imported:
+            if summary.imported or new_roles:
                 self.app.inventory_changed()
             return {
                 "customer": customer,
                 "imported": summary.imported,
                 "sites_created": summary.sites_created,
+                "roles_created": new_roles,
                 "rows": [
                     {
                         "row": r.number,
@@ -499,7 +522,12 @@ class Tools:
                 "show, check or request_run can reach them.",
             }
 
-        args = {"customer": customer, "devices": devices, "create_sites": create_sites}
+        args = {
+            "customer": customer,
+            "devices": devices,
+            "create_sites": create_sites,
+            "create_roles": create_roles,
+        }
         return self.app.call("add_devices", 0, args, run, customer=customer)
 
     def _inventory_editor(self, policy, ws) -> InventoryEditor:
@@ -990,6 +1018,18 @@ def _yaml_text(values: dict[str, Any]) -> str:
     yaml.default_flow_style = False
     yaml.dump(values, out)
     return out.getvalue()
+
+
+def _new_roles(devices: list[Any], ws: Any) -> list[str]:
+    """Custom roles the rows name that do not exist yet: valid slugs, never a built-in."""
+    named = {str(d.get("role", d.get("type")) or "") for d in devices if isinstance(d, dict)}
+    return sorted(r for r in named - set(ws.roles) - set(DEVICE_TYPES) if SLUG_RE.fullmatch(r))
+
+
+def _remove_roles(root: Path, roles: list[str]) -> None:
+    """Undo roles this call created (they are new files, so nothing else uses them)."""
+    for role in roles:
+        (root / "inventory" / "roles" / f"{role}.yml").unlink(missing_ok=True)
 
 
 def _device_plan(root: Path, cust: Any, devices: list[Any], create_sites: bool) -> ImportPlan:

@@ -160,12 +160,15 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=writes,
-        description="Add devices to a customer, checked like a CSV import: each device has name, host, site, role (device type: core, distribution, access, wlc, ap, router or a custom role) and platform (ios, ios-xe, aos-cx, aos-s), optionally model (catalog id), port and credential (only a login this customer already uses). Returns a status per row; rows with errors are left out, rows already present are skipped. create_sites adds missing sites. Only when Tsunami Settings allow inventory additions. You cannot connect to a device you added until a person trusts its host key in the GUI.",
+        description="Add devices to a customer, checked like a CSV import: each device has name, host, site, role (device type: core, distribution, access, wlc, ap, router or a custom role) and platform (ios, ios-xe, aos-cx, aos-s), optionally model (catalog id), port and credential (only a login this customer already uses). Returns a status per row; rows with errors are left out, rows already present are skipped. create_sites adds missing sites; create_roles adds missing custom roles (built-in types cannot be redefined), so a batch using a new role succeeds in one call. Only when Tsunami Settings allow inventory additions. You cannot connect to a device you added until a person trusts its host key in the GUI.",
     )
     def add_devices(
-        customer: str, devices: list[dict[str, Any]], create_sites: bool = False
+        customer: str,
+        devices: list[dict[str, Any]],
+        create_sites: bool = False,
+        create_roles: bool = False,
     ) -> dict[str, Any]:
-        return tools.add_devices(customer, devices, create_sites)
+        return tools.add_devices(customer, devices, create_sites, create_roles)
 
     @server.tool(
         annotations=read_only,

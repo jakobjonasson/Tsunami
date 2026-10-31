@@ -35,7 +35,10 @@
 - CI runs on 2-vCPU Windows runners: timing assertions need slack (see `tests/gui/test_responsiveness.py`).
 - Tests use an in-memory keyring and temp `%APPDATA%`/`%LOCALAPPDATA%` (`tests/conftest.py`); never touch the real Credential Manager or Recycle Bin from a test. Vault tests lower the scrypt cost.
 - Never write a Credential Manager entry with enterprise persistence (keyring's default), not even in a test or a scratch script: Windows then brings back stale enterprise entries over newer local-machine ones with the same target, and the local one is lost. Use `bootstrap.configure_keyring()` or set `persist = "local machine"`; the test guard refuses enterprise writes.
-- `history.db` schema changes go in a new numbered file in `core/migrations/`, never an edit to an old one.
+- `history.db` schema changes go in a new numbered file in `core/migrations/`, never an edit to an old one. Parallel branches can pick the same number: before adding one, check `git ls-remote origin 'claude/*'` and open PRs, and say in the PR that it may need renumbering at merge.
+- A new MCP tool goes in `TOOL_NAMES` (`mcp_server/tools.py`) and `server.py`. Tests and `packaging/smoke_mcp.py` compare the registered tools with `TOOL_NAMES`; never write a tool count anywhere.
+- Text that Claude, a device or a file wrote is shown with `setTextFormat(Qt.TextFormat.PlainText)`. A `QLabel` renders anything that looks like HTML by default, which lets that text restyle an approval prompt or add links.
+- Lines are at most 100 characters. `ruff format` does not split long strings or signatures; split them by hand, then run `uv run ruff check` and `uv run ruff format --check`.
 - Paramiko 5 has no SHA-1; `core/transports/legacy_ssh.py` adds it back as a fallback. Netmiko gets the transport through `connection_class()` in `netmiko_session.py`.
 
 ## Subagent work
@@ -54,7 +57,19 @@ When running in GitHub Actions (not a local session):
 - Work on a branch and open a pull request. Never push to main.
 - The runner is Linux with no GUI, no Windows, no credential vault, no CML lab
   and no network devices. Do not claim anything was tested that needs those.
-- Run whatever tests can run on Linux and say in the PR which ones ran.
+- uv is installed and allowed. Before finishing, run `uv run ruff check`,
+  `uv run ruff format --check` and `uv run pytest`, and paste the summary lines
+  into the PR. Name any failure that comes from Linux (the named pipe, Windows
+  paths) rather than the change. Never hand over a branch that has not been
+  linted and tested.
+- Meet every acceptance criterion in the issue. If one is left out, say so at
+  the top of the PR as not met, with the reason; don't offer it as a choice
+  further down.
+- A GUI change gets a test under `tests/gui/` (offscreen), and the Settings or
+  approval prompts it adds are tested with hostile text (HTML in a reason).
+- Revision notes go under one entry for the release (`- 0.x.y, what it is:`),
+  not as loose bullets. Leave `__version__` alone: the version is set when the
+  batch ships.
 - If the change needs manual verification (GUI flows, the frozen Windows
   build, Credential Manager, the named pipe, or a run against the CML test
   bed), add a "Manual verification" section to the PR description with exact

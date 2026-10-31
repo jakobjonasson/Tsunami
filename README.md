@@ -57,7 +57,7 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 | `core/approvals.py`, `history.py`, `migrations/` | Approval flow (ready / no_changes), `history.db` |
 | `core/inventory_edit.py`, `drafts.py`, `pathguard.py` | GUI inventory edits, draft promotion, MCP path checks |
 | `src/tsunami/gui/` | PySide6 GUI: `main_window.py` (VS Code-style shell), `lock.py` (password and auto-lock), `screens/` (one module per view) |
-| `src/tsunami/mcp_server/` | `tools.py` (the 21 tools), `enforcement.py` (policy, redaction, audit), `bridge.py` (the relay), `server.py` |
+| `src/tsunami/mcp_server/` | `tools.py` (the tools, listed in `TOOL_NAMES`), `enforcement.py` (policy, redaction, audit), `bridge.py` (the relay), `server.py` |
 | `tests/unit`, `tests/gui` | Unit and pytest-qt tests; `test_mcp_leaks.py` is a blind secret-leak suite |
 | `packaging/` | PyInstaller spec, Inno Setup script, `build.ps1`, `sign.ps1` |
 
