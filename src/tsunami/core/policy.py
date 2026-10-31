@@ -120,3 +120,40 @@ def check_show_command(policy: McpPolicy, family: PlatformFamily | str, command:
             raise PolicyError(f"pipe modifier '{modifier[0]}' is not allowed for {fam.value}")
         normalized += " | " + " ".join(modifier)
     return normalized
+
+
+def validate_allowlist_request(family: PlatformFamily | str, command: str) -> tuple[PlatformFamily, str]:
+    """The family and normalized command of an allowlist request, else PolicyError.
+
+    Only plain `show` commands can be requested: no pipe, ';' or control character, no
+    abbreviation. Everything else is refused outright, whatever the reason given.
+    """
+    try:
+        fam = PlatformFamily(family)
+    except ValueError:
+        raise PolicyError(f"unknown platform family: {family!s}") from None
+    if not isinstance(command, str) or not command.strip():
+        raise PolicyError("empty command")
+    if "|" in command or ";" in command or has_control_chars(command):
+        raise PolicyError("a request may not contain '|', ';', a line break or a control character")
+    normalized = " ".join(command.split())
+    tokens = normalized.split(" ")
+    if tokens[0].lower() != "show" or len(tokens) < 2:
+        raise PolicyError("only 'show' commands can be added to the allowlist")
+    return fam, normalized.lower()
+
+
+def add_allowlist_entry(path: Path, family: PlatformFamily | str, command: str) -> bool:
+    """Add a show command to the policy file (a person approved it). False if present.
+
+    Only the GUI calls this; the MCP server has no path to it.
+    """
+    fam, normalized = validate_allowlist_request(family, command)
+    policy = load_policy(path)
+    entries = list(policy.show_allowlist.get(fam, []))
+    if normalized in (e.lower() for e in entries):
+        return False
+    entries.append(normalized)
+    policy.show_allowlist[fam] = entries
+    save_policy(McpPolicy.model_validate(policy.model_dump()), path)
+    return True

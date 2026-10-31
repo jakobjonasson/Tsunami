@@ -280,6 +280,57 @@ def test_show_redacts_and_refuses_new_host_keys(env):
     assert env.recorder.targets[-1].allow_new_host_key is False
 
 
+def test_new_ios_defaults_are_allowed(env):
+    for command in (
+        "show switch",
+        "show power inline",
+        "show license summary",
+        "show vrrp brief",
+        "show mac address-table",
+    ):
+        result = env.tools.request_allowlist_addition("ios", command, "needed")
+        assert result["status"] == "already_allowed"
+
+
+def test_allowlist_request_is_queued_not_applied(env):
+    before = env.paths.policy_file.read_text(encoding="utf-8")
+    result = env.tools.request_allowlist_addition("ios", "show  Ip  route", "routing check")
+    assert result["status"] == "pending_approval" and result["command"] == "show ip route"
+    again = env.tools.request_allowlist_addition("ios", "show ip route", "again")
+    assert again["request_id"] == result["request_id"]
+    assert env.paths.policy_file.read_text(encoding="utf-8") == before
+    assert len(env.history.pending_allowlist_requests()) == 1
+    with pytest.raises(ToolRefused):
+        env.tools.show("acme", "sa-as01", "show ip route")
+
+
+@pytest.mark.parametrize(
+    "command",
+    ["configure terminal", "write memory", "show ip route | tee x", "show a; reload", "show", "sh run"],
+)
+def test_allowlist_request_refuses_non_show(env, command):
+    with pytest.raises(ToolRefused):
+        env.tools.request_allowlist_addition("ios", command, "please")
+    assert env.history.pending_allowlist_requests() == []
+
+
+def test_allowlist_request_refuses_bad_family_and_reason(env):
+    with pytest.raises(ToolRefused):
+        env.tools.request_allowlist_addition("junos", "show route", "x")
+    with pytest.raises(ToolRefused):
+        env.tools.request_allowlist_addition("ios", "show ip route", "")
+
+
+def test_approving_a_request_adds_the_command(env):
+    from tsunami.core.policy import add_allowlist_entry, load_policy
+
+    assert add_allowlist_entry(env.paths.policy_file, "ios", "show ip route") is True
+    assert add_allowlist_entry(env.paths.policy_file, "ios", "show ip route") is False
+    assert "show ip route" in load_policy(env.paths.policy_file).show_allowlist["ios"]
+    with pytest.raises(Exception):  # noqa: B017 - PolicyError
+        add_allowlist_entry(env.paths.policy_file, "ios", "configure terminal")
+
+
 @pytest.mark.parametrize("command", ["sh run", "conf t", "show run | include x | include y"])
 def test_show_refuses_commands_outside_the_allowlist(env, command):
     with pytest.raises(ToolRefused):
