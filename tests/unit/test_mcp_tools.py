@@ -659,6 +659,30 @@ def test_add_site_with_vars_and_no_secrets(env):
         env.tools.add_site("nobody", "site-e")
 
 
+def test_add_role_then_devices_use_it(env):
+    env.policy(inventory_edits=True)
+    device = {**NEW_DEVICE, "role": "plant-core"}
+    env.tools.add_role("plant-core", {"tier": "plant"})
+    assert load_workspace(env.root).roles["plant-core"] == {"tier": "plant"}
+    result = env.tools.add_devices("acme", [device])
+    assert result["imported"] == 1
+    with pytest.raises(ToolRefused, match="already exists"):
+        env.tools.add_role("plant-core")
+    with pytest.raises(ToolRefused, match="built-in"):
+        env.tools.add_role("core")
+    with pytest.raises(ToolRefused, match="lowercase"):
+        env.tools.add_role("Bad_Role")
+    with pytest.raises(ToolRefused, match="never hold secrets"):
+        env.tools.add_role("other-role", {"snmp_community": "public"})
+    assert not (env.root / "inventory/roles/other-role.yml").exists()
+
+
+def test_add_role_is_off_by_default(env):
+    with pytest.raises(ToolRefused, match="turned off"):
+        env.tools.add_role("plant-core")
+    assert not (env.root / "inventory/roles/plant-core.yml").exists()
+
+
 def test_add_devices_checks_rows_like_an_import(env):
     env.policy(inventory_edits=True)
     rows = [
