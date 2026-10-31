@@ -19,6 +19,11 @@ show_allowlist:            # per platform family
     - show cdp neighbors
     - show lldp neighbors
     - show spanning-tree summary
+    - show switch
+    - show power inline
+    - show license summary
+    - show vrrp brief
+    - show mac address-table
     - show running-config
   aos-cx:
     - show version

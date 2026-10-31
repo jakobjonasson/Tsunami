@@ -545,6 +545,40 @@ class History:
         rows = self._query("SELECT device, host FROM mcp_devices WHERE customer = ?", (customer,))
         return {r["device"]: r["host"] for r in rows}
 
+    # --- show-allowlist requests (request_allowlist_addition) ---
+
+    def add_allowlist_request(self, family: str, command: str, reason: str) -> int:
+        """Queue a request, or return the id of an identical pending one."""
+        with self._tx() as conn:
+            row = conn.execute(
+                "SELECT id FROM allowlist_requests WHERE status='pending' AND family=? AND command=?",
+                (family, command),
+            ).fetchone()
+            if row:
+                return int(row["id"])
+            cur = conn.execute(
+                "INSERT INTO allowlist_requests (family, command, reason, requested_at)"
+                " VALUES (?,?,?,?)",
+                (family, command, reason, self._now()),
+            )
+            return int(cur.lastrowid or 0)
+
+    def pending_allowlist_requests(self) -> list[dict[str, Any]]:
+        rows = self._query(
+            "SELECT id, family, command, reason, requested_at FROM allowlist_requests"
+            " WHERE status='pending' ORDER BY id"
+        )
+        return [dict(r) for r in rows]
+
+    def decide_allowlist_request(self, request_id: int, *, approved: bool, by: str) -> bool:
+        """Record the decision on a pending request; False if it was not pending."""
+        cur = self._exec(
+            "UPDATE allowlist_requests SET status=?, decided_at=?, decided_by=?"
+            " WHERE id=? AND status='pending'",
+            ("approved" if approved else "denied", self._now(), by, request_id),
+        )
+        return cur.rowcount > 0
+
     def mcp_draft_hashes(self) -> dict[str, str]:
         return {r["path"]: r["sha256"] for r in self._query("SELECT path, sha256 FROM mcp_drafts")}
 

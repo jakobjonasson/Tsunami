@@ -46,7 +46,7 @@ from tsunami.core.models.jobs import Actor, JobStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
 from tsunami.core.models.policy import has_control_chars
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
-from tsunami.core.policy import PolicyError, check_show_command
+from tsunami.core.policy import PolicyError, check_show_command, validate_allowlist_request
 from tsunami.core.redact import supplied_values
 from tsunami.core.render.environment import TemplateError, compile_template, make_environment
 from tsunami.core.render.lookup import find_snippet
@@ -82,6 +82,7 @@ TOOL_NAMES = frozenset(
         "check",
         "compliance",
         "show",
+        "request_allowlist_addition",
         "get_job",
         "list_jobs",
         "request_run",
@@ -699,6 +700,33 @@ class Tools:
         args["customer"] = customer
         bound = self._customer_of(path, customer=customer)
         return self.app.call("request_run", 2, args, run, customer=bound)
+
+    def request_allowlist_addition(self, family: str, command: str, reason: str):
+        """Ask a person to allow a show command. Queues a request; never edits the policy."""
+
+        def run(policy):
+            try:
+                fam, normalized = validate_allowlist_request(family, command)
+            except PolicyError as exc:
+                raise ToolRefused(str(exc)) from None
+            why = _plain_text(reason, "reason", 300)
+            if any(
+                normalized == e.lower() or normalized.startswith(e.lower() + " ")
+                for e in policy.show_allowlist.get(fam, [])
+            ):
+                return {"status": "already_allowed", "family": fam.value, "command": normalized}
+            request_id = self.app.history.add_allowlist_request(fam.value, normalized, why)
+            return {
+                "status": "pending_approval",
+                "request_id": request_id,
+                "family": fam.value,
+                "command": normalized,
+                "note": "A person must approve this in Tsunami Settings. Until then the command "
+                "is refused; try show again after they have.",
+            }
+
+        args = {"family": family, "command": command, "reason": reason}
+        return self.app.call("request_allowlist_addition", 0, args, run)
 
     def cancel_job(self, job_id: str):
         def run(policy):

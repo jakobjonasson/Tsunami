@@ -15,7 +15,7 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from PySide6.QtCore import Qt, Signal
+from PySide6.QtCore import Qt, QTimer, Signal
 from PySide6.QtGui import QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
@@ -41,7 +41,7 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PlatformFamily
 from tsunami.core.models.policy import McpPolicy
 from tsunami.core.models.settings import AppSettings, load_settings, save_settings
-from tsunami.core.policy import PolicyError, load_policy, save_policy
+from tsunami.core.policy import PolicyError, add_allowlist_entry, load_policy, save_policy
 from tsunami.gui import wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import ActivityItem, Shell
@@ -184,6 +184,7 @@ class SettingsTab(QWidget):
             )
             policy = McpPolicy()
         self._populate_policy(policy)
+        self.refresh_requests()
         self._loading = False
         self._refresh_notice()
         self._update_dirty()
@@ -829,6 +830,14 @@ class SettingsTab(QWidget):
         self._blocked_layout = QVBoxLayout()
         layout.addLayout(self._blocked_layout)
 
+        layout.addWidget(QLabel("Allowlist requests from Claude"))
+        self._requests_layout = QVBoxLayout()
+        layout.addLayout(self._requests_layout)
+        self._request_timer = QTimer(self)
+        self._request_timer.setInterval(2000)
+        self._request_timer.timeout.connect(self.refresh_requests)
+        self._request_timer.start()
+
         allow_row = QHBoxLayout()
         allow_row.addWidget(QLabel("Show allowlist (a command prefix per line)"), 1)
         self.open_allowlists_button = QPushButton("Edit allowlists in VS Code")
@@ -861,6 +870,73 @@ class SettingsTab(QWidget):
         self.expiry.valueChanged.connect(self._on_edit)
         limits.addRow("Approval expiry (minutes)", self.expiry)
         layout.addLayout(limits)
+
+    # -- allowlist requests ------------------------------------------------------------------------
+
+    def refresh_requests(self) -> None:
+        """Show the pending show-allowlist requests Claude made, each with Approve and Deny."""
+        try:
+            pending = self.ctx.history.pending_allowlist_requests()
+        except Exception:  # noqa: BLE001 - a busy database must not break the UI
+            return
+        key = [r["id"] for r in pending]
+        if key == getattr(self, "_request_ids", None):
+            return
+        self._request_ids = key
+        self.request_rows: dict[int, QWidget] = {}
+        while (item := self._requests_layout.takeAt(0)) is not None:
+            if item.widget() is not None:
+                item.widget().deleteLater()
+        if not pending:
+            self._requests_layout.addWidget(QLabel("No pending requests."))
+        for req in pending:
+            row = QWidget()
+            h = QHBoxLayout(row)
+            h.setContentsMargins(0, 0, 0, 0)
+            label = QLabel(f"[{req['family']}] {req['command']}: {req['reason']}")
+            label.setWordWrap(True)
+            label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
+            h.addWidget(label, 1)
+            approve = QPushButton("Approve")
+            approve.clicked.connect(lambda _=False, i=req["id"]: self.decide_request(i, True))
+            deny = QPushButton("Deny")
+            deny.clicked.connect(lambda _=False, i=req["id"]: self.decide_request(i, False))
+            h.addWidget(approve)
+            h.addWidget(deny)
+            self.request_rows[req["id"]] = row
+            self._requests_layout.addWidget(row)
+
+    def decide_request(self, request_id: int, approved: bool) -> bool:
+        """Approve (adds the command to the policy file) or deny a request from Claude."""
+        pending = {r["id"]: r for r in self.ctx.history.pending_allowlist_requests()}
+        req = pending.get(request_id)
+        if req is None:
+            self.refresh_requests()
+            return False
+        if approved:
+            if self.is_dirty("policy") or "policy" in self._errors:
+                self.shell.notify(
+                    "Save or discard your MCP policy edits before approving a request.", "warning"
+                )
+                return False
+            try:
+                added = add_allowlist_entry(
+                    self._path("policy"), req["family"], req["command"]
+                )
+                parsed = load_policy(self._path("policy"))
+            except (TsunamiError, OSError) as exc:
+                self.shell.notify(f"The policy was not saved: {exc}", "error")
+                return False
+            self._stamps["policy"] = _stamp(self._path("policy"))
+            self._apply_loaded("policy", parsed)
+            self._update_dirty()
+            if not added:
+                self.shell.notify("That command is already on the allowlist.")
+        self.ctx.history.decide_allowlist_request(
+            request_id, approved=approved, by=self.ctx.windows_user()
+        )
+        self.refresh_requests()
+        return True
 
     # -- Claude ------------------------------------------------------------------------------------
 

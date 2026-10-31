@@ -825,6 +825,7 @@ A play was the other option. It was not chosen because plays render and push tem
 |`check(path, targets?, prompts)`|1|Job id. Results hold per-device diffs|
 |`compliance(path)`|1|Job id. Results hold missing and extra lines|
 |`show(customer, device, command)`|1|Redacted output. Allowlisted commands only|
+|`request_allowlist_addition(family, command, reason)`|0|Queues a request (`allowlist_requests` in `history.db`). Only plain `show` commands: others, pipes and `;` are refused. Settings, MCP lists pending requests with Approve and Deny; only Approve writes the entry to `mcp-policy.yml`. Claude has no write path to the policy|
 |`get_job(job_id)`|1|Status and redacted per-device results|
 |`list_jobs(customer?, limit?)`|1|Recent jobs|
 |`request_run(path, targets, prompts, tags?)`|2|Job id in `awaiting_approval`, or running for lab customers when policy allows|
@@ -1466,3 +1467,6 @@ Changes since the original draft, with reasons:
   - Every login a customer may push joins the job's exact-value layer in every mode, not only the ones a play uses in apply mode. The username stays out, as for connection logins, and is shown over MCP.
   - Credentials lists `push_logins` under where a login is used, and draft reviews highlight `login()` as they do `secret()`.
 - MCP `add_role(role, vars?)` (tier 0, `inventory_edits`, add only) creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Built-in device types cannot be redefined; secret-looking vars keys are refused as in `add_site`. Chosen over a `create_roles` option on `add_devices` to keep each tool to one kind of write.
+- Show allowlist requests:
+  - Default ios allowlist gains `show switch`, `show power inline`, `show license summary`, `show vrrp brief` and `show mac address-table`. Only new policy files get them; an existing `mcp-policy.yml` keeps its list.
+  - New tool `request_allowlist_addition` and migration `005_allowlist_requests.sql`. The policy changes only when a person approves in Settings.
