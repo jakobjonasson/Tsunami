@@ -15,7 +15,7 @@ from pathlib import Path
 from mcp import ClientSession, StdioServerParameters
 from mcp.client.stdio import stdio_client
 
-EXPECTED_TOOLS = 18
+EXPECTED_TOOLS = 21
 DEFAULT_EXE = Path(__file__).parents[1] / "dist" / "Tsunami" / "tsunami-mcp.exe"
 
 
