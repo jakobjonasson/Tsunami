@@ -1,8 +1,14 @@
 # Tsunami
 
-Tsunami is a Windows desktop tool that pushes templated Cisco IOS/IOS-XE and HPE Aruba AOS-CX/AOS-S configuration to up to 200 devices over SSH or console. It has a GUI for people and a local MCP server for Claude. Claude can read inventory, draft plays, render and run read-only checks. It never sees credentials or secret values, and changes to customer devices need approval in the GUI.
+Network changes are still mostly made one switch at a time: log in, paste commands, check, repeat, across dozens or hundreds of devices, with no preview and little record of what changed. Tsunami replaces that box-by-box CLI work with templated changes pushed to a whole fleet of Cisco and HPE Aruba switches (up to 200 per run) over SSH or console. Every change is shown as a diff against the live config before anything is sent, then goes to one canary device first, with a backup and automatic rollback if its checks fail.
 
-**Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 2,800 unit and 250 GUI tests run in CI, plus a frozen-build check. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md). The spec is [docs/design.md](docs/design.md); read [CLAUDE.md](CLAUDE.md) before changing code.
+Claude can investigate the network and draft changes through a local MCP server, but never sees a credential, and a person approves changes to customer devices in the GUI.
+
+![A check run in Tsunami: the lines each switch would gain (green) and lose (red), with Apply changes waiting for approval](docs/images/check-diff.png)
+
+**Try it:** download the Windows installer from [Releases](https://github.com/jakobjonasson/Tsunami/releases/latest). It runs on Windows 10 and 11; builds are not code-signed yet, so SmartScreen asks once. Tsunami is free software under the [GNU GPL v3](LICENSE).
+
+**Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 2,800 unit and 250 GUI tests run in CI, plus a frozen-build check. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
 
 ## Tested platforms
 
@@ -56,7 +62,7 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 
 ## Development setup
 
-Requires Windows 10 or 11 and [uv](https://docs.astral.sh/uv/). uv installs Python 3.12 itself if it isn't already present.
+Requires Windows 10 or 11 and [uv](https://docs.astral.sh/uv/). uv installs Python 3.12 itself if it isn't already present. Read [CLAUDE.md](CLAUDE.md) before changing code: it holds the rules the tests enforce and the conventions they don't.
 
 ```powershell
 uv sync                                  # create .venv and install everything
@@ -93,10 +99,16 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 
 ## Releases
 
-Every push to `main` runs CI (GitHub Actions, Windows): lint, unit and GUI tests, then a frozen build with self-tests, an MCP smoke test and the Inno Setup installer. The installer is a build artifact:
+Installers for each version are on the [Releases](https://github.com/jakobjonasson/Tsunami/releases) page.
+
+Every push to `main` runs CI (GitHub Actions, Windows): lint, unit and GUI tests, then a frozen build with self-tests, an MCP smoke test and the Inno Setup installer. Each run keeps its installer as a build artifact, for builds between releases:
 
 ```powershell
 gh run download --repo jakobjonasson/Tsunami -n tsunami-installer -D <folder>
 ```
 
 The version is `__version__` in `src/tsunami/__init__.py`; the installer and both exes take it from there. Builds are unsigned until a code-signing certificate is set up (`packaging/sign.ps1`). `packaging/README.md` covers local builds.
+
+## License
+
+Copyright (C) 2026 jakobjonasson (GitHub). Tsunami is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).

@@ -33,6 +33,8 @@ Name: "desktopicon"; Description: "Create a &desktop shortcut"; Flags: unchecked
 
 [Files]
 Source: "..\dist\Tsunami\*"; DestDir: "{app}"; Flags: ignoreversion recursesubdirs createallsubdirs
+; GPL-3.0-or-later: the licence text ships with every installed copy.
+Source: "..\LICENSE"; DestDir: "{app}"; DestName: "LICENSE.txt"; Flags: ignoreversion
 
 [Icons]
 Name: "{userprograms}\Tsunami"; Filename: "{app}\tsunami.exe"

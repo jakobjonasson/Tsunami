@@ -2,6 +2,8 @@
 name = "tsunami"
 dynamic = ["version"]
 description = "Push templated network configuration to device fleets, with a GUI and a local MCP server."
+license = "GPL-3.0-or-later"
+license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
 dependencies = [
@@ -23,7 +25,7 @@ tsunami-mcp = "tsunami.mcp_server.server:main"
 tsunami = "tsunami.gui.app:main"
 
 [build-system]
-requires = ["hatchling"]
+requires = ["hatchling>=1.27"]  # PEP 639: license expression and license-files
 build-backend = "hatchling.build"
 
 [tool.hatch.version]
