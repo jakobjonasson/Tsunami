@@ -29,6 +29,7 @@ from tsunami.core.models.jobs import (
     JobRecord,
     JobStatus,
 )
+from tsunami.core.models.proposals import InventoryProposal, ProposalStatus
 
 BUSY_TIMEOUT_MS = 5000
 
@@ -579,6 +580,105 @@ class History:
             ("approved" if approved else "denied", self._now(), by, request_id),
         )
         return cur.rowcount > 0
+
+    # --- inventory change proposals (propose_inventory_change) ---
+
+    def create_inventory_proposal(
+        self, *, customer: str, source: str, reason: str, changes: list[dict[str, Any]]
+    ) -> str:
+        """Queue a proposal as awaiting_approval. Callers redact reason and changes."""
+        proposal_id = uuid.uuid4().hex
+        self._exec(
+            "INSERT INTO inventory_proposals (id, created_at, customer, status, source, reason,"
+            " changes_json) VALUES (?,?,?,?,?,?,?)",
+            (
+                proposal_id,
+                self._now(),
+                customer,
+                _cell(ProposalStatus.AWAITING_APPROVAL),
+                source,
+                reason,
+                _dumps(changes),
+            ),
+        )
+        return proposal_id
+
+    def get_inventory_proposal(self, proposal_id: str) -> InventoryProposal:
+        rows = self._query("SELECT * FROM inventory_proposals WHERE id = ?", (proposal_id,))
+        if not rows:
+            raise TsunamiError(f"no such inventory proposal: {proposal_id}")
+        return self._proposal(rows[0])
+
+    def list_inventory_proposals(
+        self, *, status: ProposalStatus | None = None, limit: int = 100
+    ) -> list[InventoryProposal]:
+        sql, params = "SELECT * FROM inventory_proposals", []
+        if status is not None:
+            sql += " WHERE status = ?"
+            params.append(_cell(status))
+        rows = self._query(sql + " ORDER BY created_at DESC, rowid DESC LIMIT ?", (*params, limit))
+        return [self._proposal(r) for r in rows]
+
+    def decide_inventory_proposal(
+        self, proposal_id: str, status: ProposalStatus, *, decided_by: str
+    ) -> None:
+        """Approve (status approved) or deny a proposal that is still awaiting approval.
+        One statement, so two windows cannot both decide it."""
+        cur = self._exec(
+            "UPDATE inventory_proposals SET status = ?, decided_by = ?, decided_at = ?"
+            " WHERE id = ? AND status = ?",
+            (
+                _cell(status),
+                decided_by,
+                self._now(),
+                proposal_id,
+                _cell(ProposalStatus.AWAITING_APPROVAL),
+            ),
+        )
+        if cur.rowcount == 0:
+            current = self.get_inventory_proposal(proposal_id).status
+            raise TsunamiError(f"proposal {proposal_id[:8]} is {current}, not awaiting approval")
+
+    def finish_inventory_proposal(
+        self, proposal_id: str, status: ProposalStatus, *, error: str | None = None
+    ) -> None:
+        """An approved proposal ended: applied, or failed with nothing changed."""
+        self._exec(
+            "UPDATE inventory_proposals SET status = ?, error = ? WHERE id = ? AND status = ?",
+            (_cell(status), error, proposal_id, _cell(ProposalStatus.APPROVED)),
+        )
+
+    def expire_inventory_proposals(self, *, older_than_minutes: int) -> list[str]:
+        cutoff = _cell(self._clock() - timedelta(minutes=older_than_minutes))
+        with self._tx() as conn:
+            ids = [
+                r["id"]
+                for r in conn.execute(
+                    "SELECT id FROM inventory_proposals WHERE status = ? AND created_at < ?",
+                    (_cell(ProposalStatus.AWAITING_APPROVAL), cutoff),
+                )
+            ]
+            for proposal_id in ids:
+                conn.execute(
+                    "UPDATE inventory_proposals SET status = ?, decided_at = ? WHERE id = ?",
+                    (_cell(ProposalStatus.EXPIRED), self._now(), proposal_id),
+                )
+        return ids
+
+    @staticmethod
+    def _proposal(r: sqlite3.Row) -> InventoryProposal:
+        return InventoryProposal(
+            id=r["id"],
+            created_at=_parse_ts(r["created_at"]),  # type: ignore[arg-type]
+            customer=r["customer"],
+            status=ProposalStatus(r["status"]),
+            source=r["source"],
+            reason=r["reason"],
+            changes=json.loads(r["changes_json"]),
+            decided_by=r["decided_by"],
+            decided_at=_parse_ts(r["decided_at"]),
+            error=r["error"],
+        )
 
     def mcp_draft_hashes(self) -> dict[str, str]:
         return {r["path"]: r["sha256"] for r in self._query("SELECT path, sha256 FROM mcp_drafts")}

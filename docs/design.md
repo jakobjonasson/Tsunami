@@ -145,6 +145,8 @@ The workspace is a plain folder, normally a git repo, that the app points at. Ev
 - Slugs (customer folders, site files, role files, device names, snippet names) match `^[a-z0-9][a-z0-9-]*$`. Customer slugs appear in credential and secret names.
 - YAML files use `.yml`. Snippets use `.j2`.
 - `drafts/` is the only place the MCP server can write plays and snippets. A draft becomes live only when a person promotes it in the GUI, which moves it to the matching path under `plays/` or `snippets/`. The one exception is inventory additions (`add_customer`, `add_site`, `add_role`, `add_devices`), off unless the policy sets `inventory_edits: true`; they add and never edit or delete (see MCP interface: Tools).
+
+- `drafts/` is the only place the MCP server can write plays and snippets. A draft becomes live only when a person promotes it in the GUI, which moves it to the matching path under `plays/` or `snippets/`. The one exception is inventory additions (`add_customer`, `add_site`, `add_devices`), off unless the policy sets `inventory_edits: true`; they add and never edit or delete. Edits and removals go only through `propose_inventory_change`, which a person approves in the GUI (see MCP interface: Tools, Inventory proposals).
 - `workspace.yml` holds the workspace name, `schema_version`, default platform, and default batch size. It holds nothing that affects MCP permissions.
 - The app refuses a workspace whose `schema_version` is newer than it understands, and offers a migration for older ones.
 
@@ -822,6 +824,10 @@ A play was the other option. It was not chosen because plays render and push tem
 |`add_site(customer, site, vars?)`|0|Confirmation. Policy `inventory_edits` only. Vars keys that look secret are refused|
 |`add_role(role, vars?)`|0|Confirmation. Creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Policy `inventory_edits` only. Slug name; built-in types and existing roles are refused; secret-looking vars keys are refused|
 |`add_devices(customer, devices, create_sites?, create_roles?)`|0|Status per row, checked as a CSV import. Policy `inventory_edits` only. A device may name only a login its customer already uses `create_roles` creates the custom roles the rows name, so a batch with a new role succeeds in one call; a role is kept only if a row using it is imported, and built-in types are never redefined.|
+
+|`add_devices(customer, devices, create_sites?)`|0|Status per row, checked as a CSV import. Policy `inventory_edits` only. A device may name only a login its customer already uses|
+|`propose_inventory_change(customer, changes, reason?)`|2|Proposal id in `awaiting_approval` and each device's field changes (before and after). Policy `inventory_edits` only. Changes nothing until a person approves it in the GUI (see Inventory proposals)|
+|`get_inventory_proposal(proposal_id)`|0|Status, who decided, the error if it failed, and the changes|
 |`check(path, targets?, prompts)`|1|Job id. Results hold per-device diffs|
 |`compliance(path)`|1|Job id. Results hold missing and extra lines|
 |`show(customer, device, command)`|1|Redacted output. Allowlisted commands only|
@@ -849,6 +855,18 @@ Mark tier 0 and tier 1 read tools with `readOnlyHint`. Treat annotations as hint
 8. Unapproved jobs expire after `approval_expiry_minutes`.
 
 Lab exception: if the customer has `lab: true` and policy says `apply: lab_only`, the MCP process runs the job itself with no approval. If `lab_allow_drafts` is true, drafts can run against lab customers. This lets Claude iterate against CML without a click per run.
+
+### Inventory proposals
+
+`add_*` tools only add. To fix or remove what is already in the inventory, Claude calls `propose_inventory_change(customer, changes, reason?)`, which queues the edit for GUI approval as `request_run` does for a run. It is available only with policy `inventory_edits: true`, and never skips approval, lab customers included.
+
+- Each change names a `device` and either sets any of `role`, `host`, `site`, `platform`, `model` (`model: null` clears it) or sets `remove: true`. Port, credential and vars cannot be changed this way, so a proposal can never redirect which login a device uses. A device appears once per proposal, a value must differ from the current one, at most 50 devices per proposal and 20 proposals waiting at once.
+- When proposed, the changes are run on a scratch copy of the customer's inventory, so everything `InventoryEditor` enforces (site exists, role known, model in the catalog and for the platform, names unique, host valid) is checked up front. A value that the redactor would change (it looks like a secret) is refused, and `reason` is redacted before it is stored. Nothing under the workspace is written.
+- The proposal is stored in `history.db` (`inventory_proposals`: id, created_at, customer, status, source, reason, changes_json, decided_by, decided_at, error). `changes_json` holds each device's fields as they were when proposed and the new values. Statuses: `awaiting_approval`, `approved` (claimed, being applied), `applied`, `denied`, `expired`, `failed`.
+- The GUI polls it with run requests: one pending count, badge and tray notification. The approval card shows the customer, the source (`mcp`, shown as "Claude, over MCP"), the time, Claude's `reason` labelled as its own unverified words, and a table of device, field, before and after (a removal shows every field as removed). Approval records the Windows username and time.
+- Approval claims the proposal in one statement (so two windows cannot both approve), checks each device still matches its stored before values (a device changed or removed since fails the whole proposal, `failed`, nothing written), then applies every change in one validated write (`InventoryEditor.apply_device_changes`). A denied, expired or failed proposal changes nothing. Proposals expire after `approval_expiry_minutes`.
+- A host a proposal sets is recorded in `mcp_devices` like a host Claude added: MCP connections never make first contact with it, so a person still trusts its key first.
+- A blocked customer's proposals read as unknown to `get_inventory_proposal`.
 
 ### Policy file
 
@@ -939,7 +957,7 @@ approval_expiry_minutes: 60
 |Backups and session logs|No tool exposes them.|
 |Filesystem|No generic read. Workspace paths only. Writes in `drafts/` only.|
 |Policy tampering|Policy lives outside the workspace. No MCP write path.|
-|Inventory additions|Off by default (`inventory_edits`). Add only. A customer Claude adds is never a lab customer, so it cannot skip approval. A device names only a login its customer already uses, and no MCP connection makes first contact with a device Claude added, so a host Claude chose never receives a login.|
+|Inventory additions|Off by default (`inventory_edits`). Direct writes add only; edits and removals are proposals a person approves. A customer Claude adds is never a lab customer, so it cannot skip approval. A device names only a login its customer already uses, and no MCP connection makes first contact with a device Claude added, so a host Claude chose never receives a login.|
 |Prompt injection from device output|Approval gate for non-lab customers. Device output is returned in a field named `untrusted_device_output`.|
 
 The MCP server holds no credentials: the GUI runs every tool, and only while unlocked. Another process running as you can still reach the relay while Tsunami is unlocked, and could read process memory; the protection is the narrow tool surface and the Tsunami password, not OS isolation. That is acceptable for this threat model. Real isolation would mean running the runner as a separate Windows account.
@@ -1011,6 +1029,7 @@ SQLite in WAL mode with a `schema_version` table and forward-only migrations.
 - **mcp_calls**: `id`, `ts`, `tool`, `args_redacted_json`, `status`, `duration_ms`, `result_bytes`, `job_id` (nullable).
 - **compliance_results**: `job_id`, `device`, `missing_count`, `extra_count`, `details_json`.
 - **device_leases**: `customer`, `device`, `job_id`, `acquired_at`. Primary key (`customer`, `device`). A lease is live while its job's heartbeat is.
+- **inventory_proposals**: `id`, `created_at`, `customer`, `status`, `source`, `reason`, `changes_json`, `decided_by`, `decided_at`, `error` (see Inventory proposals).
 
 Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `running`, `paused`, `completed`, `partial` (some devices succeeded, some failed), `no_changes`, `failed`, `interrupted`, `cancelled`.
 
@@ -1466,7 +1485,7 @@ Changes since the original draft, with reasons:
   - A customer allows the logins it logs in with (not its jump host's) plus a new `push_logins` list in `customer.yml`, set only in the GUI. Every refusal reads the same, so names cannot be probed. `core/logins.py` holds these sets; MCP's `add_customer` and `add_devices` keep their narrower meaning of a login in use.
   - Every login a customer may push joins the job's exact-value layer in every mode, not only the ones a play uses in apply mode. The username stays out, as for connection logins, and is shown over MCP.
   - Credentials lists `push_logins` under where a login is used, and draft reviews highlight `login()` as they do `secret()`.
-- 0.5.3, MCP inventory roles and show allowlist requests (issues 1 and 3):
+- 0.5.3, MCP inventory roles, show allowlist requests and inventory proposals (issues 1 to 3):
   - MCP `add_role(role, vars?)` (tier 0, `inventory_edits`, add only) creates `inventory/roles/<role>.yml` so `add_devices` can use a custom role. Built-in device types cannot be redefined; secret-looking vars keys are refused as in `add_site`. Chosen over a `create_roles` option on `add_devices` to keep each tool to one kind of write.
   - Show allowlist requests:
     - Default ios allowlist gains `show switch`, `show power inline`, `show license summary`, `show vrrp brief` and `show mac address-table`. Only new policy files get them; an existing `mcp-policy.yml` keeps its list.
@@ -1475,3 +1494,4 @@ Changes since the original draft, with reasons:
   - Settings shows each allowlist request as plain text (Claude writes the reason) and says that approving allows every command starting with it.
   - Tests and the packaging smoke test compare the registered tools with `TOOL_NAMES` instead of a hard-coded count.
   - Every Settings save path refuses to write over a policy changed on disk; the policy file's header no longer says to edit it only in the GUI.
+  - Inventory proposals (issue 2), `history.db` migration 006: MCP gained `propose_inventory_change` and `get_inventory_proposal`. The design said MCP inventory changes only add. Edits and removals of existing devices are now possible, but only as a proposal a person approves in the GUI with a before/after per field (`core/inventory_proposals.py`, `history.db` migration 005, `inventory_proposals`). They sit behind the same `inventory_edits` switch, never skip approval, cover role, host, site, platform and model only, and a host they set is recorded in `mcp_devices`. "Add only" elsewhere in this document means direct MCP writes.
