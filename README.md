@@ -1,6 +1,6 @@
 # Tsunami
 
-Network changes are still mostly made one switch at a time: log in, paste commands, check, repeat, across dozens or hundreds of devices, with no preview and little record of what changed. Tsunami replaces that box-by-box CLI work with templated changes pushed to a whole fleet of Cisco and HPE Aruba switches (up to 200 per run) over SSH or console. Every change is shown as a diff against the live config before anything is sent, then goes to one canary device first, with a backup and automatic rollback if its checks fail.
+Network changes are still mostly made one switch at a time: log in, paste commands, check, repeat, across dozens or hundreds of devices, with no preview and little record of what changed. Tsunami replaces that box-by-box CLI work with templated changes pushed to a whole fleet of Cisco and HPE Aruba switches (up to 200 per run) over SSH or console. It runs as a desktop app on an ordinary Windows PC. It installs without admin rights and needs no Linux server, database or agent on the switches. Every change is shown as a diff against the live config before anything is sent, then goes to one canary device first, with a backup and automatic rollback if its checks fail.
 
 Claude can investigate the network and draft changes through a local MCP server, but never sees a credential, and a person approves changes to customer devices in the GUI.
 
