@@ -111,4 +111,4 @@ The version is `__version__` in `src/tsunami/__init__.py`; the installer and bot
 
 ## License
 
-Copyright (C) 2026 jakobjonasson (GitHub). Tsunami is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).
+Copyright (C) 2026 Jakob Jonasson. Tsunami is free software: you can redistribute it and/or modify it under the terms of the GNU General Public License as published by the Free Software Foundation, either version 3 of the License, or (at your option) any later version. See [LICENSE](LICENSE).

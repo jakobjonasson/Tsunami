@@ -3,6 +3,7 @@ name = "tsunami"
 dynamic = ["version"]
 description = "Push templated network configuration to device fleets, with a GUI and a local MCP server."
 license = "GPL-3.0-or-later"
+authors = [{ name = "Jakob Jonasson" }]
 license-files = ["LICENSE"]
 readme = "README.md"
 requires-python = ">=3.12,<3.13"
