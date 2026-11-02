@@ -97,6 +97,23 @@ def test_store_package_that_never_ran_falls_back_to_appdata(tmp_path):
     assert claude_desktop_config_paths(_env(tmp_path)) == [standard]
 
 
+def test_claude_data_profile_is_included(tmp_path):
+    profile = tmp_path / "local/Claude-Data/claude_abc123"
+    profile.mkdir(parents=True)
+    assert claude_desktop_config_paths(_env(tmp_path)) == [profile / "claude_desktop_config.json"]
+
+
+def test_claude_data_and_store_and_standard_all_registered(tmp_path):
+    store = _store_config_dir(tmp_path) / "claude_desktop_config.json"
+    profile = tmp_path / "local/Claude-Data/claude_abc123"
+    profile.mkdir(parents=True)
+    standard = tmp_path / "roaming/Claude/claude_desktop_config.json"
+    standard.parent.mkdir(parents=True)
+    standard.write_text("{}")
+    expected = [store, profile / "claude_desktop_config.json", standard]
+    assert claude_desktop_config_paths(_env(tmp_path)) == expected
+
+
 def test_register_all_keeps_the_store_config_settings(tmp_path, monkeypatch):
     for name, value in _env(tmp_path).items():
         monkeypatch.setenv(name, value)

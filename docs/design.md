@@ -1078,7 +1078,7 @@ Sign both exes and the installer with `signtool` and a code-signing certificate.
 
 ### Register with Claude Desktop
 
-Local MCP servers are configured in `%APPDATA%\Claude\claude_desktop_config.json`. The same file opens from Claude Desktop under Settings, Developer, Edit Config. The Microsoft Store build of Claude Desktop reads a virtualized copy instead, `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude_desktop_config.json`, and ignores the `%APPDATA%` file once that copy exists. Registration writes every config file the installed app may read.
+Local MCP servers are configured in `%APPDATA%\Claude\claude_desktop_config.json`. The same file opens from Claude Desktop under Settings, Developer, Edit Config. The Microsoft Store build of Claude Desktop reads a virtualized copy instead, `%LOCALAPPDATA%\Packages\Claude_<id>\LocalCache\Roaming\Claude\claude_desktop_config.json`, and ignores the `%APPDATA%` file once that copy exists. Current builds read `%LOCALAPPDATA%\Claude-Data\claude_<id>\claude_desktop_config.json` instead. Registration writes every config file the installed app may read.
 
 The Settings button and installer option must:
 
@@ -1495,3 +1495,5 @@ Changes since the original draft, with reasons:
   - Tests and the packaging smoke test compare the registered tools with `TOOL_NAMES` instead of a hard-coded count.
   - Every Settings save path refuses to write over a policy changed on disk; the policy file's header no longer says to edit it only in the GUI.
   - Inventory proposals (issue 2), `history.db` migration 006: MCP gained `propose_inventory_change` and `get_inventory_proposal`. The design said MCP inventory changes only add. Edits and removals of existing devices are now possible, but only as a proposal a person approves in the GUI with a before/after per field (`core/inventory_proposals.py`, `history.db` migration 005, `inventory_proposals`). They sit behind the same `inventory_edits` switch, never skip approval, cover role, host, site, platform and model only, and a host they set is recorded in `mcp_devices`. "Add only" elsewhere in this document means direct MCP writes.
+- Unreleased, Claude-Data config location (issue 5):
+  - `claude_desktop_config_paths()` also returns `%LOCALAPPDATA%\Claude-Data\claude_*\claude_desktop_config.json`, which current Claude Desktop builds read. The `%APPDATA%` fallback rule is unchanged. The file is assumed to sit directly in the `claude_<id>` folder; this is unverified on a real install.

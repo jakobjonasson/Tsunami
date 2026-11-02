@@ -1,9 +1,10 @@
 """Register tsunami-mcp.exe in claude_desktop_config.json, keeping a .bak copy.
 
-Claude Desktop reads its config from one of two places. The standard installer reads
+Claude Desktop reads its config from one of three places. The standard installer reads
 %APPDATA%/Claude. The Microsoft Store (MSIX) build reads a virtualized copy in its
 package folder, %LOCALAPPDATA%/Packages/Claude_<id>/LocalCache/Roaming/Claude, and
-ignores the %APPDATA% file once that copy exists. Registration writes every config the
+ignores the %APPDATA% file once that copy exists. Current builds read
+%LOCALAPPDATA%/Claude-Data/claude_<id>. Registration writes every config the
 installed app may read.
 
 See design.md, Packaging and installation: Register with Claude Desktop.
@@ -38,6 +39,10 @@ def claude_desktop_config_paths(environ: Mapping[str, str] | None = None) -> lis
             virtual = package / "LocalCache" / "Roaming" / "Claude"
             if virtual.is_dir():  # the Store build has run and keeps its own config
                 paths.append(virtual / CONFIG_NAME)
+        # Newer builds keep per-profile data in %LOCALAPPDATA%/Claude-Data/claude_<id>.
+        for profile in sorted((Path(local) / "Claude-Data").glob("claude_*")):
+            if profile.is_dir():
+                paths.append(profile / CONFIG_NAME)
     if standard.is_file() or not paths:
         paths.append(standard)
     return paths
