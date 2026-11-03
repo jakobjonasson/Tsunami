@@ -110,10 +110,10 @@ def test_a_jump_host_whose_login_is_unavailable_stops_before_probing(
     monkeypatch.setattr(host_keys, "trust_host_keys", fake_trust({}, calls))
     tab = open_trust_tab(gui_ctx, main_window, "acme")
 
-    def locked(customer):
+    def locked(customer, devices):
         raise TsunamiError("Tsunami is locked")
 
-    monkeypatch.setattr(gui_ctx, "jump_target", locked)
+    monkeypatch.setattr(gui_ctx, "jump_targets", locked)
     warned: list[str] = []
     monkeypatch.setattr(QMessageBox, "warning", lambda parent, title, text, *a: warned.append(text))
     assert not tab.start()

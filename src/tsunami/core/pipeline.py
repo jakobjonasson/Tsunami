@@ -78,7 +78,9 @@ class JobContext:
     emit: Callable[[Event], None]
     # Login per target label: the device's own, its site's default, or the customer's.
     credentials: Mapping[str, LoginCredential] = field(default_factory=dict, repr=False)
-    jump: JumpTarget | None = None
+    # Jump host per target label, for targets whose effective jump host is set (device, then
+    # site, then customer). A target not listed connects directly.
+    jumps: Mapping[str, JumpTarget] = field(default_factory=dict, repr=False)
     secret_values: Mapping[str, str] = field(default_factory=dict, repr=False)
     approved_hashes: Mapping[str, str] | None = None
     allow_new_host_key: bool = True
@@ -188,7 +190,7 @@ class DevicePipeline:
             platform=platform,
             method=method,
             credential=ctx.credentials.get(self.label),
-            jump=ctx.jump if method == ConnectionMethod.SSH else None,
+            jump=ctx.jumps.get(self.label) if method == ConnectionMethod.SSH else None,
             connect_timeout=ctx.settings.connect_timeout,
             command_timeout=ctx.settings.command_timeout
             * (2 if method == ConnectionMethod.SERIAL else 1),

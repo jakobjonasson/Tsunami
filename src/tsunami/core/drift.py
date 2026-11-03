@@ -120,6 +120,7 @@ class DriftCheck:
         transport: Any,
         redactor: Redactor,
         jump: JumpTarget | None = None,
+        jumps: Mapping[str, JumpTarget] | None = None,
         keep: int = 30,
         on_result: Callable[[DriftResult], None] | None = None,
         cancel: threading.Event | None = None,
@@ -138,7 +139,8 @@ class DriftCheck:
         self.devices = list(devices)
         self.logins = dict(logins)
         self.transport = transport
-        self.jump = jump
+        self.jump = jump  # for every device that has no entry in jumps
+        self.jumps = dict(jumps or {})  # device name -> its own jump host
         self.keep = keep
         self.on_result = on_result
         self.cancel_event = cancel or threading.Event()
@@ -185,7 +187,7 @@ class DriftCheck:
             platform=device.platform,
             method=ConnectionMethod.SSH,
             credential=login,
-            jump=self.jump,
+            jump=self.jumps.get(device.name, self.jump),
             connect_timeout=self.connect_timeout,
             command_timeout=self.command_timeout,
             allow_new_host_key=self.allow_new_host_key,

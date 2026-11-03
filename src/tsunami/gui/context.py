@@ -10,7 +10,7 @@ See design.md, GUI; Architecture: Process model.
 from __future__ import annotations
 
 import getpass
-from collections.abc import Callable
+from collections.abc import Callable, Iterable
 from pathlib import Path
 from typing import Any
 
@@ -132,16 +132,37 @@ class AppContext(QObject):
             **kwargs,
         )
 
-    def jump_target(self, customer: str) -> JumpTarget | None:
-        """The customer's jump host with its login, or None if it has none. Every connection
-        to the customer's devices goes through it, a run's or a test's alike. TsunamiError
-        if the login cannot be read (locked or missing)."""
+    def jump_target(self, customer: str, device: str | None = None) -> JumpTarget | None:
+        """The jump host a device is reached through, with its login, or None for a direct
+        connection. Device, then site, then customer; without a device, the customer's.
+        Every connection to a device with a jump host goes through it, a run's or a test's
+        alike. TsunamiError if the login cannot be read (locked or missing)."""
         ws = self.workspace
         inv = ws.customers.get(customer) if ws is not None else None
-        jh = inv.config.jump_host if inv is not None else None
+        if inv is None:
+            return None
+        jh = inv.jump_for(inv.device(device) if device else None)
         if jh is None:
             return None
         return JumpTarget(str(jh.host), jh.port, self.secrets.get_login(jh.credential))
+
+    def jump_targets(self, customer: str, devices: Iterable[str]) -> dict[str, JumpTarget]:
+        """Device name -> its jump host, for those with one. Each jump host's login is
+        read once. TsunamiError if a login cannot be read."""
+        ws = self.workspace
+        inv = ws.customers.get(customer) if ws is not None else None
+        if inv is None:
+            return {}
+        logins: dict[str, Any] = {}
+        found: dict[str, JumpTarget] = {}
+        for name in devices:
+            jh = inv.jump_for(inv.device(name))
+            if jh is None:
+                continue
+            if jh.credential not in logins:
+                logins[jh.credential] = self.secrets.get_login(jh.credential)
+            found[name] = JumpTarget(str(jh.host), jh.port, logins[jh.credential])
+        return found
 
     def make_transport(self) -> Any:
         """A device transport for one run (tests inject one through transport_factory)."""

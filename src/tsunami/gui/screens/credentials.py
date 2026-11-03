@@ -89,6 +89,16 @@ def credential_usage(workspace: Workspace | None, name: str) -> list[tuple[str, 
         if inv.config.jump_host is not None and inv.config.jump_host.credential == name:
             found.append(("Jump host", slug))
         found.extend(
+            ("Jump host", f"{slug}/{site}")
+            for site, jh in sorted(inv.site_jumps.items())
+            if jh is not None and jh.credential == name
+        )
+        found.extend(
+            ("Jump host", f"{slug}/{d.name}")
+            for d in inv.devices
+            if d.jump_host is not None and d.jump_host.credential == name
+        )
+        found.extend(
             ("Site", f"{slug}/{site}")
             for site, cred in sorted(inv.config.site_credentials.items())
             if cred == name
@@ -633,7 +643,7 @@ class _CredentialsBase(QWidget):
         try:
             # The device is reached as a run reaches it. Going direct to a private address
             # could reach another machine and record its key as the device's.
-            jump = self.ctx.jump_target(customer)
+            jump = self.ctx.jump_target(customer, device.name)
         except TsunamiError as exc:
             self.shell.notify(f"The jump host's login is needed: {exc}", "error")
             return False

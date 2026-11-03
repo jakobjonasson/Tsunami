@@ -233,7 +233,7 @@ class DriftTab(QWidget):
                     f"{'Site ' + self.site if self.site else self.customer} has no devices."
                 )
             redactor = backups.secret_redactor(self.ctx)
-            jump = self.ctx.jump_target(self.customer)
+            jumps = self.ctx.jump_targets(self.customer, [d.name for d in devices])
         except TsunamiError as exc:
             self.set_error(str(exc))
             self._refresh()
@@ -251,7 +251,7 @@ class DriftTab(QWidget):
                 logins=logins,
                 transport=transport,
                 redactor=redactor,
-                jump=jump,
+                jumps=jumps,
                 keep=self.ctx.settings.backup_retention,
                 on_result=self._signals.result.emit,
                 cancel=threading.Event(),

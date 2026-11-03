@@ -30,7 +30,14 @@ from tsunami.core.models.common import (
     Platform,
     PlatformFamily,
 )
-from tsunami.core.models.inventory import DEVICE_TYPES, CustomerFile, Device, VarsFile
+from tsunami.core.models.inventory import (
+    DEVICE_TYPES,
+    CustomerFile,
+    Device,
+    JumpHost,
+    VarsFile,
+    no_jump,
+)
 from tsunami.core.models.play import (
     GLOBAL_CUSTOMER,
     Play,
@@ -64,6 +71,8 @@ class CustomerInventory:
     config: CustomerFile
     devices: tuple[Device, ...]
     sites: Mapping[str, Mapping[str, Any]]  # site slug -> vars
+    # Site slug -> its jump host, None for "connect directly". A site not listed inherits.
+    site_jumps: Mapping[str, JumpHost | None] = field(default_factory=dict)
 
     def device(self, name: str) -> Device | None:
         return next((d for d in self.devices if d.name == name), None)
@@ -78,6 +87,30 @@ class CustomerInventory:
             if site_default:
                 return site_default
         return self.config.credential
+
+    def jump_with_source(self, device: Device | None) -> tuple[JumpHost | None, str]:
+        """The effective jump host and the level that sets it: 'device', 'site' or
+        'customer' (also when that level says "direct"). Device, then site, then customer.
+        Without a device, the customer's."""
+        if device is not None:
+            if device.jump_set:
+                return device.jump_host, "device"
+            if device.site in self.site_jumps:
+                return self.site_jumps[device.site], "site"
+        return self.config.jump_host, "customer"
+
+    def jump_for(self, device: Device | None) -> JumpHost | None:
+        """The jump host a connection to this device goes through, None for direct."""
+        return self.jump_with_source(device)[0]
+
+    def jump_hosts(self) -> list[JumpHost]:
+        """Every distinct jump host any device of this customer uses, in device order."""
+        found: dict[tuple[str, int], JumpHost] = {}
+        for device in self.devices:
+            jh = self.jump_for(device)
+            if jh is not None:
+                found.setdefault((str(jh.host), jh.port), jh)
+        return list(found.values())
 
 
 @dataclass(frozen=True)
@@ -333,6 +366,27 @@ class _Loader:
         self.lint_vars(doc, model.root, prefix)
         return dict(model.root)
 
+    def load_site(self, path: Path, name: str, jumps: dict[str, JumpHost | None]) -> dict[str, Any]:
+        """A site file's variables. Its jump_host key is a setting, not a variable: it is
+        read into jumps (None = direct) and kept out of the variables."""
+        doc = self.doc(path)
+        if doc is None or not isinstance(doc.data, dict) or "jump_host" not in doc.data:
+            return self.load_vars(path)
+        raw = no_jump(doc.data["jump_host"])
+        if raw is None:
+            jumps[name] = None
+        else:
+            try:
+                jumps[name] = JumpHost.model_validate(raw)
+            except ValidationError as exc:
+                self.issues.extend(validation_issues(exc, doc, code="site", prefix=("jump_host",)))
+        data = {k: v for k, v in doc.data.items() if k != "jump_host"}
+        model = self.model(VarsFile, doc, data, "vars")
+        if model is None:
+            return {}
+        self.lint_vars(doc, model.root, ())
+        return dict(model.root)
+
     def load_roles(self) -> dict[str, dict[str, Any]]:
         # The built-in device types always exist; a roles/<role>.yml file adds variables.
         roles: dict[str, dict[str, Any]] = {name: {} for name in DEVICE_TYPES}
@@ -378,10 +432,11 @@ class _Loader:
                 self.lint_vars(doc, values, ("role_vars", role))
 
         sites = {}
+        site_jumps: dict[str, JumpHost | None] = {}
         for path in sorted((folder / "sites").glob("*.yml")):
             name = self.slug_name(path, "site")
             if name is not None:
-                sites[name] = self.load_vars(path)
+                sites[name] = self.load_site(path, name, site_jumps)
 
         if config is not None:
             for site in config.site_credentials:
@@ -398,7 +453,9 @@ class _Loader:
         devices = self.load_devices(folder / "devices.yml", sites, roles)
         if slug is None or config is None:
             return None
-        return CustomerInventory(slug=slug, config=config, devices=devices, sites=sites)
+        return CustomerInventory(
+            slug=slug, config=config, devices=devices, sites=sites, site_jumps=site_jumps
+        )
 
     def load_devices(
         self, path: Path, sites: Mapping[str, Any], roles: Mapping[str, Any]

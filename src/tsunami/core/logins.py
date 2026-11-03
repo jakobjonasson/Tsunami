@@ -35,6 +35,16 @@ def customer_logins(customer: Any) -> set[str]:
     return names
 
 
+def jump_logins(customer: Any) -> set[str]:
+    """The logins a customer's jump hosts use: the customer's own, each site's and each
+    device's. Never pushable (see the module docstring)."""
+    names = {jh.credential for jh in customer.site_jumps.values() if jh is not None}
+    if customer.config.jump_host is not None:
+        names.add(customer.config.jump_host.credential)
+    names.update(d.jump_host.credential for d in customer.devices if d.jump_host is not None)
+    return names
+
+
 def allowed_logins(customer: Any) -> frozenset[str]:
     """The logins a customer's plays may push: the ones it logs in with, plus push_logins."""
     return frozenset(customer_logins(customer) | set(customer.config.push_logins))
@@ -45,8 +55,7 @@ def referenced_logins(customers: Iterable[Any]) -> set[str]:
     names: set[str] = set()
     for customer in customers:
         names |= allowed_logins(customer)
-        if customer.config.jump_host is not None:
-            names.add(customer.config.jump_host.credential)
+        names |= jump_logins(customer)
     return names
 
 

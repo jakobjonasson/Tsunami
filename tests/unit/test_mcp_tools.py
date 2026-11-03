@@ -178,6 +178,26 @@ def test_list_devices_filters(env):
     assert env.tools.list_devices("acme", site="nowhere")["devices"] == []
 
 
+def test_list_devices_shows_the_effective_jump_host_without_its_login(env):
+    from tsunami.core.inventory_edit import InventoryEditor
+
+    editor = InventoryEditor(env.root)
+    editor.update_customer(
+        "acme", jump_host={"host": "198.51.100.1", "credential": "secret-login-name"}
+    )
+    editor.update_device(
+        "acme", "sa-as02", {"jump_host": {"host": "198.51.100.2", "credential": "other"}}
+    )
+    devices = {d["name"]: d for d in env.tools.list_devices("acme")["devices"]}
+    assert devices["sa-as01"]["jump_host"] == {
+        "host": "198.51.100.1",
+        "port": 22,
+        "set_at": "customer",
+    }
+    assert devices["sa-as02"]["jump_host"]["set_at"] == "device"
+    assert "secret-login-name" not in str(devices) and "other" not in str(devices)
+
+
 def test_list_plays_hides_drafts_unless_asked(env):
     (env.root / "drafts/plays/push").mkdir(parents=True)
     (env.root / "drafts/plays/push/try.yml").write_text(

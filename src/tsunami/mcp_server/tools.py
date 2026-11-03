@@ -46,7 +46,7 @@ from tsunami.core.inventory_proposals import (
     describe,
 )
 from tsunami.core.issues import Issue, Severity, TsunamiError
-from tsunami.core.logins import customer_logins, referenced_logins
+from tsunami.core.logins import customer_logins, jump_logins, referenced_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
 from tsunami.core.models.inventory import DEVICE_TYPES
 from tsunami.core.models.jobs import Actor, JobStatus
@@ -155,6 +155,7 @@ class Tools:
                         "role": d.role,
                         "platform": str(d.platform),
                         "model": d.model,
+                        "jump_host": _jump_view(cust, d),
                     }
                     for d in cust.devices
                     if (site is None or d.site == site) and (role is None or d.role == role)
@@ -654,7 +655,7 @@ class Tools:
                 platform=dev.platform,
                 method=ConnectionMethod.SSH,
                 credential=self.app.secrets.get_login(cust.credential_for(dev)),
-                jump=self._jump(cust),
+                jump=self._jump(cust, dev),
                 allow_new_host_key=(
                     policy.trust_new_host_keys and dev.name not in self._mcp_added(cust)
                 ),
@@ -960,8 +961,8 @@ class Tools:
         added = self.app.history.mcp_devices(cust.slug)
         return frozenset(d.name for d in cust.devices if added.get(d.name) == str(d.host))
 
-    def _jump(self, cust) -> JumpTarget | None:
-        jh = cust.config.jump_host
+    def _jump(self, cust, device=None) -> JumpTarget | None:
+        jh = cust.jump_for(device)
         if jh is None:
             return None
         return JumpTarget(jh.host, jh.port, self.app.secrets.get_login(jh.credential))
@@ -1072,6 +1073,15 @@ class ToolProxy:
         return call
 
 
+def _jump_view(cust: Any, device: Any) -> dict[str, Any] | None:
+    """A device's effective jump host for list_devices: host, port and the level that sets
+    it. Never its login. None means a direct connection."""
+    jh, source = cust.jump_with_source(device)
+    if jh is None:
+        return None
+    return {"host": str(jh.host), "port": jh.port, "set_at": source}
+
+
 def _plain_text(value: Any, what: str, limit: int) -> str:
     if not isinstance(value, str) or not value.strip() or len(value) > limit:
         raise ToolRefused(f"{what} must be text of 1 to {limit} characters")
@@ -1133,9 +1143,7 @@ def _device_plan(root: Path, cust: Any, devices: list[Any], create_sites: bool) 
     plan = preview(root, cust.slug, table, mapping, known_logins=None, create_sites=create_sites)
     # The logins this customer logs in with (its jump host's too); never push_logins,
     # which Tsunami does not log in with.
-    allowed = customer_logins(cust)
-    if cust.config.jump_host is not None:
-        allowed.add(cust.config.jump_host.credential)
+    allowed = customer_logins(cust) | jump_logins(cust)
     checked: list[RowResult] = []
     for row in plan.rows:
         login = row.fields.get("credential")
