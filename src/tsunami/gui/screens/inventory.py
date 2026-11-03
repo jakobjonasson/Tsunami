@@ -109,6 +109,9 @@ class DeviceView(QWidget):
         self.run_button = QPushButton("Run play…")
         self.run_button.setProperty("primary", True)
         self.run_button.clicked.connect(self.run_play)
+        self.edit_button = QPushButton("Edit…")
+        self.edit_button.setToolTip("Name, host, site, type, model, login, jump host and variables")
+        self.edit_button.clicked.connect(lambda _=False: self.edit_device())
         self.test_button = QPushButton("Test connection")
         self.test_button.setToolTip("Log in to the device with its credential and log out again")
         self.test_button.clicked.connect(self.test_connection)
@@ -117,7 +120,7 @@ class DeviceView(QWidget):
         self.ssh_button.clicked.connect(self.open_ssh)
         self.backups_button = QPushButton("Backups…")
         self.backups_button.clicked.connect(self.open_backups)
-        for button in (self.run_button, self.test_button, self.ssh_button, self.backups_button):
+        for button in self._buttons():
             actions.addWidget(button)
         actions.addStretch(1)
         layout.addLayout(actions)
@@ -177,6 +180,28 @@ class DeviceView(QWidget):
         ctx.jobs_changed.connect(self.refresh_status)
         self.refresh()
 
+    def _buttons(self) -> tuple[QPushButton, ...]:
+        return (
+            self.run_button,
+            self.edit_button,
+            self.test_button,
+            self.ssh_button,
+            self.backups_button,
+        )
+
+    def edit_device(self) -> None:
+        """Open the device's edit dialog; a rename reopens this tab under the new name."""
+        dev = self._inventory_device()
+        if dev is None:
+            return
+        dialog = dialogs.DeviceDialog(self.ctx, self.shell, self.customer, device=dev, parent=self)
+        if not dialogs.run_dialog(dialog):
+            return
+        name = dialog.name_edit.text().strip()
+        if name and name != self.device:
+            self.shell.close_tab(f"device:{self.customer}/{self.device}")
+            open_device(self.ctx, self.shell, self.customer, name)
+
     def _open_vscode(self) -> None:
         ws = self.ctx.workspace
         if ws is not None:
@@ -204,7 +229,7 @@ class DeviceView(QWidget):
         """The header (with what the device reported) and the recent jobs: what changes when
         a job finishes."""
         dev = self._inventory_device()
-        for button in (self.run_button, self.test_button, self.ssh_button, self.backups_button):
+        for button in self._buttons():
             button.setEnabled(dev is not None)
         if dev is None:
             self.details.setText("This device is not in the loaded workspace.")
@@ -225,6 +250,9 @@ class DeviceView(QWidget):
         if facts and facts.serial:
             parts.append(f"serial {facts.serial}")
         parts += [f"site {dev.site}", f"role {dev.role}"]
+        inv = self.ctx.workspace.customers[self.customer]  # type: ignore[union-attr]
+        login = inv.credential_for(dev)
+        parts.append(f"login {login}" if dev.credential else f"login {login} (default)")
         self.details.setText("  |  ".join(parts))
         if facts:
             self.details.setToolTip(

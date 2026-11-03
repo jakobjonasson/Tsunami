@@ -15,7 +15,7 @@ from tsunami.core.models.play import RunMode
 from tsunami.core.runner import RunRequest
 from tsunami.core.transports.base import UnreachableError
 from tsunami.core.vault import VaultLocked
-from tsunami.gui.screens import credentials, device_list
+from tsunami.gui.screens import credentials, device_list, inventory_dialogs
 from tsunami.gui.screens.device_list import DeviceListView
 from tsunami.gui.screens.inventory import DeviceView, InventoryView, open_device
 from tsunami.gui.screens.job_view import JobView, status_color
@@ -338,4 +338,41 @@ def test_the_page_buttons_are_disabled_for_a_device_not_in_the_workspace(main_wi
     open_device(main_window.ctx, main_window, "acme", "ghost")
     page = main_window._tabs["device:acme/ghost"]
     assert not page.run_button.isEnabled() and not page.ssh_button.isEnabled()
+    assert not page.edit_button.isEnabled()
     assert "not in the loaded workspace" in page.details.text()
+
+
+def test_edit_sets_the_devices_own_login_from_its_page(main_window, gui_ctx, monkeypatch):
+    gui_ctx.secrets.set_login("acme-spare", credentials.LoginCredential("spare", "Spare-Pw-61"))
+    page = _page(main_window)
+    assert "login acme-netadmin (default)" in page.details.text()
+    seen = []
+
+    def pick_login(dialog):
+        seen.append(dialog.windowTitle())
+        combo = dialog.login.combo
+        combo.setCurrentIndex(combo.findData("acme-spare"))
+        return dialog.save()
+
+    monkeypatch.setattr(inventory_dialogs, "run_dialog", pick_login)
+    page.edit_button.click()
+    gui_ctx.reload_workspace(block=True)
+    assert seen == ["Edit sa-as01"]
+    assert gui_ctx.workspace.customers["acme"].device("sa-as01").credential == "acme-spare"
+    page.refresh_status()
+    assert "login acme-spare" in page.details.text()
+    assert "(default)" not in page.details.text()
+
+
+def test_renaming_from_the_page_reopens_it_under_the_new_name(main_window, gui_ctx, monkeypatch):
+    _page(main_window)
+
+    def rename(dialog):
+        dialog.name_edit.setText("sa-as99")
+        return dialog.save()
+
+    monkeypatch.setattr(inventory_dialogs, "run_dialog", rename)
+    main_window._tabs["device:acme/sa-as01"].edit_button.click()
+    gui_ctx.reload_workspace(block=True)
+    assert "device:acme/sa-as01" not in main_window._tabs
+    assert isinstance(main_window._tabs["device:acme/sa-as99"], DeviceView)
