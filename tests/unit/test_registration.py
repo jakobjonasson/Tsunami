@@ -54,6 +54,7 @@ def test_command_is_absolute(tmp_path):
     assert Path(json.loads(cfg.read_text())["mcpServers"]["tsunami"]["command"]).is_absolute()
 
 
+@pytest.mark.windows
 def test_reregister_updates_in_place(tmp_path):
     cfg = tmp_path / "c.json"
     register_claude_desktop(EXE, cfg)

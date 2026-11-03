@@ -172,6 +172,7 @@ def test_forgotten_password_reset_deletes_stored_values(manager, store, monkeypa
     assert manager.vault.unlock("fresh-password-3")
 
 
+@pytest.mark.windows
 def test_bridge_answers_403_while_locked(manager, app_paths, monkeypatch):
     from tsunami.mcp_server.bridge import BridgeClient, BridgeServer
 

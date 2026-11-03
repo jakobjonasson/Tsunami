@@ -1738,6 +1738,7 @@ def test_write_draft_path_tricks_cannot_write_outside_drafts(env):
     assert not list(env.tmp.rglob("evil.yml"))
 
 
+@pytest.mark.windows
 def test_drafts_symlink_or_junction_escape(env, tmp_path):
     outside = tmp_path / "outside"
     outside.mkdir()

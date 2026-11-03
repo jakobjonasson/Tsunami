@@ -194,6 +194,7 @@ def test_delete_customer_goes_to_the_recycle_bin(root, editor, recycled):
     assert "acme" not in load_workspace(root).customers
 
 
+@pytest.mark.windows
 @pytest.mark.skipif(not os.environ.get("CI"), reason="uses the real Recycle Bin; CI only")
 def test_real_recycle_bin(tmp_path):
     victim = tmp_path / "tsunami-recycle-test.txt"

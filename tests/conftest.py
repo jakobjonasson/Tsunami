@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import sys
 
 import keyring
 import keyring.errors
@@ -39,6 +40,8 @@ def pytest_configure(config) -> None:
     """Refuse any write or delete of the real "tsunami" entries in Windows Credential
     Manager for the whole run, even from a thread that outlives its test's in-memory
     keyring. Real-vault tests use the separate "tsunami-test" service."""
+    if sys.platform != "win32":
+        return  # keyring.backends.Windows imports off Windows, but win32ctypes does not
     try:
         from keyring.backends.Windows import WinVaultKeyring
     except Exception:  # noqa: BLE001 - not Windows
@@ -93,3 +96,5 @@ def pytest_collection_modifyitems(config, items) -> None:
         for marker, env_var in gates.items():
             if marker in item.keywords and not os.environ.get(env_var):
                 item.add_marker(pytest.mark.skip(reason=f"set {env_var}=1 to run"))
+        if "windows" in item.keywords and sys.platform != "win32":
+            item.add_marker(pytest.mark.skip(reason="needs Windows"))

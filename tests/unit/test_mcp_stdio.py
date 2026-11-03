@@ -66,6 +66,7 @@ def gui(tmp_path, app_paths):
     history.close()
 
 
+@pytest.mark.windows
 def test_calls_go_through_while_unlocked(gui, app_paths):
     _state, history = gui
     names, result = run_session()
@@ -76,6 +77,7 @@ def test_calls_go_through_while_unlocked(gui, app_paths):
     assert [tuple(r) for r in rows] == [("list_customers", "ok")]  # audited by the GUI side
 
 
+@pytest.mark.windows
 def test_locked_tsunami_answers_403(gui):
     state, _history = gui
     state["unlocked"] = False
@@ -90,6 +92,7 @@ def test_closed_tsunami_answers_503(app_paths):
     assert result.is_error and "503 Tsunami is not running" in str(result.content)
 
 
+@pytest.mark.windows
 def test_stop_returns_when_the_serve_thread_left_before_accept(app_paths):
     """The race that hung CI: the serve thread sees the stop flag and leaves before it
     reaches accept(), so nobody answers stop()'s wake-up connection. stop() must return."""

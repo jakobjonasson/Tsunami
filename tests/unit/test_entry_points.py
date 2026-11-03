@@ -6,6 +6,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from tsunami import __version__
 from tsunami.gui import app
 from tsunami.mcp_server import server
@@ -26,6 +28,7 @@ def test_cli_version():
     assert result.stdout.strip() == f"tsunami {__version__}"
 
 
+@pytest.mark.windows
 def test_cli_selftest():
     result = run_cli("--selftest")
     assert result.returncode == 0, result.stderr
