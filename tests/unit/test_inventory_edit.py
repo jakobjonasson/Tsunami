@@ -223,6 +223,7 @@ def test_set_login_customers_writes_nothing_if_one_customer_is_refused(root, edi
         editor.set_login_customers("Bad Name", {"acme": True})
 
 
+@pytest.mark.windows
 @pytest.mark.skipif(not os.environ.get("CI"), reason="uses the real Recycle Bin; CI only")
 def test_real_recycle_bin(tmp_path):
     victim = tmp_path / "tsunami-recycle-test.txt"

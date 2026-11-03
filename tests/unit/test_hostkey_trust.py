@@ -267,6 +267,7 @@ def test_the_real_probe_reads_the_key_and_never_logs_in(app_paths, monkeypatch):
     assert attempts == []  # no username, no password ever reached the server
 
 
+@pytest.mark.windows
 def test_the_known_hosts_lock_never_asks_the_file_system(monkeypatch, tmp_path):
     """Keyed by string normalization: path.resolve() could spell the same path
     differently while another thread created the folder, giving two locks, and about one

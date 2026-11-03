@@ -64,6 +64,7 @@ markers = [
     "cml: integration tests against a CML lab (run with TSUNAMI_CML=1)",
     "serial: tests that need a real or virtual COM port (run with TSUNAMI_SERIAL=1)",
     "gui: pytest-qt GUI tests",
+    "windows: tests that need Windows (Credential Manager, named pipe, Windows paths); skipped elsewhere",
 ]
 
 [dependency-groups]

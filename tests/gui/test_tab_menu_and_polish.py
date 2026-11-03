@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import pytest
 from PySide6.QtWidgets import QLabel, QPushButton
 
 from tsunami.gui.screens.device_list import RUN_DISABLED_TIP, DeviceListView
@@ -97,6 +98,7 @@ def test_disabled_primary_button_has_no_accent_fill(gui_ctx):
         assert palette.muted in rule
 
 
+@pytest.mark.windows
 def test_device_table_fits_without_horizontal_scroll(main_window, qtbot):
     main_window.resize(1100, 700)
     main_window.show()

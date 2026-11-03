@@ -8,6 +8,7 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.paths import AppPaths
 
 
+@pytest.mark.windows
 def test_paths_come_from_environment():
     paths = AppPaths.from_env({"LOCALAPPDATA": r"C:\L", "APPDATA": r"C:\R"})
     assert paths.history_db == Path(r"C:\L\Tsunami\history.db")
