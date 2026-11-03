@@ -161,6 +161,28 @@ def test_another_login_is_written_on_the_devices(qtbot, gui_ctx, main_window):
     assert acme_device(gui_ctx, "new-sw1").credential == "branch-admin"
 
 
+def test_discovery_goes_through_the_sites_jump_host(qtbot, gui_ctx, main_window):
+    from tsunami.core.inventory_edit import InventoryEditor
+    from tsunami.core.secret_store import LoginCredential
+
+    gui_ctx.secrets.set_login("bastion-b", LoginCredential("jump", "Bastion-Pass-2"))
+    gui_ctx.secrets.set_login("bastion-c", LoginCredential("jump", "Bastion-Pass-3"))
+    editor = InventoryEditor(gui_ctx.workspace_path)
+    editor.create_site("acme", "site-b")
+    editor.update_customer("acme", jump_host={"host": "198.51.100.1", "credential": "bastion-c"})
+    editor.update_site(
+        "acme", "site-b", jump_host={"host": "198.51.100.20", "credential": "bastion-b"}
+    )
+    gui_ctx.reload_workspace(block=True)
+    transport = use(gui_ctx, Transport({"192.0.2.1": ("new-sw1", [])}))
+    tab = open_discovery_tab(gui_ctx, main_window, "acme", "site-b")
+    tab.seeds_edit.setText("192.0.2.1")
+    assert tab.start()
+    wait_done(qtbot, tab)
+    assert [t.jump.host for t in transport.targets] == ["198.51.100.20"]  # not the customer's
+    qtbot.waitUntil(lambda: acme_device(gui_ctx, "new-sw1") is not None, timeout=15000)
+
+
 def test_check_for_unlearned_neighbors_adds_nothing(qtbot, gui_ctx, main_window):
     use(
         gui_ctx,

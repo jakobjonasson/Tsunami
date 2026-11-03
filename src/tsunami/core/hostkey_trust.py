@@ -1,17 +1,17 @@
 """Trust host keys in bulk: record the SSH host key of many devices without logging in.
 
 For onboarding a customer with hundreds of devices: each device's key is read with the
-same path a run uses (direct, or through the customer's jump host, which is the only
-login made) and checked against the customer's known_hosts with trust on first use.
+same path a run uses (direct, or through the device's jump host, whose login is the only
+one made) and checked against the customer's known_hosts with trust on first use.
 
 - A new key is recorded.
 - A key that matches the one on file is left alone.
 - A key that differs from the one on file is NEVER replaced here. It is reported with
   both fingerprints; replacing it is a separate, explicit accept_changed() that the GUI
   asks the person to confirm.
-- The jump host's key is kept in the same file. If it changed, the jump host is reported
-  first, as a JUMP_HOST result that can be accepted the same way, and every device
-  behind it as unreachable.
+- The jump host's key is kept in the same file. Each jump host is reported first, as a
+  JUMP_HOST result: recorded, known, unreachable, or changed. A changed key can be
+  accepted the same way as a device's; until then every device behind it is unreachable.
 
 No device login is ever sent: probe_host_key stops after the key exchange.
 
@@ -86,8 +86,8 @@ def trust_host_keys(
     jump_factory: Callable[[ConnectTarget, HostKeyStore], Any] | None = None,
 ) -> list[KeyProbe]:
     """Probe every device's host key and record new ones. Results come back in device
-    order, after a JUMP_HOST result for each jump host whose key changed; on_result is
-    called as each finishes (from worker threads).
+    order, after a JUMP_HOST result for each jump host; on_result is called as each
+    finishes (from worker threads).
 
     jumps maps a device name to its own jump host (device, then site, then customer); a
     device not in it connects directly. jump is a jump host for every device without an
@@ -125,23 +125,42 @@ def trust_host_keys(
         make = jump_factory or (
             lambda t, s: JumpConnection(t, s, max_channels=workers, probe=probe, legacy=legacy)
         )
+        name = f"{JUMP_HOST} {key[0]}:{key[1]}" if multiple else JUMP_HOST
+        had_key = bool(store.known_keys(target_jump.host, target_jump.port))
         try:
             connections[key] = make(target, store)
         except ConnectError as exc:
             detail = str(exc)
+            row = KeyProbe(
+                name, target_jump.host, target_jump.port, Outcome.UNREACHABLE, detail=detail
+            )
             if isinstance(exc, HostKeyMismatchError):
                 # Probe the jump host itself so its changed key can be accepted like a
                 # device's; until then nothing behind it can be reached.
-                name = f"{JUMP_HOST} {key[0]}:{key[1]}" if multiple else JUMP_HOST
                 address = DeviceAddress(name, target_jump.host, target_jump.port)
                 probed = _probe_one(store, address, None, connect_timeout, legacy, probe)
                 if probed.outcome == Outcome.CHANGED:
-                    jump_rows.append(probed)
+                    row = probed
                     detail = "the jump host's key changed; accept it, then start again"
+            jump_rows.append(row)
             for d in by_jump[key]:
                 failed[d.name] = KeyProbe(
                     d.name, d.host, d.port, Outcome.UNREACHABLE, detail=detail
                 )
+        else:
+            # The connection checked the jump host's key against the file (trust on first
+            # use), so it is on file now: new unless it was there before.
+            on_file = store.known_keys(target_jump.host, target_jump.port)
+            jump_rows.append(
+                KeyProbe(
+                    name,
+                    target_jump.host,
+                    target_jump.port,
+                    Outcome.KNOWN if had_key else Outcome.RECORDED,
+                    fingerprint=fingerprint(next(iter(on_file.values()))) if on_file else None,
+                    detail=f"jump host for {len(by_jump[key])} device(s)",
+                )
+            )
     jump_of = {d.name: key for key, group in by_jump.items() for d in group}
 
     def one(device: DeviceAddress) -> KeyProbe:

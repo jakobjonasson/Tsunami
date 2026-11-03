@@ -224,9 +224,34 @@ def test_a_changed_jump_host_that_cannot_be_probed_marks_every_device(app_paths,
         probe=fake_probe({}, unreachable={"198.51.100.10"}),
         jump_factory=changed_jump_factory,
     )
-    assert [r.device for r in results] == [d.name for d in DEVICES]
+    assert [r.device for r in results] == [JUMP_HOST, *(d.name for d in DEVICES)]
     assert {r.outcome for r in results} == {Outcome.UNREACHABLE}
-    assert "host key changed" in results[0].detail
+    assert all("host key changed" in r.detail for r in results)
+
+
+def test_every_jump_host_gets_a_row_with_its_own_outcome(app_paths):
+    store = HostKeyStore(app_paths.known_hosts_file("acme"))
+
+    def recording_factory(target, s):
+        s.check(target.host, target.port, KEY_A, allow_new=True)  # as JumpConnection does
+        return FakeJump()
+
+    jump = JumpTarget("198.51.100.10", 22, LoginCredential("u", "p"))
+    probe = fake_probe({d.host: KEY_B for d in DEVICES})
+    first = trust_host_keys(
+        app_paths, "acme", DEVICES, jump=jump, probe=probe, jump_factory=recording_factory
+    )
+    row = first[0]
+    assert (row.device, row.outcome) == (JUMP_HOST, Outcome.RECORDED)
+    assert row.fingerprint == fingerprint(KEY_A)
+    assert row.detail == f"jump host for {len(DEVICES)} device(s)"
+    assert [r.device for r in first[1:]] == [d.name for d in DEVICES]
+    assert store.known_keys("198.51.100.10", 22)[KEY_A.get_name()] == KEY_A
+
+    again = trust_host_keys(
+        app_paths, "acme", DEVICES, jump=jump, probe=probe, jump_factory=recording_factory
+    )
+    assert (again[0].device, again[0].outcome) == (JUMP_HOST, Outcome.KNOWN)
 
 
 def test_the_real_probe_reads_the_key_and_never_logs_in(app_paths, monkeypatch):

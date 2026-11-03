@@ -1,10 +1,10 @@
 """Trust host keys for a customer or a site, in bulk (core/hostkey_trust.py).
 
 A tab per customer (or site): Start reads every device's SSH host key without logging
-in, through the customer's jump host if it has one. New keys are recorded, known keys
+in, through each device's jump host if it has one. New keys are recorded, known keys
 are left alone, and a key that changed is listed with both fingerprints. Only "Accept
-new key…", after a confirmation that shows both, replaces a changed key. A jump host
-whose key changed gets a row of its own at the top, accepted the same way.
+new key…", after a confirmation that shows both, replaces a changed key. Each jump host
+gets a row of its own at the top; a changed jump host key is accepted the same way.
 """
 
 from __future__ import annotations

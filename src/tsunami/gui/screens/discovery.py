@@ -362,7 +362,7 @@ class DiscoveryTab(QWidget):
             request = self.build_request()
             login_name = self.login_combo.currentData() or ""
             login = self.ctx.secrets.get_login(login_name)
-            jump = self.ctx.jump_target(self.customer)
+            jump = self.ctx.jump_target(self.customer, site=self.site)
             redactor = secret_redactor(self.ctx) if request.backup else None
         except TsunamiError as exc:
             self.set_error(str(exc))

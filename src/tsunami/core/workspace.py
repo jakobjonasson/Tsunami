@@ -103,6 +103,14 @@ class CustomerInventory:
         """The jump host a connection to this device goes through, None for direct."""
         return self.jump_with_source(device)[0]
 
+    def jump_for_site(self, site: str) -> JumpHost | None:
+        """The jump host a device at this site goes through unless it sets its own: the
+        site's, else the customer's. For connections to a site's addresses before they are
+        devices (discovery)."""
+        if site in self.site_jumps:
+            return self.site_jumps[site]
+        return self.config.jump_host
+
     def jump_hosts(self) -> list[JumpHost]:
         """Every distinct jump host any device of this customer uses, in device order."""
         found: dict[tuple[str, int], JumpHost] = {}

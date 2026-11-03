@@ -132,16 +132,22 @@ class AppContext(QObject):
             **kwargs,
         )
 
-    def jump_target(self, customer: str, device: str | None = None) -> JumpTarget | None:
+    def jump_target(
+        self, customer: str, device: str | None = None, *, site: str | None = None
+    ) -> JumpTarget | None:
         """The jump host a device is reached through, with its login, or None for a direct
-        connection. Device, then site, then customer; without a device, the customer's.
-        Every connection to a device with a jump host goes through it, a run's or a test's
-        alike. TsunamiError if the login cannot be read (locked or missing)."""
+        connection. Device, then site, then customer; with only a site (discovery), the
+        site's, else the customer's; with neither, the customer's. Every connection to a
+        device with a jump host goes through it, a run's or a test's alike. TsunamiError if
+        the login cannot be read (locked or missing)."""
         ws = self.workspace
         inv = ws.customers.get(customer) if ws is not None else None
         if inv is None:
             return None
-        jh = inv.jump_for(inv.device(device) if device else None)
+        if device is None and site is not None:
+            jh = inv.jump_for_site(site)
+        else:
+            jh = inv.jump_for(inv.device(device) if device else None)
         if jh is None:
             return None
         return JumpTarget(str(jh.host), jh.port, self.secrets.get_login(jh.credential))

@@ -62,6 +62,19 @@ def test_precedence_is_device_then_site_then_customer(root):
     assert inv.jump_with_source(inv.device("sa-as02"))[1] == "site"
 
 
+def test_a_site_without_a_device_uses_its_own_jump_host_else_the_customers(root):
+    # Discovery connects to a site's addresses before they are devices.
+    ed = editor(root)
+    ed.update_customer("acme", jump_host={"host": "198.51.100.1", "credential": "c"})
+    ed.update_site("acme", "site-a", jump_host=JUMP)
+    ed.update_site("acme", "site-b", jump_host=DIRECT)
+    inv = acme(root)
+    assert inv.jump_for_site("site-a").port == 2222
+    assert inv.jump_for_site("site-b") is None  # direct
+    ed.update_site("acme", "site-b", jump_host=None)  # inherit again
+    assert str(acme(root).jump_for_site("site-b").host) == "198.51.100.1"
+
+
 @pytest.mark.parametrize("spelling", ["null", "none", "None"])
 def test_null_or_none_at_site_or_device_means_direct(root, spelling):
     ed = editor(root)
@@ -161,7 +174,13 @@ def test_each_device_is_reached_through_its_own_jump_host(app_paths, monkeypatch
     results = trust_host_keys(
         app_paths, "acme", DEVICES, jumps=jumps, probe=probe_any, jump_factory=factory
     )
-    assert [r.outcome for r in results] == [Outcome.RECORDED] * 4
+    # One row per jump host (several, so each is named), then the devices in order.
+    assert [r.device for r in results] == [
+        f"{JUMP_HOST} 198.51.100.10:22",
+        f"{JUMP_HOST} 198.51.100.20:22",
+        *(d.name for d in DEVICES),
+    ]
+    assert {r.outcome for r in results} == {Outcome.RECORDED}
     assert sorted(made) == ["198.51.100.10", "198.51.100.20"]  # one connection per jump host
     assert sorted(made["198.51.100.10"].channels) == ["192.0.2.1", "192.0.2.2"]
     assert made["198.51.100.20"].channels == ["192.0.2.3"]
@@ -191,9 +210,8 @@ def test_a_changed_jump_host_key_blocks_only_its_own_devices(app_paths, monkeypa
         app_paths, "acme", DEVICES, jumps=jumps, probe=probe_any, jump_factory=factory
     )
     rows = {r.device: r for r in results}
-    changed = [r for r in results if r.device.startswith(JUMP_HOST)]
-    assert len(changed) == 1 and changed[0].outcome == Outcome.CHANGED
-    assert changed[0].device == f"{JUMP_HOST} 198.51.100.10:22"  # several jump hosts: named
+    assert rows[f"{JUMP_HOST} 198.51.100.10:22"].outcome == Outcome.CHANGED
+    assert rows[f"{JUMP_HOST} 198.51.100.20:22"].outcome == Outcome.RECORDED
     assert rows["sw1"].outcome == Outcome.UNREACHABLE
     assert rows["sw3"].outcome == Outcome.RECORDED
     assert rows["sw2"].outcome == Outcome.RECORDED  # direct
