@@ -664,3 +664,37 @@ def test_no_secret_values_in_dialogs(main_window, gui_ctx):
         text = all_widget_text(dialog)
         assert LOGIN_PASSWORD not in text
         assert "acme-netadmin" in text
+
+
+def test_site_and_device_jump_host_choosers(main_window, gui_ctx, dialogs):
+    view = _view(main_window)
+
+    def set_site_jump(d):
+        d.jump.combo.setCurrentIndex(d.jump.combo.findData("use"))
+        d.jump.host_edit.setText("192.0.2.5")
+        d.jump.port_spin.setValue(2200)
+        d.jump.login.combo.setCurrentIndex(d.jump.login.combo.findData("acme-netadmin"))
+
+    dialogs.fill = set_site_jump
+    _trigger(view, ("acme", "site-a"), "Edit…")
+    assert dialogs.saved == [True]
+    inv = gui_ctx.workspace.customers["acme"]
+    jump = inv.site_jumps["site-a"]
+    assert (str(jump.host), jump.port) == ("192.0.2.5", 2200)
+    assert "jump_host" not in inv.sites["site-a"]
+
+    # The variables text leaves the setting out; the chooser shows it.
+    site_dialog = inventory_dialogs.SiteDialog(gui_ctx, main_window, "acme", site="site-a")
+    assert "jump_host" not in site_dialog.vars_edit.toPlainText()
+    assert site_dialog.jump.combo.currentData() == "use"
+
+    # A device inherits the site's jump host and says where it comes from.
+    device = _device(gui_ctx, "sa-as01")
+    dialog = inventory_dialogs.DeviceDialog(gui_ctx, main_window, "acme", device=device)
+    assert dialog.jump.combo.itemText(0) == "Inherit (site: 192.0.2.5:2200)"
+    dialog.jump.combo.setCurrentIndex(dialog.jump.combo.findData("direct"))
+    assert dialog.save()
+    inv = gui_ctx.workspace.customers["acme"]
+    assert inv.jump_for(inv.device("sa-as01")) is None
+    assert inv.jump_with_source(inv.device("sa-as01"))[1] == "device"
+    assert str(inv.jump_for(inv.device("sa-as02")).host) == "192.0.2.5"

@@ -22,7 +22,14 @@ from ruamel.yaml.comments import CommentedMap, CommentedSeq
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
-from tsunami.core.models.inventory import DEVICE_TYPES, CustomerFile, Device, DevicesFile, VarsFile
+from tsunami.core.models.inventory import (
+    DEVICE_TYPES,
+    CustomerFile,
+    Device,
+    DevicesFile,
+    JumpSetting,
+    VarsFile,
+)
 from tsunami.core.yamlio import (
     RoundTripDoc,
     YamlLoadError,
@@ -33,7 +40,22 @@ from tsunami.core.yamlio import (
 
 CUSTOMERS = Path("inventory", "customers")
 ROLES = Path("inventory", "roles")
-DEVICE_KEYS = ("name", "host", "port", "site", "role", "platform", "model", "credential", "vars")
+DEVICE_KEYS = (
+    "name",
+    "host",
+    "port",
+    "site",
+    "role",
+    "platform",
+    "model",
+    "credential",
+    "jump_host",
+    "vars",
+)
+# Written for "connect directly" in a site or device (a jump host setting of None means
+# inherit: the key is removed). Reads back as an explicit null.
+DIRECT = "none"
+KEEP: Any = object()  # update_site: leave the site's jump host as it is
 CUSTOMER_KEYS = (
     "name",
     "credential",
@@ -44,7 +66,7 @@ CUSTOMER_KEYS = (
     "site_credentials",
     "push_logins",
 )
-OPTIONAL_DEVICE_KEYS = frozenset({"port", "model", "credential", "vars"})
+OPTIONAL_DEVICE_KEYS = frozenset({"port", "model", "credential", "jump_host", "vars"})
 
 
 class InventoryEditError(TsunamiError):
@@ -117,16 +139,26 @@ class InventoryEditor:
     # -- sites --------------------------------------------------------------------------
 
     def create_site(
-        self, customer: str, site: str, *, credential: str | None = None, vars_text: str = ""
+        self,
+        customer: str,
+        site: str,
+        *,
+        credential: str | None = None,
+        vars_text: str = "",
+        jump_host: Any = None,
     ) -> None:
         path = self._site_path(customer, site, must_exist=False)
         if path.exists():
             raise InventoryEditError(f"site {site!r} already exists for {customer!r}")
         text = self._checked_vars_text(vars_text, path)
+        if jump_host not in (None, KEEP):
+            self._validate(JumpSetting, {"jump_host": _plain(jump_host)}, path.name)
         if credential:
             self._set_site_credential(customer, site, credential)
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", newline="\n")
+        if jump_host not in (None, KEEP):
+            self._set_site_jump(path, jump_host)
 
     def update_site(
         self,
@@ -137,14 +169,24 @@ class InventoryEditor:
         credential: str | None = None,
         vars_text: str | None = None,
         set_credential: bool = False,
+        jump_host: Any = KEEP,
     ) -> None:
         """Rename a site, set or clear its default login (set_credential), or replace its
-        variables (vars_text, YAML). Renaming moves every device at the site with it."""
+        variables (vars_text, YAML). Renaming moves every device at the site with it.
+
+        jump_host: a dict (host, port, credential) to set it, DIRECT to connect directly,
+        None to inherit the customer's, KEEP (the default) to leave it. Replacing the
+        variables keeps the jump host unless the new text has its own."""
         path = self._site_path(customer, site)
         if vars_text is not None:
-            path.write_text(
-                self._checked_vars_text(vars_text, path), encoding="utf-8", newline="\n"
-            )
+            old_jump = _load(path, CommentedMap).data.get("jump_host", KEEP)
+            text = self._checked_vars_text(vars_text, path)
+            path.write_text(text, encoding="utf-8", newline="\n")
+            if jump_host is KEEP and old_jump is not KEEP:
+                if "jump_host" not in (load_yaml_text(text, path).data or {}):
+                    jump_host = _plain(old_jump)
+        if jump_host is not KEEP:
+            self._set_site_jump(path, jump_host)
         if set_credential:
             self._set_site_credential(customer, site, credential or None)
         if new_name and new_name != site:
@@ -331,13 +373,28 @@ class InventoryEditor:
         self._validate(CustomerFile, doc.data, "customer.yml")
         dump_roundtrip(doc)
 
+    def _set_site_jump(self, path: Path, value: Any) -> None:
+        doc = _load(path, CommentedMap)
+        if value is not None:
+            self._validate(JumpSetting, {"jump_host": _plain(value)}, path.name)
+        if not doc.data and value is not None:
+            doc.data.fa.set_block_style()  # "{}" loads as a flow mapping
+        _set_key(doc.data, "jump_host", _plain(value), ("jump_host",))
+        if not doc.data:
+            path.write_text("{}\n", encoding="utf-8", newline="\n")
+        else:
+            dump_roundtrip(doc)
+
     def _checked_vars_text(self, text: str, path: Path) -> str:
         text = text if text.strip() else "{}\n"
         try:
             data = load_yaml_text(text, path).data
         except YamlLoadError as exc:
             raise InventoryEditError(str(exc)) from None
-        self._validate(VarsFile, {} if data is None else data, path.name)
+        data = {} if data is None else data
+        if isinstance(data, dict) and "jump_host" in data:
+            self._validate(JumpSetting, {"jump_host": data["jump_host"]}, path.name)
+        self._validate(VarsFile, data, path.name)
         return text if text.endswith("\n") else text + "\n"
 
     def _check_devices(self, customer: str, items: list) -> None:

@@ -161,13 +161,13 @@ class HostKeysTab(QWidget):
         if self.running or not self.devices:
             return False
         try:
-            jump = self.ctx.jump_target(self.customer)
+            jumps = self.ctx.jump_targets(self.customer, [d.name for d in self.devices])
         except TsunamiError as exc:
             self.shell.notify(f"The jump host's login is needed: {exc}", "error")
             return False
         self.results.clear()
-        if JUMP_HOST in self._rows:
-            self.table.removeRow(self._rows[JUMP_HOST])
+        while (name := next((n for n in self._rows if n.startswith(JUMP_HOST)), None)) is not None:
+            self.table.removeRow(self._rows[name])
             self._reindex()
         for i in range(self.table.rowCount()):
             for col in (2, 3, 4):
@@ -187,7 +187,7 @@ class HostKeysTab(QWidget):
                 paths,
                 customer,
                 devices,
-                jump=jump,
+                jumps=jumps,
                 connect_timeout=CONNECT_TIMEOUT,
                 legacy=legacy,
                 cancel=cancel,
@@ -206,9 +206,9 @@ class HostKeysTab(QWidget):
     def _on_result(self, result: KeyProbe) -> None:
         self.results[result.device] = result
         row = self._rows.get(result.device)
-        if row is None and result.device == JUMP_HOST:
+        if row is None and result.device.startswith(JUMP_HOST):
             self.table.insertRow(0)
-            for col, text in enumerate([JUMP_HOST, result.host, "", "", ""]):
+            for col, text in enumerate([result.device, result.host, "", "", ""]):
                 self.table.setItem(0, col, QTableWidgetItem(text))
             self._reindex()
             row = 0
@@ -264,7 +264,7 @@ class HostKeysTab(QWidget):
             return False
         who = (
             f"The jump host ({result.host})"
-            if result.device == JUMP_HOST
+            if result.device.startswith(JUMP_HOST)
             else f"{result.device} ({result.host})"
         )
         answer = QMessageBox.question(
@@ -289,7 +289,7 @@ class HostKeysTab(QWidget):
             Outcome.RECORDED,
             fingerprint=result.fingerprint,
             detail="new key accepted"
-            + ("; start again to read the devices" if result.device == JUMP_HOST else ""),
+            + ("; start again to read the devices" if result.device.startswith(JUMP_HOST) else ""),
         )
         self._on_result(accepted)
         self._refresh_buttons()
@@ -313,7 +313,7 @@ class HostKeysTab(QWidget):
         if not total:
             self.progress.setText("No devices here.")
             return
-        done = len(self.results) - (JUMP_HOST in self.results)
+        done = len([n for n in self.results if not n.startswith(JUMP_HOST)])
         counts = self.counts()
         parts = [f"{n} {name}" for name, n in sorted(counts.items(), key=lambda kv: -kv[1])]
         if not self.running and not done:

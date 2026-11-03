@@ -40,7 +40,7 @@ from PySide6.QtWidgets import (
 
 from tsunami.core import inventory_edit
 from tsunami.core.catalog import load_catalog
-from tsunami.core.inventory_edit import InventoryEditor
+from tsunami.core.inventory_edit import DIRECT, KEEP, InventoryEditor
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import Platform
 from tsunami.core.models.inventory import DEVICE_TYPES, Device, JumpHost
@@ -82,11 +82,21 @@ def site_file(ctx: AppContext, customer: str, site: str) -> Path | None:
 
 
 def read_site_text(ctx: AppContext, customer: str, site: str) -> str:
+    """The site file's variables as text. Its jump_host is a setting with its own chooser,
+    not a variable, so it is left out (saving the variables keeps it)."""
     path = site_file(ctx, customer, site)
     try:
-        return path.read_text(encoding="utf-8") if path is not None else ""
+        text = path.read_text(encoding="utf-8") if path is not None else ""
     except OSError:
         return ""
+    try:
+        values = parse_vars_text(text)
+    except ValueError:
+        return text
+    if "jump_host" not in values:
+        return text
+    del values["jump_host"]
+    return vars_to_text(values)
 
 
 def parse_vars_text(text: str) -> dict[str, Any]:
@@ -190,6 +200,105 @@ class LoginPicker(QWidget):
         if name:
             self.reload(name)
         return name
+
+
+def jump_text(jump: JumpHost | None) -> str:
+    """A jump host as shown beside a source; never its login."""
+    return "direct, no jump host" if jump is None else f"{jump.host}:{jump.port}"
+
+
+class JumpChooser(QWidget):
+    """The jump host of a site or device: inherit, connect directly, or use a jump host.
+
+    setting() is what the editor writes: None = inherit (key removed), DIRECT, or a dict.
+    The Inherit entry names where the inherited value comes from, like resolved_vars.
+    """
+
+    INHERIT, DIRECT_CHOICE, USE = "inherit", "direct", "use"
+
+    def __init__(
+        self,
+        ctx: AppContext,
+        *,
+        current: JumpHost | None,
+        is_set: bool,
+        inherit_label: str,
+        parent: QWidget | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.combo = wheel.ComboBox()
+        self.combo.addItem(inherit_label, self.INHERIT)
+        self.combo.addItem("Direct (no jump host)", self.DIRECT_CHOICE)
+        self.combo.addItem("Use a jump host", self.USE)
+        self.host_edit = QLineEdit(str(current.host) if current else "")
+        self.host_edit.setPlaceholderText("IP address or DNS name")
+        self.port_spin = wheel.SpinBox()
+        self.port_spin.setRange(1, 65535)
+        self.port_spin.setFixedWidth(96)
+        self.port_spin.setValue(current.port if current else 22)
+        self.login = LoginPicker(ctx, current=current.credential if current else None)
+        self.details = QWidget()
+        form = QFormLayout(self.details)
+        form.setContentsMargins(0, 4, 0, 0)
+        form.addRow("Host", self.host_edit)
+        form.addRow("Port", self.port_spin)
+        form.addRow("Login", self.login)
+        column = QVBoxLayout(self)
+        column.setContentsMargins(0, 0, 0, 0)
+        column.addWidget(self.combo)
+        column.addWidget(self.details)
+        if not is_set:
+            choice = self.INHERIT
+        else:
+            choice = self.USE if current is not None else self.DIRECT_CHOICE
+        self.combo.setCurrentIndex(self.combo.findData(choice))
+        self.combo.currentIndexChanged.connect(lambda _=0: self._sync())
+        self._sync()
+
+    def _sync(self) -> None:
+        self.details.setVisible(self.combo.currentData() == self.USE)
+
+    def set_inherit_label(self, text: str) -> None:
+        self.combo.setItemText(0, text)
+
+    def setting(self) -> Any:
+        """None (inherit), DIRECT, or the jump host as a dict. ValueError if invalid."""
+        choice = self.combo.currentData()
+        if choice == self.INHERIT:
+            return None
+        if choice == self.DIRECT_CHOICE:
+            return DIRECT
+        credential = self.login.login()
+        if credential is None:
+            raise ValueError("Choose a login for the jump host.")
+        data = {
+            "host": self.host_edit.text().strip(),
+            "port": self.port_spin.value(),
+            "credential": credential,
+        }
+        try:
+            JumpHost.model_validate(data)
+        except ValueError:
+            raise ValueError("The jump host needs an IP address or DNS name.") from None
+        return data
+
+
+def jump_setting_of(jump: JumpHost | None, is_set: bool) -> Any:
+    """The setting() value that matches what a file says now."""
+    if not is_set:
+        return None
+    if jump is None:
+        return DIRECT
+    return {"host": str(jump.host), "port": jump.port, "credential": jump.credential}
+
+
+def inherit_label(inv: Any, *, site: str | None) -> str:
+    """The Inherit entry's text: what a device (at site) or a site would inherit."""
+    if inv is None:
+        return "Inherit"
+    if site is not None and site in inv.site_jumps:
+        return f"Inherit (site: {jump_text(inv.site_jumps[site])})"
+    return f"Inherit (customer: {jump_text(inv.config.jump_host)})"
 
 
 class _EditDialog(QDialog):
@@ -304,6 +413,12 @@ class DeviceDialog(_EditDialog):
         self.login = LoginPicker(
             ctx, default_label=self._default_text(), current=device.credential if device else None
         )
+        self.jump = JumpChooser(
+            ctx,
+            current=device.jump_host if device else None,
+            is_set=device.jump_set if device else False,
+            inherit_label=inherit_label(inv, site=self.site_combo.currentData()),
+        )
         self.site_combo.currentIndexChanged.connect(lambda _=0: self._update_default())
         self.original_vars = dict(device.vars) if device else {}
         self.vars_edit = _plain_edit(vars_to_text(self.original_vars))
@@ -317,6 +432,7 @@ class DeviceDialog(_EditDialog):
         self.form.addRow("Platform", self.platform_combo)
         self.form.addRow("Model", self.model_combo)
         self.form.addRow("Login", self.login)
+        self.form.addRow("Jump host", self.jump)
         self.form.addRow("Variables", self.vars_edit)
         if self.login.load_error:
             self.set_error(self.login.load_error)
@@ -330,6 +446,9 @@ class DeviceDialog(_EditDialog):
 
     def _update_default(self) -> None:
         self.login.set_default_label(self._default_text())
+        self.jump.set_inherit_label(
+            inherit_label(self.inventory, site=self.site_combo.currentData())
+        )
 
     def _fill_models(self, select: str | None) -> None:
         platform = self.platform_combo.currentData()
@@ -359,6 +478,7 @@ class DeviceDialog(_EditDialog):
             "platform": self.platform_combo.currentData(),
             "model": self.model_combo.currentData(),
             "credential": self.login.login(),
+            "jump_host": self.jump.setting(),
             "vars": values or None,
         }
 
@@ -392,6 +512,7 @@ class DeviceDialog(_EditDialog):
             "platform": str(old.platform),
             "model": old.model,
             "credential": old.credential,
+            "jump_host": jump_setting_of(old.jump_host, old.jump_set),
             "vars": dict(old.vars) or None,
         }
         changed = {k: v for k, v in fields.items() if before[k] != v}
@@ -432,8 +553,19 @@ class SiteDialog(_EditDialog):
         self.original_text = read_site_text(ctx, customer, site) if site else ""
         self.vars_edit = _plain_edit(self.original_text, 150)
         self.vars_edit.setPlaceholderText("Optional YAML, e.g.\nsite_code: SA")
+        has_jump = bool(inv and site and site in inv.site_jumps)
+        self.original_jump = jump_setting_of(
+            inv.site_jumps.get(site) if has_jump else None, has_jump
+        )
+        self.jump = JumpChooser(
+            ctx,
+            current=inv.site_jumps.get(site) if has_jump else None,
+            is_set=has_jump,
+            inherit_label=f"Inherit (customer: {jump_text(inv.config.jump_host if inv else None)})",
+        )
         self.form.addRow("Name", self.name_edit)
         self.form.addRow("Default login", self.login)
+        self.form.addRow("Jump host", self.jump)
         self.form.addRow("Variables", self.vars_edit)
         if self.login.load_error:
             self.set_error(self.login.load_error)
@@ -445,6 +577,7 @@ class SiteDialog(_EditDialog):
         text = self.vars_edit.toPlainText()
         try:
             parse_vars_text(text)
+            jump = self.jump.setting()
             editor = make_editor(self.ctx)
         except (ValueError, TsunamiError) as exc:
             self.set_error(str(exc))
@@ -452,7 +585,7 @@ class SiteDialog(_EditDialog):
         if self.site is None:
             return self._run(
                 lambda: editor.create_site(
-                    self.customer, name, credential=credential, vars_text=text
+                    self.customer, name, credential=credential, vars_text=text, jump_host=jump
                 ),
                 f"Added site {name}.",
             )
@@ -465,6 +598,7 @@ class SiteDialog(_EditDialog):
                 credential=credential,
                 set_credential=credential != self.original_login,
                 vars_text=text if text != self.original_text else None,
+                jump_host=jump if jump != self.original_jump else KEEP,
             ),
             f"Saved site {name}.",
         )
@@ -700,10 +834,15 @@ class SiteView(QWidget):
         self.edit_button.setEnabled(True)
         site_default = inv.config.site_credentials.get(self.site)
         effective = site_default or inv.config.credential
+        if self.site in inv.site_jumps:
+            jump, source = inv.site_jumps[self.site], "site"
+        else:
+            jump, source = inv.config.jump_host, "customer"
         self.details.setText(
             f"Customer {self.customer}\n"
             f"Default login: {site_default or 'none set (uses the customer login)'}\n"
-            f"Login for devices without their own: {effective}"
+            f"Login for devices without their own: {effective}\n"
+            f"Jump host for devices without their own ({source}): {jump_text(jump)}"
         )
         for dev in sorted(inv.devices, key=lambda d: d.name):
             if dev.site == self.site:

@@ -311,7 +311,7 @@ def test_login_test_goes_through_the_customers_jump_host(
     assert (target.jump.host, target.jump.port) == ("198.51.100.10", 2200)
     assert target.jump.credential.username == "netadmin"
 
-    def locked(customer):
+    def locked(customer, device=None):
         raise TsunamiError("Tsunami is locked")
 
     monkeypatch.setattr(gui_ctx, "jump_target", locked)

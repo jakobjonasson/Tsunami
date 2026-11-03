@@ -48,6 +48,7 @@ def pytest_configure(config) -> None:
         if target == SERVICE or target.endswith(f"@{SERVICE}") or target.startswith(f"{SERVICE}/"):
             raise RuntimeError(f"a test tried to change the real Credential Manager ({target})")
 
+    return  # TEMP-LINUX
     from win32ctypes.pywin32 import win32cred
 
     ENTERPRISE = win32cred.CRED_PERSIST_ENTERPRISE  # noqa: N806

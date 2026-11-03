@@ -176,7 +176,7 @@ Inventory is customers, then sites, then devices, with roles as a cross-cutting 
 
 - `name`: display name. Required.
 - `credential`: name of the login credential in Credential Manager. Required. The default login for the customer's devices.
-- `jump_host`: optional object with `host`, `port` (default 22), and `credential`.
+- `jump_host`: optional object with `host`, `port` (default 22), and `credential`. The default for every device; a site or a device can override it (see Jump hosts).
 - `lab`: bool, default false. Marks a lab customer such as CML. MCP policy decides whether lab customers can be changed without approval.
 - `vars`: customer-level variables.
 - `role_vars`: map of role slug to variables, for customer-specific role defaults.
@@ -195,9 +195,21 @@ A list of devices. Each device has:
 - `platform`: `ios`, `ios-xe`, `aos-cx`, or `aos-s`.
 - `model`: optional hardware catalog id. Written by `add_to_inventory`; used for the facts sanity check.
 - `credential`: optional login credential name for this device.
+- `jump_host`: optional jump host for this device (same shape as the customer's). `null` or `none` connects directly. Absent: inherit.
 - `vars`: device-level variables.
 
 A device logs in with its own `credential`, else its site's entry in `site_credentials`, else the customer's `credential`. Day-0 staging over console has no device yet and uses the customer's.
+
+### Jump hosts
+
+A device's jump host is the first one set of: its own `jump_host` in `devices.yml`, its site's `jump_host` in `sites/<site>.yml`, the customer's in `customer.yml`. An explicit `null` or `none` at a level means "connect directly" and stops the search, so a site can connect directly while the customer has a default. A site's `jump_host` is a setting, not a variable: the loader reads it out of the site file before variables merge, so templates never see it, and a site cannot use `jump_host` as a variable name.
+
+- A run, a check, Trust host keys, drift checks, the Credentials Test button and MCP `show` all use the device's effective jump host (`CustomerInventory.jump_for`). A device whose effective jump host is set never connects directly. Discovery has no device yet and uses the customer's.
+- One paramiko transport per distinct jump host (customer, host, port) per run, at most 10 `direct-tcpip` channels on each. Jump host keys are recorded in the customer's `known_hosts` file.
+- Trust host keys opens one connection per distinct jump host. A changed jump host key is a `(jump host)` row (`(jump host) host:port` when the run uses several); only the devices behind that jump host wait for it. A jump host whose key is known or newly recorded has no row.
+- A jump host's login is never pushable. The Credentials screen lists a login used by a site or device jump host under "Jump host".
+- GUI: the site and device editors have a Jump host chooser (Inherit, Direct, Use a jump host); Inherit names where the value comes from. The site's variables text leaves `jump_host` out, and saving it keeps the setting.
+- MCP: `list_devices` shows each device's effective `jump_host` as `host`, `port` and `set_at` (`device`, `site` or `customer`), or `null` for direct. It never shows the login, and MCP cannot set a jump host.
 
 The GUI edits inventory through the Inventory view's context menus: devices (edit, delete, properties), sites (new device, edit, settings, delete), and customers (add site, properties, delete). Every edit keeps comments and layout, is validated before it is written, and is written atomically. Deleting a customer or a site file sends it to the Recycle Bin; deleting a site with devices needs explicit consent and removes them too.
 
@@ -1495,5 +1507,8 @@ Changes since the original draft, with reasons:
   - Tests and the packaging smoke test compare the registered tools with `TOOL_NAMES` instead of a hard-coded count.
   - Every Settings save path refuses to write over a policy changed on disk; the policy file's header no longer says to edit it only in the GUI.
   - Inventory proposals (issue 2), `history.db` migration 006: MCP gained `propose_inventory_change` and `get_inventory_proposal`. The design said MCP inventory changes only add. Edits and removals of existing devices are now possible, but only as a proposal a person approves in the GUI with a before/after per field (`core/inventory_proposals.py`, `history.db` migration 005, `inventory_proposals`). They sit behind the same `inventory_edits` switch, never skip approval, cover role, host, site, platform and model only, and a host they set is recorded in `mcp_devices`. "Add only" elsewhere in this document means direct MCP writes.
+- Unreleased, jump host per site and per device (issue 8):
+  - `jump_host` is accepted in `sites/<site>.yml` and per device in `devices.yml`; precedence is device, site, customer, and `null`/`none` means direct. See Jump hosts. `JobContext.jump` became `JobContext.jumps` (per target); `trust_host_keys` and `DriftCheck` take `jumps` (per device name); `AppContext.jump_target` takes an optional device and `jump_targets` is new.
+  - Not done: Discovery still uses the customer's jump host. Trust host keys shows a `(jump host)` row only for a changed key.
 - Unreleased, Claude-Data config location (issue 5):
   - `claude_desktop_config_paths()` also returns `%LOCALAPPDATA%\Claude-Data\claude_*\claude_desktop_config.json`, which current Claude Desktop builds read. The `%APPDATA%` fallback rule is unchanged. The file is assumed to sit directly in the `claude_<id>` folder; this is unverified on a real install.

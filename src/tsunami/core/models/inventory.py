@@ -54,6 +54,24 @@ class JumpHost(StrictModel):
     credential: Slug
 
 
+def no_jump(value: Any) -> Any:
+    """The string 'none' (any case) means the same as null: connect directly."""
+    if isinstance(value, str) and value.strip().lower() == "none":
+        return None
+    return value
+
+
+class JumpSetting(StrictModel):
+    """The jump_host key of a site file, checked on its own (the rest are variables)."""
+
+    jump_host: JumpHost | None
+
+    @field_validator("jump_host", mode="before")
+    @classmethod
+    def _no_jump(cls, value: Any) -> Any:
+        return no_jump(value)
+
+
 class CustomerFile(StrictModel):
     name: str = Field(min_length=1)
     credential: Slug = Field(description="Login credential name in Credential Manager.")
@@ -62,6 +80,12 @@ class CustomerFile(StrictModel):
         False, description="Lab customer, e.g. CML. MCP policy decides what it may change."
     )
     vars: Vars = {}
+
+    @field_validator("jump_host", mode="before")
+    @classmethod
+    def _no_jump(cls, value: Any) -> Any:
+        return no_jump(value)
+
     role_vars: dict[Slug, Vars] = {}
     site_credentials: dict[Slug, Slug] = Field(
         {}, description="Default login credential per site; a device's own credential wins."
@@ -84,7 +108,22 @@ class Device(StrictModel):
     credential: Slug | None = Field(
         None, description="Login credential; default: the site's, then the customer's."
     )
+    jump_host: JumpHost | None = Field(
+        None,
+        description="Jump host for this device; overrides the site's and the customer's. "
+        "An explicit null (or none) connects directly. Absent: inherit.",
+    )
     vars: Vars = {}
+
+    @field_validator("jump_host", mode="before")
+    @classmethod
+    def _no_jump(cls, value: Any) -> Any:
+        return no_jump(value)
+
+    @property
+    def jump_set(self) -> bool:
+        """True if devices.yml says anything about the jump host (a host or a null)."""
+        return "jump_host" in self.model_fields_set
 
     @field_validator("platform")
     @classmethod

@@ -252,10 +252,17 @@ class Runner:
                             continue
                         raise
                 credentials[target.label] = loaded[name]
-        jump = None
-        if cust.config.jump_host is not None:
-            jh = cust.config.jump_host
-            jump = JumpTarget(jh.host, jh.port, self.secrets.get_login(jh.credential))
+        # Each target's jump host: its own, else its site's, else the customer's. The login
+        # of each distinct jump host is read once.
+        jumps: dict[str, JumpTarget] = {}
+        jump_logins: dict[str, LoginCredential] = {}
+        for target in targets:
+            jh = cust.jump_for(target.device)
+            if jh is None:
+                continue
+            if jh.credential not in jump_logins:
+                jump_logins[jh.credential] = self.secrets.get_login(jh.credential)
+            jumps[target.label] = JumpTarget(jh.host, jh.port, jump_logins[jh.credential])
 
         renderer = Renderer(self.workspace, self.app_settings, self.secrets)
         secret_values: dict[str, str] = {}
@@ -293,9 +300,8 @@ class Runner:
             except TsunamiError:
                 continue  # not saved: no play can push it either
             exact += [v for v in (pushed.password, pushed.enable) if v]
-        for cred in (*credentials.values(), jump.credential if jump else None):
-            if cred is not None:
-                exact += [v for v in (cred.password, cred.enable) if v]
+        for cred in (*credentials.values(), *jump_logins.values()):
+            exact += [v for v in (cred.password, cred.enable) if v]
         if request.exact_exempt:  # sink lines stay masked by the pattern layer
             exact = [v for v in exact if v not in request.exact_exempt]
         return JobContext(
@@ -315,7 +321,7 @@ class Runner:
             cancel=self.cancel,
             emit=self.on_event,
             credentials=credentials,
-            jump=jump,
+            jumps=jumps,
             secret_values=secret_values,
             approved_hashes=request.approved_hashes,
             allow_new_host_key=request.allow_new_host_key,

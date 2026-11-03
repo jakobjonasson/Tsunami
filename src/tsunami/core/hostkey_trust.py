@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import socket
 import threading
-from collections.abc import Callable, Sequence
+from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass, field
 from enum import StrEnum
@@ -76,6 +76,7 @@ def trust_host_keys(
     devices: Sequence[DeviceAddress],
     *,
     jump: JumpTarget | None = None,
+    jumps: Mapping[str, JumpTarget] | None = None,
     connect_timeout: float = 10.0,
     legacy: bool = True,
     workers: int = MAX_WORKERS,
@@ -85,22 +86,39 @@ def trust_host_keys(
     jump_factory: Callable[[ConnectTarget, HostKeyStore], Any] | None = None,
 ) -> list[KeyProbe]:
     """Probe every device's host key and record new ones. Results come back in device
-    order, after a JUMP_HOST result if the jump host's key changed; on_result is called
-    as each finishes (from worker threads)."""
+    order, after a JUMP_HOST result for each jump host whose key changed; on_result is
+    called as each finishes (from worker threads).
+
+    jumps maps a device name to its own jump host (device, then site, then customer); a
+    device not in it connects directly. jump is a jump host for every device without an
+    entry in jumps. One connection is opened per distinct jump host (host and port)."""
     cancel = cancel or threading.Event()
     store = HostKeyStore(paths.known_hosts_file(customer))
-    connection = None
-    if jump is not None:
-        from tsunami.core.transports.ssh import JumpConnection
+    jumps = jumps or {}
+    by_jump: dict[tuple[str, int] | None, list[DeviceAddress]] = {}
+    targets: dict[tuple[str, int], JumpTarget] = {}
+    for device in devices:
+        chosen = jumps.get(device.name, jump)
+        key = (str(chosen.host), chosen.port) if chosen is not None else None
+        if chosen is not None:
+            targets.setdefault(key, chosen)  # type: ignore[arg-type]
+        by_jump.setdefault(key, []).append(device)
 
+    connections: dict[tuple[str, int] | None, Any] = {None: None}
+    jump_rows: list[KeyProbe] = []
+    failed: dict[str, KeyProbe] = {}
+    multiple = len(targets) > 1
+    if targets:
+        from tsunami.core.transports.ssh import JumpConnection
+    for key, target_jump in targets.items():
         target = ConnectTarget(
             customer=customer,
-            device=f"jump host {jump.host}",
-            host=jump.host,
-            port=jump.port,
+            device=f"jump host {target_jump.host}",
+            host=target_jump.host,
+            port=target_jump.port,
             platform=_ANY_PLATFORM,
             method=_SSH,
-            jump=jump,
+            jump=target_jump,
             connect_timeout=connect_timeout,
             allow_new_host_key=True,  # the person started this from the GUI
         )
@@ -108,42 +126,51 @@ def trust_host_keys(
             lambda t, s: JumpConnection(t, s, max_channels=workers, probe=probe, legacy=legacy)
         )
         try:
-            connection = make(target, store)
+            connections[key] = make(target, store)
         except ConnectError as exc:
-            results = []
             detail = str(exc)
             if isinstance(exc, HostKeyMismatchError):
                 # Probe the jump host itself so its changed key can be accepted like a
                 # device's; until then nothing behind it can be reached.
-                address = DeviceAddress(JUMP_HOST, jump.host, jump.port)
+                name = f"{JUMP_HOST} {key[0]}:{key[1]}" if multiple else JUMP_HOST
+                address = DeviceAddress(name, target_jump.host, target_jump.port)
                 probed = _probe_one(store, address, None, connect_timeout, legacy, probe)
                 if probed.outcome == Outcome.CHANGED:
-                    results.append(probed)
+                    jump_rows.append(probed)
                     detail = "the jump host's key changed; accept it, then start again"
-            results += [
-                KeyProbe(d.name, d.host, d.port, Outcome.UNREACHABLE, detail=detail)
-                for d in devices
-            ]
-            for result in results:
-                if on_result is not None:
-                    on_result(result)
-            return results
+            for d in by_jump[key]:
+                failed[d.name] = KeyProbe(
+                    d.name, d.host, d.port, Outcome.UNREACHABLE, detail=detail
+                )
+    jump_of = {d.name: key for key, group in by_jump.items() for d in group}
 
     def one(device: DeviceAddress) -> KeyProbe:
+        if device.name in failed:
+            return failed[device.name]
         if cancel.is_set():
             result = KeyProbe(device.name, device.host, device.port, Outcome.CANCELLED)
         else:
-            result = _probe_one(store, device, connection, connect_timeout, legacy, probe)
+            result = _probe_one(
+                store, device, connections[jump_of[device.name]], connect_timeout, legacy, probe
+            )
+        return result
+
+    def reported(device: DeviceAddress) -> KeyProbe:
+        result = one(device)
         if on_result is not None:
             on_result(result)
         return result
 
+    for row in jump_rows:
+        if on_result is not None:
+            on_result(row)
     try:
         with ThreadPoolExecutor(max_workers=max(1, workers)) as pool:
-            return list(pool.map(one, devices))
+            return [*jump_rows, *pool.map(reported, devices)]
     finally:
-        if connection is not None:
-            connection.close()
+        for connection in connections.values():
+            if connection is not None:
+                connection.close()
 
 
 def accept_changed(paths: AppPaths, customer: str, result: KeyProbe) -> None:
