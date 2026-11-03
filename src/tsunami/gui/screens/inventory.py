@@ -314,6 +314,14 @@ class DeviceView(QWidget):
             self.last_test_result = (False, str(exc))
             self._say(f"Cannot test: {exc}", "error")
             return False
+        try:
+            # Reached as a run reaches it: through its jump host (device, site or customer).
+            # Going direct to a private address could reach another machine, or nothing.
+            jump = self.ctx.jump_target(self.customer, dev.name)
+        except TsunamiError as exc:
+            self.last_test_result = (False, str(exc))
+            self._say(f"Cannot test: the jump host's login is needed: {exc}", "error")
+            return False
         target = ConnectTarget(
             customer=self.customer,
             device=dev.name,
@@ -322,6 +330,7 @@ class DeviceView(QWidget):
             platform=dev.platform,
             method=ConnectionMethod.SSH,
             credential=credential,
+            jump=jump,
         )
         self.test_button.setEnabled(False)
         self._say(f"Testing {login} on {dev.name}…")

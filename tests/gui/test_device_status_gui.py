@@ -308,6 +308,40 @@ def test_test_connection_shows_failure_inline(main_window, qtbot, monkeypatch):
     assert "no route" in page.action_label.text()
 
 
+def test_test_connection_goes_through_the_devices_jump_host(
+    main_window, gui_ctx, qtbot, monkeypatch
+):
+    # It went direct, so a device behind a jump host failed the test while runs reached it.
+    from tsunami.core.inventory_edit import InventoryEditor
+
+    gui_ctx.secrets.set_login("bastion", credentials.LoginCredential("jump", "Bastion-Pw-7"))
+    InventoryEditor(gui_ctx.workspace_path).update_site(
+        "acme", "site-a", jump_host={"host": "198.51.100.10", "port": 2200, "credential": "bastion"}
+    )
+    gui_ctx.reload_workspace(block=True)
+    targets = []
+
+    class Recording:
+        def __init__(self, *args) -> None:
+            pass
+
+        def open(self, target):
+            targets.append(target)
+            return _FakeSession()
+
+        def close(self) -> None:
+            pass
+
+    monkeypatch.setattr(credentials, "DeviceTransport", Recording)
+    page = _page(main_window)
+    assert page.test_connection()
+    qtbot.waitUntil(lambda: page.last_test_result is not None, timeout=10000)
+    [target] = targets
+    assert (target.jump.host, target.jump.port) == ("198.51.100.10", 2200)
+    assert target.jump.credential.username == "jump"
+    assert target.credential.username == "netadmin"  # the device's own login, not the jump's
+
+
 def test_test_connection_when_the_login_is_unavailable(main_window, gui_ctx, monkeypatch):
     def missing(name):
         raise VaultLocked

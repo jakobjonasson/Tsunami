@@ -1518,5 +1518,6 @@ Changes since the original draft, with reasons:
 - Unreleased:
   - The device page has Edit…, the same dialog as the Inventory menu's Edit (a rename reopens the page), and its header names the device's login, marked `(default)` when it comes from the site or customer.
   - Back up and check for drift is also on a device's menu in Inventory, checking that device alone in its own tab.
+  - The device page's Test connection goes through the device's jump host. It always connected directly, so once a site or device had a jump host the test failed while runs reached the device.
   - The rest of issue 8: Discovery goes through the site's jump host, else the customer's. Trust host keys lists every jump host as a row with its outcome (recorded, known, unreachable or changed), not only a changed one.
   - A drift check no longer skips devices' backups at random. While other threads created backup folders, `Path.resolve()` on Windows could return one path with the `\\?\` prefix and the other without, and the backup folder was refused as outside the backups folder.
