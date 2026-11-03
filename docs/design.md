@@ -790,7 +790,7 @@ Accepted residual: if a secret is also stored in plain text somewhere the exact 
 
 #### Drift check
 
-Back up and check for drift (Inventory, on a site or a customer) reads each device's running config with its own login and sends nothing else (`core/drift.py`).
+Back up and check for drift (Inventory, on a device, a site or a customer) reads each device's running config with its own login and sends nothing else (`core/drift.py`).
 
 - A device with no backup gets its first one.
 - Otherwise its config is compared with its newest backup, whoever took it. A new backup is saved only when something changed, so retention keeps real history rather than copies.
@@ -1517,4 +1517,5 @@ Changes since the original draft, with reasons:
   - The test suite runs on Linux (issue 7), for the Claude Code runner: `tests/conftest.py` skips the Credential Manager guard off Windows, and a `windows` marker skips tests that need the named pipe, Windows paths, Credential Manager, `cmd`, the Recycle Bin or Windows font metrics. Windows CI still runs every test.
 - Unreleased:
   - The device page has Edit…, the same dialog as the Inventory menu's Edit (a rename reopens the page), and its header names the device's login, marked `(default)` when it comes from the site or customer.
+  - Back up and check for drift is also on a device's menu in Inventory, checking that device alone in its own tab.
   - A drift check no longer skips devices' backups at random. While other threads created backup folders, `Path.resolve()` on Windows could return one path with the `\\?\` prefix and the other without, and the backup folder was refused as outside the backups folder.

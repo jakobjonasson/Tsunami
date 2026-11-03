@@ -1,5 +1,5 @@
-"""Back up and check for drift: a tab per site, or per customer for all its sites
-(core/drift.py).
+"""Back up and check for drift: a tab per device, per site, or per customer for all its
+sites (core/drift.py).
 
 Opening the tab starts the check. Each device is read with its own login; a device
 without a backup gets its first, and one whose config differs from its newest backup gets
@@ -55,18 +55,26 @@ _RESULT_ROLE = Qt.ItemDataRole.UserRole
 
 
 def open_drift_tab(
-    ctx: AppContext, shell: Shell, customer: str, site: str | None = None
+    ctx: AppContext,
+    shell: Shell,
+    customer: str,
+    site: str | None = None,
+    *,
+    device: str | None = None,
 ) -> QWidget | None:
-    """Open (or focus) the drift tab for a site, or for every site of a customer, and
-    start a check unless one is running."""
+    """Open (or focus) the drift tab for one device, a site, or every site of a customer,
+    and start a check unless one is running."""
     if ctx.workspace is None or customer not in ctx.workspace.customers:
         shell.notify(f"Unknown customer {customer!r}.", "error")
         return None
-    where = f"{customer}/{site}" if site else customer
+    if device is not None:
+        key = f"drift:{customer}/device/{device}"  # devices and sites may share a name
+    else:
+        key = f"drift:{customer}/{site}" if site else f"drift:{customer}"
     tab = shell.open_tab(
-        f"drift:{where}",
-        f"Drift: {site or customer}",
-        lambda: DriftTab(ctx, shell, customer, site),
+        key,
+        f"Drift: {device or site or customer}",
+        lambda: DriftTab(ctx, shell, customer, site, device=device),
         "git-compare",
     )
     if isinstance(tab, DriftTab) and not tab.running:
@@ -101,9 +109,18 @@ class _Task(QRunnable):
 
 
 class DriftTab(QWidget):
-    def __init__(self, ctx: AppContext, shell: Shell, customer: str, site: str | None) -> None:
+    def __init__(
+        self,
+        ctx: AppContext,
+        shell: Shell,
+        customer: str,
+        site: str | None,
+        *,
+        device: str | None = None,
+    ) -> None:
         super().__init__()
         self.ctx, self.shell, self.customer, self.site = ctx, shell, customer, site
+        self.device = device
         self.running = False
         self.check: DriftCheck | None = None
         self.report: DriftReport | None = None
@@ -115,7 +132,10 @@ class DriftTab(QWidget):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 12, 16, 12)
         layout.setSpacing(8)
-        where = f"{customer} / {site}" if site else f"{customer}, all sites"
+        if device is not None:
+            where = f"{customer} / {device}"
+        else:
+            where = f"{customer} / {site}" if site else f"{customer}, all sites"
         title = QLabel(f"Back up and check for drift: {where}")
         title.setObjectName("Title")
         layout.addWidget(title)
@@ -194,7 +214,12 @@ class DriftTab(QWidget):
         inv = self._inventory()
         if inv is None:
             return []
-        devices = [d for d in inv.devices if self.site is None or d.site == self.site]
+        devices = [
+            d
+            for d in inv.devices
+            if (self.site is None or d.site == self.site)
+            and (self.device is None or d.name == self.device)
+        ]
         return sorted(devices, key=lambda d: (d.site, d.name))
 
     def _plan(self) -> tuple[list[DriftDevice], dict[str, LoginCredential]]:
@@ -228,6 +253,8 @@ class DriftTab(QWidget):
             return False
         try:
             devices, logins = self._plan()
+            if not devices and self.device is not None:
+                raise TsunamiError(f"{self.device} is not in {self.customer}'s inventory.")
             if not devices:
                 raise TsunamiError(
                     f"{'Site ' + self.site if self.site else self.customer} has no devices."

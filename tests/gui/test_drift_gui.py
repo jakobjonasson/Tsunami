@@ -117,3 +117,45 @@ def test_inventory_menu_opens_the_drift_tab(main_window, monkeypatch):
     view.check_drift("acme", "site-a")
     view.check_drift("acme")
     assert opened == [("acme", "site-a"), ("acme", None)]
+
+
+def test_one_device_is_checked_from_its_menu(qtbot, gui_ctx, main_window, mock_transport, notes):
+    from tsunami.gui.screens.inventory import InventoryView
+
+    view = main_window._views["inventory"].findChild(InventoryView)
+    customer = next(
+        view.tree.topLevelItem(i)
+        for i in range(view.tree.topLevelItemCount())
+        if view.tree.topLevelItem(i).text(0).split()[0] == "acme"
+    )
+    site = next(
+        customer.child(i)
+        for i in range(customer.childCount())
+        if "site-a" in customer.child(i).text(0)
+    )
+    device = next(
+        site.child(i)
+        for i in range(site.childCount())
+        if site.child(i).text(0).split()[0] == "sa-as01"
+    )
+    actions = {a.text(): a for a in view.menu_for(device).actions() if not a.isSeparator()}
+    actions["Back up and check for drift"].trigger()
+
+    tab = main_window._tabs["drift:acme/device/sa-as01"]
+    assert isinstance(tab, DriftTab)
+    wait_done(qtbot, tab)
+    assert column(tab, "Status") == {"sa-as01": "first backup"}  # not its site's other devices
+    assert "acme / sa-as01" in all_widget_text(tab)
+
+    mock_transport.device("sa-as01").running.append("ntp server 192.0.2.100")
+    tab.start_button.click()
+    wait_done(qtbot, tab)
+    assert column(tab, "Status") == {"sa-as01": "changed"}
+    # A site check of the same customer is its own tab.
+    assert open_drift_tab(gui_ctx, main_window, "acme", "site-a") is not tab
+
+
+def test_a_device_not_in_the_inventory_is_refused(qtbot, gui_ctx, main_window):
+    tab = open_drift_tab(gui_ctx, main_window, "acme", device="ghost")
+    assert not tab.running
+    assert "ghost is not in acme's inventory" in tab.error_label.text()

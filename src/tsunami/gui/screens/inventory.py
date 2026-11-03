@@ -582,6 +582,7 @@ class InventoryView(QWidget):
             add("Edit…", "edit", self.edit_device, kind[1], kind[2])
             add("Properties", "info", self.open_properties, kind[1], kind[2])
             add("Backups…", "archive", self.open_backups, kind[1], kind[2])
+            add("Back up and check for drift", "git-compare", self.check_device_drift, *kind[1:])
             menu.addSeparator()
             add("Delete…", "trash", self.delete_device, kind[1], kind[2])
         return menu
@@ -610,6 +611,11 @@ class InventoryView(QWidget):
         from tsunami.gui.screens.drift import open_drift_tab
 
         open_drift_tab(self.ctx, self.shell, customer, site)
+
+    def check_device_drift(self, customer: str, name: str) -> None:
+        from tsunami.gui.screens.drift import open_drift_tab
+
+        open_drift_tab(self.ctx, self.shell, customer, device=name)
 
     def trust_host_keys(self, customer: str, site: str | None = None) -> None:
         from tsunami.gui.screens.host_keys import open_trust_tab
