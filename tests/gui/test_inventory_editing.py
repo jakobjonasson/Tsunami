@@ -335,6 +335,7 @@ def test_menu_contents(main_window):
         "Edit…",
         "Properties",
         "Backups…",
+        "Back up and check for drift",
         "Delete…",
     ]
     assert _texts(view.menu_for(_find(tree, "acme", "site-a"))) == [
