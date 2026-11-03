@@ -65,8 +65,8 @@ def backup_folder(paths: AppPaths, customer: str, device: str) -> Path:
         require_slug(device)
     except TsunamiError as exc:
         raise BackupError(str(exc)) from None
-    root = Path(paths.backups_dir).resolve()
-    folder = (root / customer / device).resolve()
+    root = _resolved(paths.backups_dir)
+    folder = _resolved(root / customer / device)
     if not folder.is_relative_to(root) or folder == root:
         raise BackupError("the backup folder resolves outside the backups folder")
     return folder
@@ -129,12 +129,24 @@ def list_backups(paths: AppPaths, customer: str, device: str) -> list[BackupEntr
     return entries
 
 
+def _resolved(path: Path | str) -> Path:
+    """path.resolve() without Windows' extended-length prefix. While another thread creates
+    folders on the way, resolve() can return \\\\?\\C:\\... for a path it otherwise returns
+    as C:\\..., and is_relative_to then treats the two as unrelated."""
+    text = str(Path(path).resolve())
+    if text.startswith("\\\\?\\UNC\\"):
+        text = "\\\\" + text[8:]
+    elif text.startswith("\\\\?\\"):
+        text = text[4:]
+    return Path(text)
+
+
 def _checked(path: Path | str, root: Path | None) -> Path:
     path = Path(path)
     if parse_name(path.name) is None:
         raise BackupError("not a Tsunami backup file")
-    resolved = path.resolve()
-    if root is not None and not resolved.is_relative_to(Path(root).resolve()):
+    resolved = _resolved(path)
+    if root is not None and not resolved.is_relative_to(_resolved(root)):
         raise BackupError("the backup is outside the backups folder")
     if resolved.is_symlink() or not resolved.is_file():
         raise BackupError("the backup file does not exist")

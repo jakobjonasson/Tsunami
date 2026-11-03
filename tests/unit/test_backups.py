@@ -123,6 +123,22 @@ def test_folder_stays_under_backups_dir(app_paths):
     assert folder.is_relative_to(app_paths.backups_dir.resolve())
 
 
+@pytest.mark.windows
+def test_an_extended_length_prefix_from_resolve_is_not_an_escape(app_paths, monkeypatch):
+    # While another thread creates folders, resolve() can return \\?\C:\... for one path
+    # and C:\... for the other; a drift check then refused devices at random.
+    real = Path.resolve
+
+    def prefixed(self, strict=False):
+        path = real(self, strict)
+        return Path("\\\\?\\" + str(path)) if path.name == "sa-as01" else path
+
+    monkeypatch.setattr(Path, "resolve", prefixed)
+    folder = backup_folder(app_paths, "acme", "sa-as01")
+    assert not str(folder).startswith("\\\\?\\")
+    assert folder.is_relative_to(app_paths.backups_dir.resolve())
+
+
 def test_read_refuses_paths_outside_the_backups_folder(app_paths, tmp_path, redactor):
     inside = _write(app_paths, "20260101T010101Z", "job1", _config("192.0.2.99", ENABLE_SECRET))
     outside = tmp_path / "20260101T010101Z_job1.cfg"
