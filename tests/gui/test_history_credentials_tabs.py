@@ -134,7 +134,13 @@ def test_sidebar_has_no_button_rows(side):
 def test_login_menu_actions_by_text(side, gui_ctx, monkeypatch):
     item = side.login_list.item(0)
     menu = side.menu_for(item)
-    assert [a.text() for a in menu.actions()] == ["New…", "Overwrite…", "Delete", "Test"]
+    assert [a.text() for a in menu.actions()] == [
+        "New…",
+        "Overwrite…",
+        "Customers…",
+        "Delete",
+        "Test",
+    ]
 
     seen = []
     monkeypatch.setattr(
@@ -208,7 +214,16 @@ def test_tab_buttons_fit_and_work(cred_tab, gui_ctx, monkeypatch):
     cred_tab.resize(1100, 700)
     cred_tab.show()
     labels = [b.text() for b in cred_tab.findChildren(credentials.QPushButton)]
-    assert labels == ["New…", "Overwrite…", "Delete", "Test", "New…", "Overwrite…", "Delete"]
+    assert labels == [
+        "New…",
+        "Overwrite…",
+        "Customers…",
+        "Delete",
+        "Test",
+        "New…",
+        "Overwrite…",
+        "Delete",
+    ]
     for button in cred_tab.findChildren(credentials.QPushButton):
         assert button.width() >= button.sizeHint().width()
     cred_tab.login_list.setCurrentRow(0)

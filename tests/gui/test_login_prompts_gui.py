@@ -1,5 +1,5 @@
-"""login prompts in the run wizard, push_logins in the customer dialog, and the
-Credentials delete warning for a login plays push."""
+"""login prompts in the run wizard, push_logins in the customer dialog and in Credentials
+(New login and Customers…), and the Credentials delete warning for a login plays push."""
 
 from __future__ import annotations
 
@@ -86,6 +86,102 @@ def test_the_customer_dialog_edits_push_logins(qtbot, main_window, gui_ctx):
     assert gui_ctx.workspace.customers["acme"].config.push_logins == []
     text = (gui_ctx.workspace_path / "inventory/customers/acme/customer.yml").read_text("utf-8")
     assert "push_logins" not in text  # an empty list removes the key
+
+
+def _credentials_view(main_window):
+    return main_window._views["credentials"].findChild(credentials.CredentialsView)
+
+
+def _add_globex(gui_ctx):
+    editor = InventoryEditor(gui_ctx.workspace_path)
+    editor.create_customer("globex", name="Globex", credential="globex-admin")
+
+
+def test_a_new_login_can_name_the_customers_that_may_push_it(main_window, gui_ctx, monkeypatch):
+    setup(gui_ctx, push=())
+    _add_globex(gui_ctx)
+    gui_ctx.reload_workspace(block=True)
+    seen = {}
+
+    def fill(dialog):
+        seen["rows"] = {s: i.text() for s, i in dialog.customers.items().items()}
+        dialog.name_edit.setText("spare-admin")
+        dialog.username_edit.setText("spare")
+        dialog.value_edit.setText("Spare-Admin-Pw-31")
+        dialog.customers.items()["acme"].setCheckState(Qt.CheckState.Checked)
+        return True
+
+    monkeypatch.setattr(credentials, "run_dialog", fill)
+    _credentials_view(main_window).new_login()
+    gui_ctx.reload_workspace(block=True)
+
+    assert seen["rows"] == {"acme": "acme", "globex": "globex"}
+    customers = gui_ctx.workspace.customers
+    assert customers["acme"].config.push_logins == ["spare-admin"]
+    assert customers["globex"].config.push_logins == []
+    # The play that asks for a login now offers it for acme.
+    wizard = open_run_wizard(gui_ctx, main_window, PLAY)
+    assert combo_items(wizard.fields["admin2"].editor) == ["acme-netadmin", "spare-admin"]
+    assert "Spare-Admin-Pw-31" not in all_widget_text(main_window)
+
+
+def test_customers_menu_changes_who_may_push_a_saved_login(main_window, gui_ctx, monkeypatch):
+    setup(gui_ctx, push=())
+    _add_globex(gui_ctx)
+    gui_ctx.reload_workspace(block=True)
+    view = _credentials_view(main_window)
+    menu = view.menu_for(view.login_list.findItems("netadmin2", Qt.MatchFlag.MatchExactly)[0])
+
+    def tick(*slugs):
+        def fill(dialog):
+            for slug, item in dialog.customers.items().items():
+                wanted = slug in slugs
+                item.setCheckState(Qt.CheckState.Checked if wanted else Qt.CheckState.Unchecked)
+            return True
+
+        return fill
+
+    monkeypatch.setattr(credentials, "run_dialog", tick("acme", "globex"))
+    next(a for a in menu.actions() if a.text() == "Customers…").trigger()
+    gui_ctx.reload_workspace(block=True)
+    customers = gui_ctx.workspace.customers
+    assert customers["acme"].config.push_logins == ["netadmin2"]
+    assert customers["globex"].config.push_logins == ["netadmin2"]
+
+    monkeypatch.setattr(credentials, "run_dialog", tick("globex"))
+    view.edit_customers("netadmin2")
+    gui_ctx.reload_workspace(block=True)
+    customers = gui_ctx.workspace.customers
+    assert customers["acme"].config.push_logins == []
+    assert customers["globex"].config.push_logins == ["netadmin2"]
+
+
+def test_a_customer_that_logs_in_with_a_login_cannot_be_unticked(main_window, gui_ctx):
+    setup(gui_ctx, push=())
+    rows = credentials.PushCustomers(gui_ctx.workspace, "acme-netadmin")
+    item = rows.items()["acme"]
+    assert item.text() == "acme (logs in with it)"
+    assert item.checkState() == Qt.CheckState.Checked
+    assert not item.flags() & Qt.ItemFlag.ItemIsEnabled
+    assert rows.choices() == {}  # never written: it is always allowed
+    view = _credentials_view(main_window)
+    assert view.save_customers("acme-netadmin", {"acme": True})
+    gui_ctx.reload_workspace(block=True)
+    assert gui_ctx.workspace.customers["acme"].config.push_logins == []
+
+
+def test_used_by_lists_the_customers_whose_plays_push_it(main_window, gui_ctx):
+    setup(gui_ctx, push=("netadmin2",))
+    credentials.open_credentials(gui_ctx, main_window)
+    tab = main_window._tabs[credentials.CREDENTIALS_TAB_KEY]
+    tab.refresh()
+    tab.login_list.setCurrentItem(
+        tab.login_list.findItems("netadmin2", Qt.MatchFlag.MatchExactly)[0]
+    )
+    tree = tab.used_by_tree
+    groups = [tree.topLevelItem(i).text(0) for i in range(tree.topLevelItemCount())]
+    assert groups == [f"{credentials.PUSHED} (1)"]
+    assert tree.topLevelItem(0).child(0).text(0) == "acme"
 
 
 def test_deleting_a_pushed_login_warns_about_the_plays(main_window, gui_ctx, monkeypatch):

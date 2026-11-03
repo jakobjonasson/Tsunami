@@ -111,6 +111,28 @@ class InventoryEditor:
         self._validate(CustomerFile, doc.data, "customer.yml")
         dump_roundtrip(doc)
 
+    def set_login_customers(self, login: str, allow: Mapping[str, bool]) -> list[str]:
+        """Add login to (True) or remove it from (False) each named customer's push_logins.
+        Customers not named are left alone. Every file is checked before any is written.
+        Returns the customers whose file changed, sorted."""
+        login = _slug(login, "login")
+        changed: list[RoundTripDoc] = []
+        names: list[str] = []
+        for slug, wanted in sorted(allow.items()):
+            doc = self._customer_doc(slug)
+            current = doc.data.get("push_logins")
+            logins = [str(n) for n in current] if isinstance(current, list) else []
+            if (login in logins) == wanted:
+                continue
+            logins = sorted({*logins, login}) if wanted else [n for n in logins if n != login]
+            _set_key(doc.data, "push_logins", logins or None, CUSTOMER_KEYS)
+            self._validate(CustomerFile, doc.data, f"{slug}/customer.yml")
+            changed.append(doc)
+            names.append(slug)
+        for doc in changed:
+            dump_roundtrip(doc)
+        return names
+
     def delete_customer(self, slug: str) -> None:
         self.recycle(self._customer_dir(slug))
 

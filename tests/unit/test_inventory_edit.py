@@ -194,6 +194,35 @@ def test_delete_customer_goes_to_the_recycle_bin(root, editor, recycled):
     assert "acme" not in load_workspace(root).customers
 
 
+def test_set_login_customers_adds_and_removes_push_logins(root, editor):
+    editor.create_customer("globex", name="Globex", credential="globex-admin")
+    editor.update_customer("globex", push_logins=["spare-admin"])
+    path = root / ACME / "customer.yml"
+    path.write_text("# Acme: main contract\n" + path.read_text(encoding="utf-8"))
+
+    changed = editor.set_login_customers("netadmin2", {"acme": True, "globex": True})
+    assert changed == ["acme", "globex"]
+    ws = clean(root)
+    assert ws.customers["acme"].config.push_logins == ["netadmin2"]
+    assert ws.customers["globex"].config.push_logins == ["netadmin2", "spare-admin"]
+    assert path.read_text(encoding="utf-8").startswith("# Acme: main contract\n")
+
+    assert editor.set_login_customers("netadmin2", {"acme": True}) == []  # nothing to change
+    assert editor.set_login_customers("netadmin2", {"acme": False}) == ["acme"]
+    ws = clean(root)
+    assert "push_logins" not in path.read_text(encoding="utf-8")  # an empty list goes
+    assert ws.customers["globex"].config.push_logins == ["netadmin2", "spare-admin"]  # untouched
+
+
+def test_set_login_customers_writes_nothing_if_one_customer_is_refused(root, editor):
+    before = (root / ACME / "customer.yml").read_text(encoding="utf-8")
+    with pytest.raises(InventoryEditError, match="unknown customer"):
+        editor.set_login_customers("netadmin2", {"acme": True, "nobody": True})
+    assert (root / ACME / "customer.yml").read_text(encoding="utf-8") == before
+    with pytest.raises(InventoryEditError, match="lowercase"):
+        editor.set_login_customers("Bad Name", {"acme": True})
+
+
 @pytest.mark.skipif(not os.environ.get("CI"), reason="uses the real Recycle Bin; CI only")
 def test_real_recycle_bin(tmp_path):
     victim = tmp_path / "tsunami-recycle-test.txt"

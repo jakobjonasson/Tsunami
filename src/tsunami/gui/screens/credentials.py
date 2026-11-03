@@ -32,7 +32,9 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.issues import TsunamiError
+from tsunami.core.logins import customer_logins
 from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.transports import DeviceTransport
@@ -113,11 +115,88 @@ def usage_summary(usage: list[tuple[str, str]]) -> str:
     return ", ".join(parts)
 
 
-class _ValueDialog(QDialog):
-    """Collects a name and write-only value fields. Never pre-filled."""
+class PushCustomers(QGroupBox):
+    """A checklist of customers whose plays may push a login (their push_logins).
 
-    def __init__(self, title: str, *, login: bool, name: str | None, parent: QWidget | None):
+    A customer that logs in with the login may always push it: it is shown checked and
+    cannot be changed here. choices() covers only the customers that can be changed."""
+
+    def __init__(self, workspace: Workspace, name: str | None) -> None:
+        super().__init__("Customers whose plays may push it")
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(14, 12, 14, 12)
+        hint = QLabel(
+            "Plays for these customers may create this account on devices with login(), "
+            "and offer it where a play asks for a login."
+        )
+        hint.setObjectName("Muted")
+        hint.setWordWrap(True)
+        layout.addWidget(hint)
+        self.list = QListWidget()
+        for slug, inv in sorted(workspace.customers.items()):
+            item = QListWidgetItem(slug)
+            item.setData(_KIND_ROLE, slug)
+            item.setFlags(item.flags() | Qt.ItemFlag.ItemIsUserCheckable)
+            if name is not None and name in customer_logins(inv):
+                item.setText(f"{slug} (logs in with it)")
+                item.setFlags(item.flags() & ~Qt.ItemFlag.ItemIsEnabled)
+                item.setCheckState(Qt.CheckState.Checked)
+            else:
+                pushed = name is not None and name in inv.config.push_logins
+                item.setCheckState(Qt.CheckState.Checked if pushed else Qt.CheckState.Unchecked)
+            self.list.addItem(item)
+        row = self.list.sizeHintForRow(0) if self.list.count() else 24
+        rows = min(6, max(2, self.list.count()))
+        self.list.setFixedHeight(rows * max(row, 24) + 2 * self.list.frameWidth() + 4)
+        layout.addWidget(self.list)
+
+    def items(self) -> dict[str, QListWidgetItem]:
+        return {
+            self.list.item(i).data(_KIND_ROLE): self.list.item(i) for i in range(self.list.count())
+        }
+
+    def choices(self) -> dict[str, bool]:
+        """customer slug -> whether its plays may push the login, for changeable rows."""
+        return {
+            slug: item.checkState() == Qt.CheckState.Checked
+            for slug, item in self.items().items()
+            if item.flags() & Qt.ItemFlag.ItemIsEnabled
+        }
+
+
+class _CustomersDialog(QDialog):
+    """Change which customers' plays may push an existing login."""
+
+    def __init__(self, workspace: Workspace, name: str, parent: QWidget | None) -> None:
         super().__init__(parent)
+        self.setWindowTitle(f"Customers for {name}")
+        self.setMinimumWidth(420)
+        layout = QVBoxLayout(self)
+        self.customers = PushCustomers(workspace, name)
+        layout.addWidget(self.customers)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        layout.addWidget(buttons)
+
+
+class _ValueDialog(QDialog):
+    """Collects a name and write-only value fields. Never pre-filled. A new login can also
+    say which customers' plays may push it (customers)."""
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        login: bool,
+        name: str | None,
+        parent: QWidget | None,
+        customers: PushCustomers | None = None,
+    ):
+        super().__init__(parent)
+        self.customers = customers
         self.setWindowTitle(title)
         self.login = login
         form = QFormLayout(self)
@@ -138,6 +217,8 @@ class _ValueDialog(QDialog):
             form.addRow("Enable", self.enable_edit)
         else:
             form.addRow("Value", self.value_edit)
+        if customers is not None:
+            form.addRow(customers)
         note = QLabel("Values are write-only and are never shown again.")
         note.setWordWrap(True)
         form.addRow(note)
@@ -277,6 +358,8 @@ class _CredentialsBase(QWidget):
         add("New…", "add", new)
         if name is not None:
             add("Overwrite…", "edit", lambda: overwrite(name))
+            if kind == LOGIN:
+                add("Customers…", "organization", lambda: self.edit_customers(name))
             add("Delete", "trash", lambda: delete(name))
             if kind == LOGIN:
                 add("Test", "debug-start", lambda: self.test_login(name))
@@ -367,6 +450,29 @@ class _CredentialsBase(QWidget):
         self.shell.notify(f"Saved secret {customer}/{name}.")
         return True
 
+    def save_customers(self, name: str, allow: dict[str, bool]) -> bool:
+        """Write which customers' plays may push login name (their push_logins)."""
+        workspace = self.ctx.workspace
+        if workspace is not None:
+            # A customer that logs in with it may always push it: no push_logins entry.
+            allow = {
+                slug: wanted
+                for slug, wanted in allow.items()
+                if slug in workspace.customers
+                and name not in customer_logins(workspace.customers[slug])
+            }
+        if not allow or self.ctx.workspace_path is None:
+            return True
+        try:
+            changed = InventoryEditor(self.ctx.workspace_path).set_login_customers(name, allow)
+        except (TsunamiError, OSError) as exc:
+            self.shell.notify(f"Could not save the customers for {name}: {exc}", "error")
+            return False
+        if changed:
+            self.shell.refresh_all()
+            self.shell.notify(f"Saved which customers may push {name}: {', '.join(changed)}.")
+        return True
+
     def remove_login(self, name: str) -> bool:
         try:
             self.ctx.secrets.delete_login(name)
@@ -389,16 +495,25 @@ class _CredentialsBase(QWidget):
 
     def _login_dialog(self, name: str | None) -> None:
         title = "New login" if name is None else f"Overwrite login {name}"
-        dialog = _ValueDialog(title, login=True, name=name, parent=self)
+        workspace = self.ctx.workspace
+        customers = (
+            PushCustomers(workspace, None)
+            if name is None and workspace is not None and workspace.customers
+            else None
+        )
+        dialog = _ValueDialog(title, login=True, name=name, parent=self, customers=customers)
         try:
             if not run_dialog(dialog):
                 return
-            self.save_login(
-                name or dialog.name_edit.text().strip(),
+            login_name = name or dialog.name_edit.text().strip()
+            saved = self.save_login(
+                login_name,
                 dialog.username_edit.text(),
                 dialog.value_edit.text(),
                 dialog.enable_edit.text() or None,
             )
+            if saved and customers is not None:
+                self.save_customers(login_name, customers.choices())
         finally:
             dialog.clear_values()
 
@@ -428,6 +543,18 @@ class _CredentialsBase(QWidget):
         name = self._selected(self.login_list, name)
         if name is not None:
             self._login_dialog(name)
+
+    def edit_customers(self, name: str | None = None) -> None:
+        name = self._selected(self.login_list, name)
+        workspace = self.ctx.workspace
+        if name is None:
+            return
+        if workspace is None or not workspace.customers:
+            self.shell.notify("Open a workspace with customers first.", "warning")
+            return
+        dialog = _CustomersDialog(workspace, name, self)
+        if run_dialog(dialog):
+            self.save_customers(name, dialog.customers.choices())
 
     def delete_login(self, name: str | None = None) -> None:
         name = self._selected(self.login_list, name)
@@ -600,6 +727,7 @@ class CredentialsTab(_CredentialsBase):
     def _buttons(self, kind: str) -> QHBoxLayout:
         specs = (
             (("New…", self.new_login), ("Overwrite…", self.overwrite_login))
+            + (("Customers…", self.edit_customers),)
             + (("Delete", self.delete_login), ("Test", self.test_login))
             if kind == LOGIN
             else (
@@ -627,7 +755,7 @@ class CredentialsTab(_CredentialsBase):
 
     def _show_usage(self) -> None:
         """List the customers, jump hosts, sites and devices that reference the selected
-        login, so a delete's effect is visible first."""
+        login, and the customers whose plays push it, so a delete's effect is visible first."""
         tree = self.used_by_tree
         tree.clear()
         item = self.login_list.currentItem()
@@ -645,6 +773,7 @@ class CredentialsTab(_CredentialsBase):
             ("Jump host", "Jump hosts"),
             ("Site", "Sites"),
             ("Device", "Devices"),
+            (PUSHED, PUSHED),
         ):
             labels = [label for k, label in usage if k == kind]
             if not labels:

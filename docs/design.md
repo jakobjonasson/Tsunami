@@ -181,7 +181,7 @@ Inventory is customers, then sites, then devices, with roles as a cross-cutting 
 - `vars`: customer-level variables.
 - `role_vars`: map of role slug to variables, for customer-specific role defaults.
 - `site_credentials`: optional map of site slug to login credential name: the default login for devices at that site.
-- `push_logins`: optional list of login names this customer's plays may push with `login()` but Tsunami never logs in with, such as a second admin account. Only the GUI sets it (the customer dialog's "Logins plays may push"); no MCP tool can, so Claude cannot widen what a play may push. See login().
+- `push_logins`: optional list of login names this customer's plays may push with `login()` but Tsunami never logs in with, such as a second admin account. Only the GUI sets it, from either side: the customer dialog's "Logins plays may push", or in Credentials, a new login's "Customers whose plays may push it" and Customers… on a saved login. No MCP tool can, so Claude cannot widen what a play may push. See login().
 
 ### devices.yml
 
@@ -730,6 +730,7 @@ All entries use keyring service `tsunami`:
 
 - Lists names only. Values are write-only: you can create, overwrite, or delete them, never view them.
 - A Test button logs in to a chosen device and reports success or the error.
+- Which customers' plays may push a login (`push_logins`) is set when the login is created and changed later with Customers…. A customer that logs in with the login is shown ticked and cannot be unticked, since it may always push it; nothing is written for it.
 - The MCP server has no tool that reads, lists values from, or writes to Credential Manager.
 
 ### Lifetime in memory
@@ -989,7 +990,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete.|
 |History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
-|Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed. Where a login is used includes customers whose plays push it (`push_logins`); deleting one warns about those plays.|
+|Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
 |Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
 
 ### Behavior rules
@@ -1497,3 +1498,6 @@ Changes since the original draft, with reasons:
   - Inventory proposals (issue 2), `history.db` migration 006: MCP gained `propose_inventory_change` and `get_inventory_proposal`. The design said MCP inventory changes only add. Edits and removals of existing devices are now possible, but only as a proposal a person approves in the GUI with a before/after per field (`core/inventory_proposals.py`, `history.db` migration 005, `inventory_proposals`). They sit behind the same `inventory_edits` switch, never skip approval, cover role, host, site, platform and model only, and a host they set is recorded in `mcp_devices`. "Add only" elsewhere in this document means direct MCP writes.
 - Unreleased, Claude-Data config location (issue 5):
   - `claude_desktop_config_paths()` also returns `%LOCALAPPDATA%\Claude-Data\claude_*\claude_desktop_config.json`, which current Claude Desktop builds read. The `%APPDATA%` fallback rule is unchanged. The file is assumed to sit directly in the `claude_<id>` folder; this is unverified on a real install.
+- Unreleased, choosing which customers may push a login:
+  - `push_logins` could be set only from the customer's side, so a second admin account was added customer by customer. Credentials now sets it from the login's side too: New login lists the customers whose plays may push it, and Customers… changes that for a saved login (`InventoryEditor.set_login_customers`, which checks every customer file before writing any). A `login` prompt then offers it for those customers, as before.
+  - The Credentials tab's Used by tree lists the customers whose plays push a login; the tooltip and delete warning already did.
