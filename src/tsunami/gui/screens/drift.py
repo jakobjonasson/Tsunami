@@ -6,6 +6,9 @@ without a backup gets its first, and one whose config differs from its newest ba
 a new backup and a row that shows the redacted diff when selected. Double-click a row to
 open the device's backups. Nothing is sent to a device but `show running-config`.
 
+Each check is recorded as a job in history.db (core/drift.py), so it shows in History and
+updates the devices' Last job and Last contact; Open job shows it.
+
 Device output is untrusted; it reaches this tab only as redacted text.
 """
 
@@ -157,6 +160,10 @@ class DriftTab(QWidget):
         row.addWidget(self.progress, 1)
         self.cancel_button = QPushButton("Cancel")
         self.cancel_button.clicked.connect(lambda _=False: self.cancel())
+        self.job_button = QPushButton("Open job")
+        self.job_button.setToolTip("This check as a job in History")
+        self.job_button.clicked.connect(lambda _=False: self.open_job())
+        row.addWidget(self.job_button)
         self.start_button = QPushButton("Check again")
         self.start_button.setProperty("primary", True)
         self.start_button.clicked.connect(lambda _=False: self.start())
@@ -284,6 +291,7 @@ class DriftTab(QWidget):
                 cancel=threading.Event(),
                 connect_timeout=CONNECT_TIMEOUT,
                 command_timeout=COMMAND_TIMEOUT,
+                history=self.ctx.history,
             )
         except TsunamiError as exc:
             self.set_error(str(exc))
@@ -293,6 +301,10 @@ class DriftTab(QWidget):
         QThreadPool.globalInstance().start(_Task(self._signals, self.check, transport))
         self._refresh()
         return True
+
+    def open_job(self) -> None:
+        if self.check is not None and self.check.job_id is not None:
+            self.shell.open_job(self.check.job_id)
 
     def cancel(self) -> None:
         if self.check is not None:
@@ -312,6 +324,7 @@ class DriftTab(QWidget):
             self.report = result
             level = "warning" if result.count(DriftStatus.CHANGED) else "info"
             self.shell.notify(f"{self.site or self.customer}: {result.summary()}", level)
+        self.ctx.jobs_changed.emit()  # History, Last job and Last contact, and backups
         self._refresh()
 
     # -- table -------------------------------------------------------------------------
@@ -380,6 +393,7 @@ class DriftTab(QWidget):
 
     def _refresh(self) -> None:
         self.start_button.setEnabled(not self.running)
+        self.job_button.setEnabled(self.check is not None and self.check.job_id is not None)
         self.cancel_button.setEnabled(
             self.running and self.check is not None and not self.check.cancel_event.is_set()
         )

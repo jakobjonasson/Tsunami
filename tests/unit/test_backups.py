@@ -298,3 +298,18 @@ def test_two_backups_in_one_second_are_both_kept(app_paths):
     assert first != second
     assert first.read_text(encoding="utf-8") == "hostname a"
     assert list_backups(app_paths, "acme", "sa-as01")[0].path == second
+
+
+def test_summaries_count_backups_and_name_the_newest(app_paths):
+    from tsunami.core.backups import backup_summaries, taken_by
+
+    _write(app_paths, "20261001T100000Z", "drift", "a")
+    _write(app_paths, "20261002T100000Z", "0123456789abcdef", "b")
+    summaries = backup_summaries(app_paths, "acme", ["sa-as01", "sa-as02", "../x"])
+    assert summaries["sa-as01"].count == 2
+    newest = summaries["sa-as01"].newest
+    assert newest.job_id == "0123456789abcdef" and taken_by(newest) == "job 01234567"
+    assert summaries["sa-as02"].count == 0 and summaries["sa-as02"].newest is None
+    assert summaries["../x"].newest is None  # not a slug: no backups, no error
+    older = list_backups(app_paths, "acme", "sa-as01")[1]
+    assert taken_by(older) == "Drift check"

@@ -18,7 +18,7 @@ from __future__ import annotations
 
 import difflib
 import re
-from collections.abc import Sequence
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
 from enum import StrEnum
@@ -127,6 +127,34 @@ def list_backups(paths: AppPaths, customer: str, device: str) -> list[BackupEntr
         entries.append(BackupEntry(child, parsed[0], parsed[1], size))
     entries.sort(key=lambda e: (e.taken_at, e.path.name), reverse=True)
     return entries
+
+
+@dataclass(frozen=True)
+class BackupSummary:
+    """How many backups a device has, and its newest (None without any)."""
+
+    count: int
+    newest: BackupEntry | None
+
+
+def backup_summaries(
+    paths: AppPaths, customer: str, devices: Iterable[str]
+) -> dict[str, BackupSummary]:
+    """Each device's backup count and newest backup. A name that cannot have backups (not
+    a slug) counts as having none."""
+    out: dict[str, BackupSummary] = {}
+    for name in devices:
+        try:
+            entries = list_backups(paths, customer, name)
+        except BackupError:
+            entries = []
+        out[name] = BackupSummary(len(entries), entries[0] if entries else None)
+    return out
+
+
+def taken_by(entry: BackupEntry) -> str:
+    """Who took a backup, as the backups views name it: Discovery, Drift check, or a job."""
+    return RUN_TAGS.get(entry.job_id) or f"job {entry.job_id[:8]}"
 
 
 def _resolved(path: Path | str) -> Path:

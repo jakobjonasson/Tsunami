@@ -18,6 +18,7 @@ from typing import Any
 
 from pydantic import ValidationError
 from PySide6.QtCore import Qt
+from PySide6.QtGui import QColor
 from PySide6.QtWidgets import (
     QCheckBox,
     QComboBox,
@@ -39,6 +40,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core import inventory_edit
+from tsunami.core.backups import backup_summaries
 from tsunami.core.catalog import load_catalog
 from tsunami.core.inventory_edit import DIRECT, KEEP, InventoryEditor
 from tsunami.core.issues import TsunamiError
@@ -768,6 +770,9 @@ class CustomerDialog(_EditDialog):
         return self._run(lambda: editor.update_customer(slug, **changed), f"Saved customer {slug}.")
 
 
+SITE_DEVICE_COLUMNS = ["Device", "Type", "Platform", "Login", "Backup"]
+
+
 class SiteView(QWidget):
     """Read-only settings for one site, in an editor tab, with an Edit button."""
 
@@ -782,6 +787,14 @@ class SiteView(QWidget):
         self.title = QLabel(site)
         self.title.setObjectName("Title")
         top.addWidget(self.title, 1)
+        self.backups_button = QPushButton(icon("archive", theme.current().text), "Backups")
+        self.backups_button.setToolTip("The site's backups, and back up and check for drift")
+        self.backups_button.clicked.connect(lambda _=False: self.open_backups())
+        top.addWidget(self.backups_button)
+        self.export_button = QPushButton(icon("save", theme.current().text), "Export CSV…")
+        self.export_button.setToolTip("Devices, last job and contact, and backups, as CSV")
+        self.export_button.clicked.connect(lambda _=False: self.export_csv())
+        top.addWidget(self.export_button)
         self.edit_button = QPushButton(icon("edit", theme.current().text), "Edit…")
         self.edit_button.clicked.connect(lambda _=False: self.edit())
         top.addWidget(self.edit_button)
@@ -792,13 +805,14 @@ class SiteView(QWidget):
         layout.addWidget(self.details)
         layout.addWidget(self._section("Devices"))
         self.device_list = QTreeWidget()
-        self.device_list.setColumnCount(4)
-        self.device_list.setHeaderLabels(["Device", "Type", "Platform", "Login"])
+        self.device_list.setColumnCount(len(SITE_DEVICE_COLUMNS))
+        self.device_list.setHeaderLabels(SITE_DEVICE_COLUMNS)
         self.device_list.setRootIsDecorated(False)
         self.device_list.setUniformRowHeights(True)
         self.device_list.setColumnWidth(0, 160)
         self.device_list.setColumnWidth(1, 190)
         self.device_list.setColumnWidth(2, 90)
+        self.device_list.setColumnWidth(3, 160)
         self.device_list.setMinimumHeight(120)
         layout.addWidget(self.device_list, 1)
         layout.addWidget(self._section("Variables"))
@@ -822,6 +836,16 @@ class SiteView(QWidget):
             SiteDialog(self.ctx, self.shell, self.customer, site=self.site, parent=self)
         )
 
+    def open_backups(self) -> None:
+        from tsunami.gui.screens.backups import open_backup_overview
+
+        open_backup_overview(self.ctx, self.shell, self.customer, self.site)
+
+    def export_csv(self) -> Path | None:
+        from tsunami.gui.screens.backups import export_csv
+
+        return export_csv(self.ctx, self.shell, self.customer, self.site, self)
+
     def refresh(self) -> None:
         self.device_list.clear()
         self.vars_view.clear()
@@ -829,9 +853,12 @@ class SiteView(QWidget):
         inv = ws.customers.get(self.customer) if ws is not None else None
         if inv is None or self.site not in inv.sites:
             self.details.setText("This site is not in the loaded workspace.")
-            self.edit_button.setEnabled(False)
+            for button in (self.edit_button, self.backups_button, self.export_button):
+                button.setEnabled(False)
             return
         self.edit_button.setEnabled(True)
+        self.backups_button.setEnabled(True)
+        self.export_button.setEnabled(True)
         site_default = inv.config.site_credentials.get(self.site)
         effective = site_default or inv.config.credential
         if self.site in inv.site_jumps:
@@ -844,11 +871,21 @@ class SiteView(QWidget):
             f"Login for devices without their own: {effective}\n"
             f"Jump host for devices without their own ({source}): {jump_text(jump)}"
         )
-        for dev in sorted(inv.devices, key=lambda d: d.name):
-            if dev.site == self.site:
-                login = inv.credential_for(dev)
-                QTreeWidgetItem(
-                    self.device_list, [dev.name, type_label(dev.role), str(dev.platform), login]
-                )
+        from tsunami.gui.screens.backups import backup_cell
+
+        devices = sorted((d for d in inv.devices if d.site == self.site), key=lambda d: d.name)
+        summaries = backup_summaries(self.ctx.paths, self.customer, [d.name for d in devices])
+        warning = QColor(theme.current().warning)
+        for dev in devices:
+            login = inv.credential_for(dev)
+            summary = summaries[dev.name]
+            backup, tip = backup_cell(summary)
+            item = QTreeWidgetItem(
+                self.device_list,
+                [dev.name, type_label(dev.role), str(dev.platform), login, backup],
+            )
+            item.setToolTip(4, tip)
+            if summary.newest is None:
+                item.setForeground(4, warning)
         text = read_site_text(self.ctx, self.customer, self.site)
         self.vars_view.setPlainText(text if text.strip() else "(no variables)")

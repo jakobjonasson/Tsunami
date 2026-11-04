@@ -15,13 +15,15 @@ from __future__ import annotations
 import logging
 import subprocess
 import sys
-from datetime import datetime
+from datetime import UTC, datetime
 from pathlib import Path
+from typing import Any
 
 from PySide6.QtCore import QItemSelectionModel, Qt, QUrl
-from PySide6.QtGui import QDesktopServices
+from PySide6.QtGui import QColor, QDesktopServices
 from PySide6.QtWidgets import (
     QAbstractItemView,
+    QFileDialog,
     QHBoxLayout,
     QHeaderView,
     QLabel,
@@ -38,10 +40,14 @@ from tsunami.core.backups import (
     RUN_TAGS,
     BackupEntry,
     BackupError,
+    BackupSummary,
+    backup_summaries,
     diff_redacted,
     list_backups,
     read_redacted,
+    taken_by,
 )
+from tsunami.core.device_report import ReportScope, write_report
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
 from tsunami.core.redact import Redactor
@@ -49,6 +55,7 @@ from tsunami.core.vault import VaultLocked
 from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
+from tsunami.gui.screens.history import relative_time
 from tsunami.gui.shell import Shell
 from tsunami.gui.widgets.diff_view import DiffView
 from tsunami.gui.widgets.masked_text import MaskedTextView
@@ -373,6 +380,213 @@ class BackupsTab(QWidget):
         chosen = self.selected_entries()
         if len(chosen) == 1:
             reveal_in_folder(chosen[0].path)
+
+
+OVERVIEW_COLUMNS = ["Device", "Site", "Host", "Backups", "Newest backup", "Taken by"]
+NO_BACKUP = "none"
+
+
+def backup_cell(summary: BackupSummary | None, now: datetime | None = None) -> tuple[str, str]:
+    """The Backup column's text and tooltip for a device: how old its newest backup is."""
+    if summary is None or summary.newest is None:
+        return NO_BACKUP, "No backup yet. Back up and check for drift takes one."
+    newest = summary.newest
+    count = f"{summary.count} backup{'s' if summary.count != 1 else ''}"
+    return (
+        relative_time(newest.taken_at, now or datetime.now(UTC)),
+        f"{count}; newest {_local_time(newest.taken_at)} ({taken_by(newest)})",
+    )
+
+
+def pick_report_path(parent: QWidget | None, suggested: str) -> Path | None:
+    """Ask where to save a CSV report. A seam: tests replace it."""
+    name, _ = QFileDialog.getSaveFileName(
+        parent, "Export to CSV", suggested, "CSV files (*.csv);;All files (*)"
+    )
+    return Path(name) if name else None
+
+
+def export_csv(
+    ctx: AppContext,
+    shell: Shell,
+    customer: str,
+    site: str | None = None,
+    parent: QWidget | None = None,
+) -> Path | None:
+    """Save the customer's (or site's) device, job and backup status as CSV where the person
+    chooses. Returns the path written, or None if cancelled or it failed."""
+    stem = f"{customer}-{site}" if site else customer
+    stamp = datetime.now().strftime("%Y%m%d")
+    path = pick_report_path(parent, str(Path.home() / f"tsunami-{stem}-{stamp}.csv"))
+    if path is None:
+        return None
+    if not path.suffix:
+        path = path.with_suffix(".csv")
+    try:
+        count = write_report(
+            path, ctx.workspace, ctx.history, ctx.paths, ReportScope(customer, site)
+        )
+    except (OSError, TsunamiError) as exc:
+        shell.notify(f"Could not save {path.name}: {exc}", "error")
+        return None
+    shell.notify(f"Saved {count} device{'s' if count != 1 else ''} to {path}.")
+    return path
+
+
+class BackupOverviewTab(QWidget):
+    """Every device of a customer or site with its backups. Double-click opens a device's."""
+
+    def __init__(
+        self, ctx: AppContext, shell: Shell, customer: str, site: str | None = None
+    ) -> None:
+        super().__init__()
+        self.ctx, self.shell, self.customer, self.site = ctx, shell, customer, site
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(8)
+        title = QLabel(f"Backups: {customer} / {site}" if site else f"Backups: {customer}")
+        title.setObjectName("Title")
+        layout.addWidget(title)
+        self.subtitle = QLabel()
+        self.subtitle.setObjectName("Muted")
+        layout.addWidget(self.subtitle)
+
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        self.drift_button = QPushButton("Back up and check for drift")
+        self.drift_button.setProperty("primary", True)
+        self.drift_button.setIcon(icon("git-compare", theme.current().accent_text))
+        self.drift_button.clicked.connect(lambda _=False: self.check_drift())
+        self.export_button = QPushButton("Export CSV…")
+        self.export_button.setIcon(icon("save", theme.current().muted))
+        self.export_button.setToolTip("Devices, last job and contact, and backups, as CSV")
+        self.export_button.clicked.connect(lambda _=False: self.export())
+        self.open_button = QPushButton("Open backups")
+        self.open_button.setIcon(icon("archive", theme.current().muted))
+        self.open_button.clicked.connect(lambda _=False: self.open_selected())
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setIcon(icon("refresh", theme.current().muted))
+        self.refresh_button.clicked.connect(lambda _=False: self.refresh())
+        for button in (
+            self.open_button,
+            self.refresh_button,
+            self.export_button,
+            self.drift_button,
+        ):
+            bar.addWidget(button)
+        layout.addLayout(bar)
+
+        self.table = QTableWidget(0, len(OVERVIEW_COLUMNS))
+        self.table.setHorizontalHeaderLabels(OVERVIEW_COLUMNS)
+        self.table.setFrameShape(QTableWidget.Shape.NoFrame)
+        self.table.setEditTriggers(QTableWidget.EditTrigger.NoEditTriggers)
+        self.table.setSelectionBehavior(QTableWidget.SelectionBehavior.SelectRows)
+        self.table.setSelectionMode(QAbstractItemView.SelectionMode.SingleSelection)
+        self.table.verticalHeader().setVisible(False)
+        self.table.setShowGrid(False)
+        header = self.table.horizontalHeader()
+        header.setSectionResizeMode(QHeaderView.ResizeMode.ResizeToContents)
+        header.setStretchLastSection(True)
+        self.table.itemSelectionChanged.connect(self._update_buttons)
+        self.table.cellDoubleClicked.connect(lambda row, _col: self._open_row(row))
+        layout.addWidget(self.table, 1)
+
+        ctx.jobs_changed.connect(self.refresh)
+        ctx.workspace_changed.connect(self.refresh)
+        self.refresh()
+
+    def devices(self) -> list[Any]:
+        ws = self.ctx.workspace
+        inv = ws.customers.get(self.customer) if ws is not None else None
+        if inv is None:
+            return []
+        return sorted(
+            (d for d in inv.devices if self.site is None or d.site == self.site),
+            key=lambda d: (d.site, d.name),
+        )
+
+    def refresh(self) -> None:
+        selected = self.selected_device()
+        devices = self.devices()
+        summaries = backup_summaries(self.ctx.paths, self.customer, [d.name for d in devices])
+        colors = theme.current()
+        now = datetime.now(UTC)
+        self.table.setRowCount(len(devices))
+        for row, dev in enumerate(devices):
+            summary = summaries[dev.name]
+            newest = summary.newest
+            age, tip = backup_cell(summary, now)
+            cells = [
+                (dev.name, dev.name),
+                (dev.site, dev.site),
+                (str(dev.host), str(dev.host)),
+                (str(summary.count), tip),
+                (f"{_local_time(newest.taken_at)} ({age})" if newest else NO_BACKUP, tip),
+                (taken_by(newest) if newest else "", tip),
+            ]
+            for col, (text, tooltip) in enumerate(cells):
+                item = QTableWidgetItem(text)
+                item.setToolTip(tooltip)
+                if col == 0:
+                    item.setData(_ENTRY_ROLE, dev.name)
+                if newest is None and col in (3, 4):
+                    item.setForeground(QColor(colors.warning))
+                self.table.setItem(row, col, item)
+            if dev.name == selected:
+                self.table.selectRow(row)
+        without = sum(1 for d in devices if summaries[d.name].newest is None)
+        count = len(devices)
+        text = f"{count} device{'s' if count != 1 else ''}"
+        if count:
+            text += f"  |  {without} without a backup" if without else "  |  all backed up"
+        self.subtitle.setText(text + "  |  double-click a device to see its backups")
+        self.drift_button.setEnabled(bool(devices))
+        self.export_button.setEnabled(self.ctx.workspace is not None)
+        self._update_buttons()
+
+    def selected_device(self) -> str | None:
+        rows = {i.row() for i in self.table.selectedIndexes()}
+        if len(rows) != 1:
+            return None
+        item = self.table.item(rows.pop(), 0)
+        return item.data(_ENTRY_ROLE) if item is not None else None
+
+    def _update_buttons(self) -> None:
+        self.open_button.setEnabled(self.selected_device() is not None)
+
+    def _open_row(self, row: int) -> None:
+        item = self.table.item(row, 0)
+        if item is not None:
+            open_backups(self.ctx, self.shell, self.customer, item.data(_ENTRY_ROLE))
+
+    def open_selected(self) -> None:
+        name = self.selected_device()
+        if name is not None:
+            open_backups(self.ctx, self.shell, self.customer, name)
+
+    def check_drift(self) -> None:
+        from tsunami.gui.screens.drift import open_drift_tab
+
+        open_drift_tab(self.ctx, self.shell, self.customer, self.site)
+
+    def export(self) -> Path | None:
+        return export_csv(self.ctx, self.shell, self.customer, self.site, self)
+
+
+def open_backup_overview(
+    ctx: AppContext, shell: Shell, customer: str, site: str | None = None
+) -> QWidget | None:
+    """Open (or focus) the backups overview of a customer, or of one of its sites."""
+    if ctx.workspace is None or customer not in ctx.workspace.customers:
+        shell.notify(f"Unknown customer {customer!r}.", "error")
+        return None
+    key = f"backups-overview:{customer}/{site}" if site else f"backups-overview:{customer}"
+    return shell.open_tab(
+        key,
+        f"Backups: {site or customer}",
+        lambda: BackupOverviewTab(ctx, shell, customer, site),
+        "archive",
+    )
 
 
 def open_backups(ctx: AppContext, shell: Shell, customer: str, device: str) -> None:

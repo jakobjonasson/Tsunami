@@ -9,23 +9,31 @@ the inventory is not touched.
 
 Device output is untrusted; the diff reaches the GUI already redacted, as text.
 
+Given a History, the check is recorded as a job (mode `drift`, play path DRIFT_JOB) with
+a row per device, so it shows in History and in a device's Last job and Last contact. A
+device that was read is `success`; the drift result goes in the row's output, the
+redacted diff in its diff, and the new backup's path in backup_path.
+
 See design.md, Backups: Drift check.
 """
 
 from __future__ import annotations
 
+import logging
 import threading
 from collections import Counter
 from collections.abc import Callable, Mapping, Sequence
 from concurrent.futures import ThreadPoolExecutor
 from dataclasses import dataclass
-from datetime import datetime
+from datetime import UTC, datetime
 from enum import StrEnum
+from pathlib import Path
 from typing import Any
 
 from tsunami.core.backups import DRIFT_TAG, BackupError, Change, save_if_changed
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, require_slug
+from tsunami.core.models.jobs import Actor, DeviceStatus, JobStatus
 from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.paths import AppPaths
 from tsunami.core.redact import Redactor, redact_exception
@@ -40,7 +48,12 @@ from tsunami.core.transports.base import (
     UnreachableError,
 )
 
+log = logging.getLogger(__name__)
+
 MAX_WORKERS = 10  # matches the jump host channel cap, as in a run
+DRIFT_JOB = "Drift check"  # the play path a drift check's job records
+DRIFT_MODE = "drift"
+HEARTBEAT_SECONDS = 10.0
 
 
 class DriftStatus(StrEnum):
@@ -64,6 +77,23 @@ _FROM_CHANGE = {
 }
 READ = frozenset(_FROM_CHANGE.values())  # the device was read and compared
 
+# How each result is recorded in history.db. A failed login means the device answered (it
+# counts as contact, as a failed run does); no login and a cancel mean it was never tried.
+_DEVICE_STATUS = {
+    **{status: DeviceStatus.SUCCESS for status in READ},
+    DriftStatus.UNREACHABLE: DeviceStatus.UNREACHABLE,
+    DriftStatus.HOSTKEY_CHANGED: DeviceStatus.HOSTKEY_MISMATCH,
+    DriftStatus.LOGIN_FAILED: DeviceStatus.FAILED,
+    DriftStatus.NO_LOGIN: DeviceStatus.SKIPPED_PRECHECK,
+    DriftStatus.FAILED: DeviceStatus.FAILED,
+    DriftStatus.CANCELLED: DeviceStatus.CANCELLED,
+}
+
+
+def device_status(status: DriftStatus) -> DeviceStatus:
+    """The history.db status a drift result is recorded with."""
+    return _DEVICE_STATUS[status]
+
 
 @dataclass(frozen=True)
 class DriftDevice:
@@ -84,6 +114,15 @@ class DriftResult:
     added: int = 0
     removed: int = 0
     diff: str = ""  # redacted, previous backup to now
+    backup_path: Path | None = None  # the backup this check saved, if any
+
+    @property
+    def text(self) -> str:
+        """One line for history and tables: the status, its changes and the detail."""
+        head = str(self.status)
+        if self.diff:
+            head += f" (+{self.added} -{self.removed})"
+        return f"{head}: {self.detail}" if self.detail else head
 
 
 @dataclass(frozen=True)
@@ -128,6 +167,8 @@ class DriftCheck:
         connect_timeout: float = 15,
         command_timeout: float = 60,
         allow_new_host_key: bool = True,
+        history: Any = None,
+        actor: Actor = Actor.GUI,
     ) -> None:
         require_slug(customer)
         if not devices:
@@ -152,14 +193,95 @@ class DriftCheck:
         self.redactor = redactor.with_values(values)
         self._lock = threading.Lock()
         self.results: list[DriftResult] = []
+        self.history = history
+        self.actor = actor
+        self.job_id: str | None = None
 
     def cancel(self) -> None:
         self.cancel_event.set()
 
     def run(self) -> DriftReport:
-        with ThreadPoolExecutor(max_workers=self.workers) as pool:
-            list(pool.map(self._check, self.devices))
-        return DriftReport(list(self.results), self.cancel_event.is_set())
+        self._start_job()
+        stop = threading.Event()
+        beat = threading.Thread(target=self._heartbeat, args=(stop,), daemon=True)
+        if self.job_id is not None:
+            beat.start()
+        try:
+            with ThreadPoolExecutor(max_workers=self.workers) as pool:
+                list(pool.map(self._check, self.devices))
+        finally:
+            stop.set()
+            if beat.is_alive():
+                beat.join(timeout=5)
+        report = DriftReport(list(self.results), self.cancel_event.is_set())
+        self._finish_job(report)
+        return report
+
+    # -- history ------------------------------------------------------------------------
+
+    def _record(self, action: Callable[[], Any]) -> None:
+        """A history write. A failure is logged and never stops the check."""
+        if self.history is None or self.job_id is None:
+            return
+        try:
+            action()
+        except Exception:  # noqa: BLE001
+            log.warning("cannot record drift check job %s", self.job_id, exc_info=True)
+
+    def _start_job(self) -> None:
+        if self.history is None:
+            return
+        try:
+            self.job_id = self.history.create_job(
+                actor=self.actor,
+                play_path=DRIFT_JOB,
+                play_hash="",
+                customer=self.customer,
+                mode=DRIFT_MODE,
+                status=JobStatus.RUNNING,
+                limit=[d.name for d in self.devices],
+            )
+        except Exception:  # noqa: BLE001
+            log.warning("cannot record a drift check job", exc_info=True)
+            return
+        names = [d.name for d in self.devices]
+        self._record(lambda: self.history.update_job(self.job_id, started_at=_now()))
+        self._record(lambda: self.history.add_devices(self.job_id, names))
+
+    def _heartbeat(self, stop: threading.Event) -> None:
+        while not stop.wait(HEARTBEAT_SECONDS):
+            self._record(lambda: self.history.heartbeat(self.job_id))
+
+    def _record_result(self, result: DriftResult) -> None:
+        fields: dict[str, Any] = {
+            "status": device_status(result.status),
+            "finished_at": _now(),
+            "output_redacted": result.text,
+        }
+        if result.diff:
+            fields["diff_redacted"] = result.diff
+        if result.backup_path is not None:
+            fields["backup_path"] = str(result.backup_path)
+        if result.status not in READ and result.detail:
+            fields["error_redacted"] = result.detail
+        self._record(lambda: self.history.update_device(self.job_id, result.device, **fields))
+
+    def _finish_job(self, report: DriftReport) -> None:
+        read = sum(1 for r in report.results if r.status in READ)
+        if report.cancelled:
+            status = JobStatus.CANCELLED
+        elif read == len(report.results):
+            status = JobStatus.COMPLETED
+        elif read == 0:
+            status = JobStatus.FAILED
+        else:
+            status = JobStatus.PARTIAL
+        counts = dict(Counter(str(r.status) for r in report.results))
+        self._record(
+            lambda: self.history.set_job_status(
+                self.job_id, status, finished_at=_now(), summary={"counts": counts}
+            )
+        )
 
     def _emit(self, result: DriftResult) -> None:
         with self._lock:
@@ -168,7 +290,15 @@ class DriftCheck:
             self.on_result(result)
 
     def _check(self, device: DriftDevice) -> None:
-        self._emit(self._read(device))
+        if not self.cancel_event.is_set():
+            self._record(
+                lambda: self.history.update_device(
+                    self.job_id, device.name, status=DeviceStatus.CONNECTING, started_at=_now()
+                )
+            )
+        result = self._read(device)
+        self._record_result(result)
+        self._emit(result)
 
     def _read(self, device: DriftDevice) -> DriftResult:
         def result(status: DriftStatus, detail: str = "") -> DriftResult:
@@ -243,7 +373,12 @@ class DriftCheck:
             saved.added,
             saved.removed,
             saved.diff,
+            saved.path,
         )
 
     def _text(self, exc: BaseException) -> str:
         return self.redactor.text(str(exc))
+
+
+def _now() -> datetime:
+    return datetime.now(UTC)

@@ -346,6 +346,8 @@ def test_menu_contents(main_window):
         "Discover devices (CDP/LLDP)…",
         "Check for unlearned neighbors",
         "Back up and check for drift",
+        "Backups",
+        "Export to CSV…",
         "Trust host keys…",
         "Edit…",
         "View settings",
@@ -357,6 +359,8 @@ def test_menu_contents(main_window):
         "Import devices from CSV…",
         "Save example CSV…",
         "Back up and check for drift",
+        "Backups",
+        "Export to CSV…",
         "Trust host keys…",
         "Properties…",
         "Delete…",
@@ -365,8 +369,8 @@ def test_menu_contents(main_window):
 
 
 def test_new_menu_entries_open_their_screens(main_window, gui_ctx, monkeypatch):
-    from tsunami.gui.screens import import_devices
-    from tsunami.gui.screens.backups import BackupsTab
+    from tsunami.gui.screens import backups, import_devices
+    from tsunami.gui.screens.backups import BackupOverviewTab, BackupsTab
     from tsunami.gui.screens.host_keys import HostKeysTab
 
     view = _view(main_window)
@@ -382,6 +386,22 @@ def test_new_menu_entries_open_their_screens(main_window, gui_ctx, monkeypatch):
 
     trigger(_find(tree, "acme", "site-a", "sa-as01"), "Backups…")
     assert isinstance(main_window._tabs["backups:acme/sa-as01"], BackupsTab)
+
+    trigger(_find(tree, "acme", "site-a"), "Backups")
+    tab = main_window._tabs["backups-overview:acme/site-a"]
+    assert isinstance(tab, BackupOverviewTab) and tab.site == "site-a"
+    trigger(_find(tree, "acme"), "Backups")
+    assert main_window._tabs["backups-overview:acme"].site is None
+
+    exported: list = []
+    monkeypatch.setattr(
+        backups,
+        "export_csv",
+        lambda ctx, shell, customer, site=None, parent=None: exported.append((customer, site)),
+    )
+    trigger(_find(tree, "acme", "site-a"), "Export to CSV…")
+    trigger(_find(tree, "acme"), "Export to CSV…")
+    assert exported == [("acme", "site-a"), ("acme", None)]
 
     opened: list = []
     monkeypatch.setattr(import_devices, "pick_csv_file", lambda parent=None: None)

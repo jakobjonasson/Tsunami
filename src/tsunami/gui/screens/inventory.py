@@ -557,6 +557,8 @@ class InventoryView(QWidget):
             add("Import devices from CSV…", "cloud-upload", self.import_devices, kind[1])
             add("Save example CSV…", "save", self.save_example_csv)
             add("Back up and check for drift", "git-compare", self.check_drift, kind[1])
+            add("Backups", "archive", self.backup_overview, kind[1])
+            add("Export to CSV…", "save", self.export_csv, kind[1])
             add("Trust host keys…", "key", self.trust_host_keys, kind[1])
             add("Properties…", "info", self.edit_customer, kind[1])
             menu.addSeparator()
@@ -581,6 +583,8 @@ class InventoryView(QWidget):
                 kind[2],
             )
             add("Back up and check for drift", "git-compare", self.check_drift, kind[1], kind[2])
+            add("Backups", "archive", self.backup_overview, kind[1], kind[2])
+            add("Export to CSV…", "save", self.export_csv, kind[1], kind[2])
             add("Trust host keys…", "key", self.trust_host_keys, kind[1], kind[2])
             add("Edit…", "edit", self.edit_site, kind[1], kind[2])
             add("View settings", "info", self.view_site, kind[1], kind[2])
@@ -625,6 +629,16 @@ class InventoryView(QWidget):
         from tsunami.gui.screens.drift import open_drift_tab
 
         open_drift_tab(self.ctx, self.shell, customer, device=name)
+
+    def backup_overview(self, customer: str, site: str | None = None) -> None:
+        from tsunami.gui.screens.backups import open_backup_overview
+
+        open_backup_overview(self.ctx, self.shell, customer, site)
+
+    def export_csv(self, customer: str, site: str | None = None) -> None:
+        from tsunami.gui.screens.backups import export_csv
+
+        export_csv(self.ctx, self.shell, customer, site, self)
 
     def trust_host_keys(self, customer: str, site: str | None = None) -> None:
         from tsunami.gui.screens.host_keys import open_trust_tab

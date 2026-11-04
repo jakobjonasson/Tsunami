@@ -10,7 +10,8 @@ that only the Acknowledge button dismisses.
 A finished job offers to run again (core/rerun.py): Apply changes after a check, pinned
 to the renders the check showed; Retry on the devices that did not complete; Run again
 on all of them. A job that history cannot rebuild (per-device answers, an initial play)
-opens the run wizard filled in instead.
+opens the run wizard filled in instead. A drift check's job (core/drift.py) has no play to
+run again; its rows show the drift result and the Diff tab what changed.
 
 See design.md, GUI: Views (Job view), Behavior rules; Execution engine: Device level.
 """
@@ -43,6 +44,7 @@ from PySide6.QtWidgets import (
 
 from tsunami.core import rerun
 from tsunami.core.approvals import would_change
+from tsunami.core.drift import DRIFT_MODE
 from tsunami.core.events import (
     BatchFinished,
     CanaryWaiting,
@@ -606,7 +608,12 @@ class JobView(QWidget):
     def _refresh_rerun_buttons(self) -> None:
         changed: list[str] = []
         retry: list[str] = []
-        done = self._finished and self.job_id is not None and self.ctx.workspace is not None
+        done = (
+            self._finished
+            and self.job_id is not None
+            and self.ctx.workspace is not None
+            and self._mode() != DRIFT_MODE
+        )
         if done:
             try:
                 changed = rerun.changed_devices(self.ctx.history, self.job_id)
@@ -660,6 +667,8 @@ class JobView(QWidget):
             self.table.item(row, 2).setText(self._elapsed(name))
             rec = self._records.get(name)
             detail = self._detail.get(name) or (rec.error_redacted if rec else "") or ""
+            if rec is not None and self._mode() == DRIFT_MODE:
+                detail = rec.output_redacted or detail  # the drift result, with its detail
             self.table.item(row, 3).setText(" ".join(detail.split()))
 
     def _tick(self) -> None:

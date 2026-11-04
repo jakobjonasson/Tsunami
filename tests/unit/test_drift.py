@@ -176,3 +176,145 @@ def test_needs_devices_and_a_redactor(app_paths):
         DriftCheck(app_paths, "acme", [], logins={}, transport=None, redactor=Redactor())
     with pytest.raises(TsunamiError, match="redactor"):
         DriftCheck(app_paths, "acme", DEVICES, logins={}, transport=None, redactor=None)
+
+
+# -- the check as a job in history.db ---------------------------------------------------
+
+
+@pytest.fixture
+def hist(tmp_path):
+    from tsunami.core.history import History
+
+    h = History(tmp_path / "history.db")
+    yield h
+    h.close()
+
+
+def test_a_check_is_recorded_as_a_job(app_paths, hist):
+    from tsunami.core.drift import DRIFT_JOB, DRIFT_MODE
+    from tsunami.core.models.jobs import DeviceStatus, JobStatus
+
+    configs = {f"192.0.2.{n}": config() for n in (1, 2, 3)}
+    check(app_paths, configs, history=hist)
+    configs["192.0.2.2"] = config(ntp="192.0.2.124")
+    configs["192.0.2.3"] = ConnectFailure(UnreachableError("timed out"))
+    report, _ = check(app_paths, configs, history=hist)
+
+    newest, first = hist.list_jobs(customer="acme")
+    assert (newest.play_path, newest.mode, newest.customer) == (DRIFT_JOB, DRIFT_MODE, "acme")
+    assert first.status == JobStatus.COMPLETED
+    assert newest.status == JobStatus.PARTIAL  # sw3 was not read
+    assert newest.started_at and newest.finished_at
+    assert newest.summary["counts"] == {"no change": 1, "changed": 1, "unreachable": 1}
+    rows = {d.device: d for d in hist.devices(newest.id)}
+    assert {n: r.status for n, r in rows.items()} == {
+        "sw1": DeviceStatus.SUCCESS,
+        "sw2": DeviceStatus.SUCCESS,
+        "sw3": DeviceStatus.UNREACHABLE,
+    }
+    assert rows["sw1"].output_redacted == "no change"
+    assert rows["sw2"].output_redacted == "changed (+1 -1): saved a new backup"
+    assert "+ ntp server 192.0.2.124" in rows["sw2"].diff_redacted.split("\n")
+    newest_backup = list_backups(app_paths, "acme", "sw2")[0]
+    assert rows["sw2"].backup_path == str(newest_backup.path)
+    assert rows["sw1"].backup_path is None and rows["sw1"].diff_redacted is None
+    assert rows["sw3"].error_redacted == "timed out"
+    assert all(r.started_at and r.finished_at for r in rows.values())
+    for r in rows.values():
+        for text in (r.output_redacted, r.diff_redacted, r.error_redacted):
+            assert ENABLE not in (text or "") and LOGIN.password not in (text or "")
+
+
+def test_a_recorded_check_updates_last_job_and_last_contact(app_paths, hist):
+    configs = {"192.0.2.1": config(), "192.0.2.2": ConnectFailure(UnreachableError("down"))}
+    check(app_paths, configs, DEVICES[:2], history=hist)
+    activity = hist.device_activity("acme")
+    assert set(activity) == {"sw1", "sw2"}
+    assert str(activity["sw1"].status) == "success"
+    contact = hist.last_contact("acme")
+    assert set(contact) == {"sw1"}  # sw2 was never reached
+
+
+@pytest.mark.parametrize(
+    ("status", "recorded"),
+    [
+        (DriftStatus.FIRST, "success"),
+        (DriftStatus.SECRETS, "success"),
+        (DriftStatus.LOGIN_FAILED, "failed"),
+        (DriftStatus.NO_LOGIN, "skipped_precheck"),
+        (DriftStatus.HOSTKEY_CHANGED, "hostkey_mismatch"),
+        (DriftStatus.CANCELLED, "cancelled"),
+    ],
+)
+def test_how_results_are_recorded(status, recorded):
+    from tsunami.core.drift import device_status
+
+    assert str(device_status(status)) == recorded
+
+
+def test_every_result_has_a_recorded_status():
+    from tsunami.core.drift import device_status
+
+    for status in DriftStatus:
+        device_status(status)
+
+
+def test_a_cancelled_check_is_a_cancelled_job(app_paths, hist):
+    from tsunami.core.models.jobs import DeviceStatus, JobStatus
+
+    cancel = threading.Event()
+    cancel.set()
+    check(app_paths, {}, history=hist, cancel=cancel)
+    [job] = hist.list_jobs()
+    assert job.status == JobStatus.CANCELLED
+    assert {d.status for d in hist.devices(job.id)} == {DeviceStatus.CANCELLED}
+
+
+def test_no_device_read_is_a_failed_job(app_paths, hist):
+    from tsunami.core.models.jobs import JobStatus
+
+    configs = {"192.0.2.1": ConnectFailure(UnreachableError("down"))}
+    check(app_paths, configs, DEVICES[:1], history=hist)
+    assert hist.list_jobs()[0].status == JobStatus.FAILED
+
+
+def test_a_history_that_fails_does_not_stop_the_check(app_paths):
+    class Broken:
+        def __getattr__(self, name):
+            def fail(*args, **kwargs):
+                raise OSError("disk full")
+
+            return fail
+
+    configs = {f"192.0.2.{n}": config() for n in (1, 2, 3)}
+    report, _ = check(app_paths, configs, history=Broken())
+    assert {r.status for r in report.results} == {DriftStatus.FIRST}
+
+
+def test_a_long_check_keeps_its_job_alive(app_paths, hist, monkeypatch):
+    """The approvals poller marks a running job without a heartbeat as interrupted."""
+    from tsunami.core import drift
+
+    monkeypatch.setattr(drift, "HEARTBEAT_SECONDS", 0.02)
+    beats: list = []
+    real = hist.heartbeat
+    monkeypatch.setattr(hist, "heartbeat", lambda job_id: (beats.append(job_id), real(job_id)))
+
+    class Slow(Transport):
+        def open(self, target):
+            import time
+
+            time.sleep(0.2)
+            return super().open(target)
+
+    drift_check = DriftCheck(
+        app_paths,
+        "acme",
+        DEVICES[:1],
+        logins={"netops": LOGIN},
+        transport=Slow({"192.0.2.1": config()}),
+        redactor=Redactor(),
+        history=hist,
+    )
+    drift_check.run()
+    assert beats and set(beats) == {drift_check.job_id}

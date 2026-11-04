@@ -152,7 +152,9 @@ def test_one_device_is_checked_from_its_menu(qtbot, gui_ctx, main_window, mock_t
     wait_done(qtbot, tab)
     assert column(tab, "Status") == {"sa-as01": "changed"}
     # A site check of the same customer is its own tab.
-    assert open_drift_tab(gui_ctx, main_window, "acme", "site-a") is not tab
+    site_tab = open_drift_tab(gui_ctx, main_window, "acme", "site-a")
+    assert site_tab is not tab
+    wait_done(qtbot, site_tab)
 
 
 def test_a_device_not_in_the_inventory_is_refused(qtbot, gui_ctx, main_window):

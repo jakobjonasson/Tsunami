@@ -29,12 +29,14 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tsunami.core.backups import backup_summaries
 from tsunami.core.models.inventory import DEVICE_TYPES
 from tsunami.core.models.jobs import DeviceStatus
 from tsunami.core.models.play import GLOBAL_CUSTOMER, PlayType
 from tsunami.core.targets import resolve_targets
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
+from tsunami.gui.screens.backups import backup_cell
 from tsunami.gui.screens.history import relative_time
 from tsunami.gui.screens.job_view import status_color
 from tsunami.gui.shell import Shell
@@ -47,6 +49,7 @@ COLUMNS = (
     "Version",
     "Last job",
     "Last contact",
+    "Backup",
     "Host",
     "Site",
     "Login",
@@ -295,6 +298,14 @@ class DeviceListView(QWidget):
         self.select_all_button = QPushButton("Select all shown")
         self.select_all_button.clicked.connect(self.select_all_shown)
         bar.addWidget(self.select_all_button)
+        self.backups_button = QPushButton("Backups")
+        self.backups_button.setToolTip("Every device's backups, and back up and check for drift")
+        self.backups_button.clicked.connect(lambda _=False: self.open_backups())
+        bar.addWidget(self.backups_button)
+        self.export_button = QPushButton("Export CSV…")
+        self.export_button.setToolTip("Devices, last job and contact, and backups, as CSV")
+        self.export_button.clicked.connect(lambda _=False: self.export_csv())
+        bar.addWidget(self.export_button)
         self.run_button = QPushButton("Run play…")
         self.run_button.setProperty("primary", True)
         self.run_button.clicked.connect(self.run_play)
@@ -337,6 +348,7 @@ class DeviceListView(QWidget):
         self._facts: dict[str, Any] = {}
         self._activity: dict[str, Any] = {}
         self._contact: dict[str, datetime] = {}
+        self._backups: dict[str, Any] = {}
         self._play_names: dict[str, str] = {}
         ctx.workspace_changed.connect(self.refresh)
         ctx.jobs_changed.connect(self.reload_status)
@@ -364,6 +376,9 @@ class DeviceListView(QWidget):
         self._facts = history.device_facts(self.customer)
         self._activity = history.device_activity(self.customer)
         self._contact = history.last_contact(self.customer)
+        self._backups = backup_summaries(
+            self.ctx.paths, self.customer, [d.name for d in self._devices()]
+        )
         self._play_names = {}
 
     def refresh(self) -> None:
@@ -390,6 +405,7 @@ class DeviceListView(QWidget):
                 type_label(dev.role),
                 dev.platform,
                 dev.model or "",
+                "",
                 "",
                 "",
                 "",
@@ -436,6 +452,7 @@ class DeviceListView(QWidget):
         """Model (when the inventory has none), Version and the two status columns, from the
         data loaded by _load_status."""
         job_col, contact_col = (COLUMNS.index(c) for c in _STATUS_COLUMNS)
+        backup_col = COLUMNS.index("Backup")
         version_col, model_col = COLUMNS.index("Version"), COLUMNS.index("Model")
         ws = self.ctx.workspace
         cust = ws.customers.get(self.customer) if ws else None
@@ -483,6 +500,15 @@ class DeviceListView(QWidget):
             )
             item.setForeground(QBrush(QColor(colors.text if contact else colors.muted)))
             item.setData(_SORT_ROLE, _ts(contact))
+
+            item = self.table.item(row, backup_col)
+            summary = self._backups.get(name)
+            text, tip = backup_cell(summary, now)
+            newest = summary.newest if summary is not None else None
+            item.setText(text)
+            item.setToolTip(tip)
+            item.setForeground(QBrush(QColor(colors.text if newest else colors.warning)))
+            item.setData(_SORT_ROLE, _ts(newest.taken_at if newest else None))
         self.table.setSortingEnabled(was_sorting)
 
     def _build_type_buttons(self, devices: list[Any]) -> None:
@@ -594,6 +620,16 @@ class DeviceListView(QWidget):
 
     def run_play(self) -> None:
         pick_play_and_run(self.ctx, self.shell, self.customer, self.selected_names(), self)
+
+    def open_backups(self) -> None:
+        from tsunami.gui.screens.backups import open_backup_overview
+
+        open_backup_overview(self.ctx, self.shell, self.customer, self.site)
+
+    def export_csv(self) -> Path | None:
+        from tsunami.gui.screens.backups import export_csv
+
+        return export_csv(self.ctx, self.shell, self.customer, self.site, self)
 
 
 def open_device_list(ctx: AppContext, shell: Shell, customer: str, site: str | None = None) -> None:
