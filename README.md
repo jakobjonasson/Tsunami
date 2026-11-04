@@ -11,12 +11,11 @@ Claude can investigate the network and draft changes through a local MCP server,
 **Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 2,800 unit and 250 GUI tests run in CI, plus a frozen-build check. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
 
 ## Tested platforms
-
 | Platform | Tested on | Status |
 |---|---|---|
 | HPE Aruba AOS-S (ProCurve) | 2530-48G, YA.16.11 | Confirmed working, including console day-0 (first-boot login, speed sense) |
-| Cisco IOS | Catalyst 2960-X | Confirmed working |
-| Cisco IOS-XE | ISR C1101-4P | Confirmed working |
+| Cisco IOS | Catalyst 2960-X, Catalyst 3560-CX | Confirmed working in production |
+| Cisco IOS-XE | ISR C1101-4P, Catalyst 9500, 9300, 9200, 3850, Catalyst 9800 WLC | Confirmed working in production |
 | Cisco IOS on Linux (IOL) | CML lab | Confirmed working (rollback copy on the `unix:` file system) |
 | HPE Aruba AOS-CX | Not yet | Built and unit-tested against simulated devices only; checkpoint rollback is unverified on hardware |
 
