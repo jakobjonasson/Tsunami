@@ -192,7 +192,7 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=read_only,
-        description="Run one allowlisted show command on a device. No abbreviations (use 'show running-config', not 'sh run'), at most one pipe (include/exclude/section/begin). Output is in untrusted_device_output.",
+        description="Run one allowlisted show command on a device. No abbreviations (use 'show running-config', not 'sh run'), at most one pipe (include/exclude/section/begin/count); its pattern is a regex that may use | alternation and plain groups, e.g. '| include ntp|logging'. Output is in untrusted_device_output.",
     )
     def show(customer: str, device: str, command: str) -> dict[str, Any]:
         return tools.show(customer, device, command)

@@ -69,6 +69,8 @@ def test_model_rejects_bad_entries():
         "show running-config | tee x",
         "show running-config | append x",
         "show running-config | include a | include b",
+        "show running-config | include a | redirect flash:x",
+        "show running-config | include a |  Count",
         "show version; reload",
         "show version\nreload",
         "show version\rreload",
@@ -99,6 +101,18 @@ def test_allowed():
         "show interface brief | count"
     )
     assert check_show_command(p, "aos-s", "show vlans") == "show vlans"
+
+
+def test_a_bar_in_the_pattern_is_alternation_not_a_second_pipe():
+    p = McpPolicy()
+    command = r"show running-config | section interface TenGigabitEthernet.*/0/(1|2|10)$"
+    assert check_show_command(p, "ios", command) == command
+    assert check_show_command(p, "ios", "show running-config | exclude ^interface|^ |^$") == (
+        "show running-config | exclude ^interface|^ |^$"
+    )
+    assert check_show_command(p, "ios", "show running-config | include ntp|logging") == (
+        "show running-config | include ntp|logging"
+    )
 
 
 def test_families_are_independent():

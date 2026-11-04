@@ -47,10 +47,15 @@ GI1 = ["interface GigabitEthernet1/0/1", " description uplink", " switchport mod
     ],
 )
 def test_filters(command, expected):
-    parts = split_command(command.replace("|^ |^$", ""))
-    if "exclude" in command:  # the policy allows one pipe, so the alternation goes here
-        parts = ShowCommand(parts.base, "exclude", "^interface|^ |^$")
+    parts = split_command(command)
     assert apply_filter(CONFIG, parts) == "".join(f"{line}\n" for line in expected)
+
+
+def test_plain_groups_and_alternation():
+    parts = split_command(r"show x | section interface GigabitEthernet1/0/(1|3)$")
+    assert apply_filter(CONFIG, parts) == "".join(f"{line}\n" for line in GI1)
+    assert apply_filter("a(b)\nab\n", split_command(r"show x | include \(b\)")) == "a(b)\n"
+    assert apply_filter("x)+\ny\n", split_command("show x | include [)]+")) == "x)+\n"
 
 
 def test_count():
@@ -60,7 +65,12 @@ def test_count():
 @pytest.mark.parametrize(
     "command",
     [
-        "show x | include (a+)+$",  # groups: catastrophic backtracking
+        "show x | include (a+)+$",  # repeated group: catastrophic backtracking
+        "show x | include (a|b)*c",
+        "show x | include [ab](a)?",
+        "show x | include (?=a)",
+        "show x | include (?i)a",
+        r"show x | include (a)\1",
         "show x | include a{1,99}",
         "show x | include a*b*c*d*e*",  # too many quantifiers
         "show x | include [",  # invalid

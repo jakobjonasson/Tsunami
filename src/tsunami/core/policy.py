@@ -6,6 +6,7 @@ See design.md, MCP interface: Policy file, show allowlist matching.
 from __future__ import annotations
 
 import os
+import re
 import tempfile
 from pathlib import Path
 from typing import Any
@@ -18,6 +19,9 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PlatformFamily
 from tsunami.core.models.policy import FORBIDDEN_PIPES, McpPolicy, has_control_chars
 from tsunami.core.yamlio import YamlLoadError, load_yaml
+
+# Output modifiers a device may know, refused after the first pipe whatever the policy.
+_KNOWN_PIPES = frozenset({"include", "exclude", "begin", "section", "count", "format", "display"})
 
 
 class PolicyError(TsunamiError):
@@ -100,9 +104,16 @@ def check_show_command(policy: McpPolicy, family: PlatformFamily | str, command:
         raise PolicyError(f"unknown platform family: {family!s}") from None
     if ";" in command or has_control_chars(command):
         raise PolicyError("command contains a forbidden character (';', line break or control)")
-    parts = [p.split() for p in command.split("|")]
-    if len(parts) > 2:
-        raise PolicyError("at most one pipe is allowed")
+    # Only the first '|' is a pipe: the rest belongs to the pattern, where it is regex
+    # alternation (the pattern runs here, never on the device). A later '| word' that
+    # names a modifier reads as a second pipe and is refused rather than matched.
+    head, sep, tail = command.partition("|")
+    parts = [head.split()] + ([tail.split()] if sep else [])
+    pattern = " ".join(parts[1][1:]) if sep else ""
+    modifiers = {p.lower() for p in policy.pipes.get(fam, [])} | FORBIDDEN_PIPES | _KNOWN_PIPES
+    for word in re.findall(r"\|\s+(\w+)", pattern):
+        if word.lower() in modifiers:
+            raise PolicyError("at most one pipe is allowed; use '|' in a pattern without spaces")
     base = parts[0]
     if not base:
         raise PolicyError("empty command")

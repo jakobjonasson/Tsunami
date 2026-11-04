@@ -538,9 +538,24 @@ def test_show_pipe_runs_locally_on_redacted_output(env):
 
 
 def test_show_refuses_unsafe_pipe_patterns(env):
-    with pytest.raises(ToolRefused, match="groups"):
+    with pytest.raises(ToolRefused, match="repeat a group"):
         env.tools.show("acme", "sa-as01", "show running-config | include (a+)+$")
     assert env.recorder.targets == []
+
+
+def test_show_pipe_pattern_may_use_alternation(env):
+    env.mock.device("sa-as01").exec_responses["show running-config"] = (
+        "interface TenGigabitEthernet1/0/1\n description a\n"
+        "interface TenGigabitEthernet1/0/3\n description b\n"
+        "interface TenGigabitEthernet1/0/10\n description c\n"
+    )
+    command = r"show running-config | section interface TenGigabitEthernet.*/0/(1|2|10)$"
+    output = env.tools.show("acme", "sa-as01", command)["untrusted_device_output"]
+    assert output == (
+        "interface TenGigabitEthernet1/0/1\n description a\n"
+        "interface TenGigabitEthernet1/0/10\n description c\n"
+    )
+    assert not any("|" in text for _, text in env.mock.device("sa-as01").sent)
 
 
 def test_guess_at_a_secret_is_answered_like_any_other_value(env):

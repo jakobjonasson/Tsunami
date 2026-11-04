@@ -5,8 +5,9 @@ the whole output is redacted, and the modifier runs here on the redacted text. A
 device-side filter would see secrets before redaction, and whether a line came back
 would reveal them one guess at a time (design.md, MCP interface: Leak paths).
 
-Patterns are regular expressions without groups or counted repetition, so matching
-time stays bounded on the MCP server.
+Patterns are regular expressions without repeated groups, (?...) constructs,
+backreferences or counted repetition, so matching time stays bounded on the MCP server.
+A '|' in the pattern is alternation: only the first '|' of a command is the pipe.
 """
 
 from __future__ import annotations
@@ -46,15 +47,54 @@ def split_command(normalized: str) -> ShowCommand:
 def compile_pattern(pattern: str) -> re.Pattern[str]:
     if len(pattern) > MAX_PATTERN:
         raise FilterError(f"a pipe pattern is limited to {MAX_PATTERN} characters")
-    if re.search(r"(?<!\\)[(){}]", pattern):
-        raise FilterError("pipe patterns may not use groups or {n,m} repetition")
-    quantifiers = len(re.findall(r"(?<!\\)[*+?]", pattern))
+    quantifiers = _check_shape(pattern)
     if quantifiers > MAX_QUANTIFIERS:
         raise FilterError(f"a pipe pattern may use at most {MAX_QUANTIFIERS} * + ? operators")
     try:
         return re.compile(pattern)
     except re.error as exc:
         raise FilterError(f"invalid pipe pattern: {exc.msg}") from None
+
+
+def _check_shape(pattern: str) -> int:
+    """The number of * + ? operators, after refusing what can make matching slow.
+
+    Plain groups such as (1|2|10) are fine. A group with a quantifier after it, {n,m},
+    backreferences and (?...) constructs are refused: with them a short pattern can
+    backtrack for a very long time.
+    """
+    quantifiers = 0
+    i, n = 0, len(pattern)
+    while i < n:
+        c = pattern[i]
+        if c == "\\":
+            if i + 1 < n and pattern[i + 1].isdigit():
+                raise FilterError("pipe patterns may not use backreferences")
+            i += 2
+            continue
+        if c == "[":  # a character class: everything up to its ']' is literal
+            j = i + 1
+            if j < n and pattern[j] == "^":
+                j += 1
+            if j < n and pattern[j] == "]":
+                j += 1
+            while j < n and pattern[j] != "]":
+                j += 2 if pattern[j] == "\\" else 1
+            i = j + 1
+            if i < n and pattern[i] in "*+?":
+                quantifiers += 1
+                i += 1
+            continue
+        if c in "{}":
+            raise FilterError("pipe patterns may not use {n,m} repetition")
+        if c == "(" and i + 1 < n and pattern[i + 1] == "?":
+            raise FilterError("pipe patterns may not use (?...) groups")
+        if c == ")" and i + 1 < n and pattern[i + 1] in "*+?":
+            raise FilterError("pipe patterns may not repeat a group: (a+)+ can take forever")
+        if c in "*+?":
+            quantifiers += 1
+        i += 1
+    return quantifiers
 
 
 def apply_filter(output: str, command: ShowCommand) -> str:
