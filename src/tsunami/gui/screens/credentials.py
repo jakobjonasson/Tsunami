@@ -13,6 +13,7 @@ from typing import Any
 
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
+    QCheckBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -194,7 +195,8 @@ class _CustomersDialog(QDialog):
 
 class _ValueDialog(QDialog):
     """Collects a name and write-only value fields. Never pre-filled. A new login can also
-    say which customers' plays may push it (customers)."""
+    say which customers' plays may push it (customers). A login can have no password, for
+    AOS-S switches that never had one set (no_password_check)."""
 
     def __init__(
         self,
@@ -220,9 +222,16 @@ class _ValueDialog(QDialog):
         self.username_edit = QLineEdit()
         self.value_edit = _password_edit()
         self.enable_edit = _password_edit()
+        self.no_password_check = QCheckBox("No password (AOS-S switch that never had one set)")
+        self.no_password_check.setToolTip(
+            "Logs in over SSH with no authentication. Only AOS-S (ProCurve) switches with "
+            "no manager or operator password accept this. The username can be anything."
+        )
+        self.no_password_check.toggled.connect(self._no_password_toggled)
         if login:
             form.addRow("Username", self.username_edit)
             form.addRow("Password", self.value_edit)
+            form.addRow(self.no_password_check)
             self.enable_edit.setPlaceholderText("optional")
             form.addRow("Enable", self.enable_edit)
         else:
@@ -239,6 +248,11 @@ class _ValueDialog(QDialog):
         buttons.rejected.connect(self.reject)
         form.addRow(buttons)
 
+    def _no_password_toggled(self, checked: bool) -> None:
+        if checked:
+            self.value_edit.clear()
+        self.value_edit.setEnabled(not checked)
+
     def clear_values(self) -> None:
         for edit in (self.username_edit, self.value_edit, self.enable_edit):
             edit.clear()
@@ -254,9 +268,12 @@ def prompt_new_login(ctx: AppContext, parent: QWidget | None) -> str | None:
             return None
         name = dialog.name_edit.text().strip()
         username, password = dialog.username_edit.text(), dialog.value_edit.text()
-        if not name or not username or not password:
+        no_password = dialog.no_password_check.isChecked()
+        if not name or not username or not (password or no_password):
             QMessageBox.warning(parent, "New login", "A login needs a name, username and password.")
             return None
+        if no_password:
+            password = ""
         try:
             ctx.secrets.set_login(
                 name, LoginCredential(username, password, dialog.enable_edit.text() or None)
@@ -431,10 +448,21 @@ class _CredentialsBase(QWidget):
 
     # -- store operations (values go only to set_login / set_secret) ----------------
 
-    def save_login(self, name: str, username: str, password: str, enable: str | None) -> bool:
-        if not username or not password:
+    def save_login(
+        self,
+        name: str,
+        username: str,
+        password: str,
+        enable: str | None,
+        *,
+        no_password: bool = False,
+    ) -> bool:
+        """An empty password is saved only with no_password, so a forgotten one is refused."""
+        if not username or not (password or no_password):
             self.shell.notify("A login needs a username and a password.", "error")
             return False
+        if no_password:
+            password = ""
         try:
             self.ctx.secrets.set_login(name, LoginCredential(username, password, enable or None))
         except TsunamiError as exc:
@@ -521,6 +549,7 @@ class _CredentialsBase(QWidget):
                 dialog.username_edit.text(),
                 dialog.value_edit.text(),
                 dialog.enable_edit.text() or None,
+                no_password=dialog.no_password_check.isChecked(),
             )
             if saved and customers is not None:
                 self.save_customers(login_name, customers.choices())

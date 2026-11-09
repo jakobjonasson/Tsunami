@@ -109,6 +109,24 @@ def test_dialog_path_clears_fields_and_never_prefills(cred_view, gui_ctx, monkey
     assert seen["prefill"] == ("", "", "")
 
 
+def test_login_without_password_needs_the_checkbox(cred_view, gui_ctx, notes, monkeypatch):
+    assert not cred_view.save_login("acme-blank", "manager", "", None)
+    assert "acme-blank" not in gui_ctx.secrets.list_logins()
+
+    def fake_exec(self):
+        self.name_edit.setText("acme-factory")
+        self.username_edit.setText("manager")
+        self.value_edit.setText("typed-then-ticked")
+        self.no_password_check.setChecked(True)
+        assert not self.value_edit.isEnabled() and self.value_edit.text() == ""
+        return credentials.QDialog.DialogCode.Accepted
+
+    monkeypatch.setattr(credentials._ValueDialog, "exec", fake_exec)
+    cred_view.new_login()
+    saved = gui_ctx.secrets.get_login("acme-factory")
+    assert (saved.username, saved.password) == ("manager", "")
+
+
 def test_delete_removes_entry(cred_view, gui_ctx, monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
     cred_view.login_list.setCurrentRow(0)

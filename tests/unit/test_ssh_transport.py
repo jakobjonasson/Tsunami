@@ -76,6 +76,7 @@ class FakeConn:
 
 
 def target(customer="acme", host="203.0.113.11", port=22, platform=Platform.IOS_XE, **kw):
+    kw.setdefault("credential", CRED)
     return ConnectTarget(
         customer=customer,
         device="sa-as01",
@@ -83,7 +84,6 @@ def target(customer="acme", host="203.0.113.11", port=22, platform=Platform.IOS_
         port=port,
         platform=platform,
         method=ConnectionMethod.SSH,
-        credential=CRED,
         **kw,
     )
 
@@ -205,6 +205,39 @@ def test_aos_cx_login_must_be_administrator(app_paths):
     ssh, _ = transport(app_paths, conn=FakeConn(prompt="sw-cx01>"))
     with pytest.raises(AuthenticationError, match="administrators"):
         ssh.open(target(platform=Platform.AOS_CX))
+
+
+def test_aos_s_login_without_password_reaches_netmiko_empty(app_paths):
+    ssh, calls = transport(app_paths)
+    no_password = LoginCredential("manager", "")
+    ssh.open(target(platform=Platform.AOS_S, credential=no_password))
+    assert calls[0]["password"] == ""
+    assert calls[0]["device_type"] == "hp_procurve"
+
+
+@pytest.mark.parametrize("platform", [Platform.IOS_XE, Platform.AOS_CX])
+def test_other_families_refuse_a_login_without_password(app_paths, platform):
+    ssh, calls = transport(app_paths)
+    with pytest.raises(AuthenticationError, match="no password"):
+        ssh.open(target(platform=platform, credential=LoginCredential("admin", "")))
+    assert calls == []
+
+
+def test_procurve_without_password_uses_ssh_none_auth():
+    """Netmiko's ProCurve class picks its noauth client when there is no password, and
+    Tsunami's subclass keeps it (so the SHA-1 transport factory reaches it too)."""
+    from netmiko.ssh_auth import SSHClient_noauth
+
+    from tsunami.core.transports.legacy_ssh import transport_class
+    from tsunami.core.transports.netmiko_session import connection_class
+
+    cls = connection_class("hp_procurve", aoscx=False, transport_factory=transport_class(True))
+    conn = cls.__new__(cls)
+    conn.use_keys, conn.allow_agent = False, False
+    conn.password = ""
+    assert isinstance(conn._get_ssh_client_instance(), SSHClient_noauth)
+    conn.password = "Login-Pass-1234"
+    assert not isinstance(conn._get_ssh_client_instance(), SSHClient_noauth)
 
 
 # -- jump hosts --------------------------------------------------------------------------------

@@ -320,7 +320,7 @@ class ConsoleTransport:
 
     def _answer(self, ser: Any, rule: DialogRule, cred: Any, port: str) -> None:
         label = rule.note or rule.pattern
-        password = cred.password if cred else None
+        password = cred.password if cred and cred.password else None  # never set an empty one
         if rule.answer == CREDENTIAL_USERNAME:
             if cred is None:
                 raise AuthenticationError(
@@ -333,7 +333,7 @@ class ConsoleTransport:
             if password is None:
                 raise AuthenticationError(
                     f"{port}: the switch asks to set a password ({label}) "
-                    "but no login credential was provided"
+                    "but no login credential with a password was provided"
                 )
             if rule.answer == REQUIRE_CREDENTIAL:
                 self.dialog_log.append(f"{label}: credential present")

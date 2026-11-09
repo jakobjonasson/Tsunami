@@ -186,6 +186,17 @@ def test_aoss_press_any_key_and_manager_password() -> None:
     assert PW not in repr(t.dialog_log)
 
 
+def test_aoss_login_without_password_never_sets_an_empty_one() -> None:
+    steps = [
+        ("Banner\nPress any key to continue", "\r"),
+        ("\nNew Manager password: ", "\r"),
+    ]
+    t, target, ports, _ = make(Platform.AOS_S, steps, cred=LoginCredential("manager", ""))
+    with pytest.raises(AuthenticationError, match="with a password"):
+        t.open(target)
+    assert ports[0].writes == ["\r"]
+
+
 def test_login_prompt_ready_only_with_credential() -> None:
     steps = [("Username: ", None)]
     t, target, _, conns = make(Platform.IOS, steps)

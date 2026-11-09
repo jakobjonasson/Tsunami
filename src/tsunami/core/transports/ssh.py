@@ -213,6 +213,13 @@ class SshTransport:
         credential = target.credential
         if credential is None:
             raise AuthenticationError("no login credential for this customer")
+        # No password: Netmiko's ProCurve class logs in with SSH "none" auth, which a
+        # switch with no manager or operator password accepts. Other families would send
+        # an empty password, so they are refused here.
+        if not credential.password and family != PlatformFamily.AOS_S:
+            raise AuthenticationError(
+                f"{target.device}: the login has no password; only AOS-S logs in without one"
+            )
         # A private copy of this host's key for Netmiko (see HostKeyStore.export_host).
         fd, key_file = tempfile.mkstemp(prefix="known_hosts.", dir=store.path.parent)
         os.close(fd)

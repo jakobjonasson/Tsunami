@@ -635,6 +635,7 @@ Everything that differs between platforms lives in one driver per platform famil
 - Netmiko 4.8 registers no serial device type for either Aruba platform. Netmiko picks the serial protocol from a `_serial` substring in `device_type`, so the Aruba drivers instantiate the Aruba classes directly with `device_type="aruba_aoscx_serial"` or `"hp_procurve_serial"` and `serial_settings`. `ConnectHandler` cannot be used for these.
 - **AOS-CX:** Netmiko's `ArubaCxSSH.check_config_mode` matches only the literal `(config)#`, so it misses sub-contexts such as `(config-if)#` and then skips the closing `end`. The driver uses a subclass that matches `(config`, and ends every config push with `end` before checking the prompt. Commands are always sent with full words, because AOS-CX auto-completes on space. Logins must belong to the `administrators` group, which lands at `#`. A `>` prompt fails the device with a clear message.
 - **AOS-S:** operator logins land at `>`, and the driver runs `enable` with the credential's `enable` value as the manager password. Netmiko handles the "Press any key to continue" banner, `enable`, and `no page`.
+- **AOS-S without a password:** a login saved with *No password* (Credentials) has an empty password. Netmiko's `HPProcurveSSH` then logs in with SSH `none` authentication, which a switch with no manager or operator password accepts; the username is ignored. Other families refuse such a login before connecting. On a console it logs in but never answers a set-password prompt with an empty password, and `login()` cannot push it.
 
 ### Running config and authoring
 
@@ -741,6 +742,7 @@ All entries use keyring service `tsunami`:
 ### Credentials screen
 
 - Lists names only. Values are write-only: you can create, overwrite, or delete them, never view them.
+- A login needs a password unless *No password* is ticked (AOS-S switches that never had one set), so a forgotten password is refused rather than saved empty.
 - A Test button logs in to a chosen device and reports success or the error.
 - Which customers' plays may push a login (`push_logins`) is set when the login is created and changed later with Customers…. A customer that logs in with the login is shown ticked and cannot be unticked, since it may always push it; nothing is written for it.
 - The MCP server has no tool that reads, lists values from, or writes to Credential Manager.
@@ -1532,3 +1534,7 @@ Changes since the original draft, with reasons:
   - The rest of issue 8: Discovery goes through the site's jump host, else the customer's. Trust host keys lists every jump host as a row with its outcome (recorded, known, unreachable or changed), not only a changed one.
   - A `|` after the pipe's modifier is regex alternation, not a second pipe, and pipe patterns may use plain groups: `show running-config | section interface Te.*/0/(1|2|10)$` was refused with "at most one pipe". The pipe never reaches the device, so the pattern only runs locally on redacted output. Repeated groups, `(?...)` and backreferences stay refused.
   - A drift check no longer skips devices' backups at random. While other threads created backup folders, `Path.resolve()` on Windows could return one path with the `\\?\` prefix and the other without, and the backup folder was refused as outside the backups folder.
+- 0.5.6, SSH to AOS-S switches that never had a password set:
+  - New login and Overwrite login have *No password*. Such a login has an empty password, and Netmiko's `HPProcurveSSH` logs in with SSH `none` authentication, which an AOS-S switch with no manager or operator password accepts (Platform drivers: Families and sessions). Without the box an empty password is still refused.
+  - IOS and AOS-CX refuse a login without a password before connecting. A console login never answers a set-password prompt with an empty password; before, it would have sent one.
+  - Not yet run against a real factory-default ProCurve.
