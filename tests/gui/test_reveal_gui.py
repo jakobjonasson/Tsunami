@@ -153,21 +153,23 @@ def test_ctrl_f_finds_text_in_a_backup(backup_tab, qtbot):
     assert bar.isHidden()
 
 
-def test_operations_show_in_history_only_when_asked(main_window, gui_ctx):
+def test_operations_show_in_history_only_when_asked(main_window, gui_ctx, qtbot):
     record = OperationLog(
         gui_ctx.history, mode=SHOW_MODE, customer="acme", actor=Actor.MCP, devices=["sa-as01"]
     )
     record.device("sa-as01", DeviceStatus.SUCCESS, output="show version\nok")
     record.finish()
     tab = HistoryTab(gui_ctx, main_window)
+    qtbot.addWidget(tab)
     assert tab.jobs_table.rowCount() == 0
     tab.operations_box.setChecked(True)
     assert tab.jobs_table.rowCount() == 1 and tab.jobs_table.item(0, 2).text() == "Show command"
     side = HistoryView(gui_ctx, main_window)
+    qtbot.addWidget(side)
     assert side.recent_list.count() == 0  # the side bar lists plays
 
 
-def test_the_reveals_tab_lists_reveals(main_window, gui_ctx):
+def test_the_reveals_tab_lists_reveals(main_window, gui_ctx, qtbot):
     gui_ctx.history.add_reveal(
         revealed_by="tech1",
         kind="backup",
@@ -178,16 +180,18 @@ def test_the_reveals_tab_lists_reveals(main_window, gui_ctx):
         masked_line="<b>key</b> <redacted>",
     )
     tab = HistoryTab(gui_ctx, main_window)
+    qtbot.addWidget(tab)
     assert tab.reveals_table.rowCount() == 1
     assert tab.reveals_table.item(0, 1).text() == "tech1"
     assert tab.reveals_table.item(0, 7).text() == "<b>key</b> <redacted>"  # plain text cell
 
 
-def test_canary_priority_in_the_device_editor(main_window, gui_ctx, monkeypatch):
+def test_canary_priority_in_the_device_editor(main_window, gui_ctx, qtbot):
     from tsunami.gui.screens import inventory_dialogs
 
     device = gui_ctx.workspace.customers["acme"].device("sa-as01")
     dialog = inventory_dialogs.DeviceDialog(gui_ctx, main_window, "acme", device=device)
+    qtbot.addWidget(dialog)
     assert dialog.canary_spin.value() == 100
     dialog.canary_spin.setValue(0)
     assert dialog.save()

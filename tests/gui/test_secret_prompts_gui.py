@@ -100,8 +100,9 @@ def test_a_hostile_secret_name_is_shown_as_text(cred_tab, main_window, monkeypat
     assert notes  # the refusal is reported
 
 
-def test_password_prompt_is_masked_and_never_filled(qapp):
+def test_password_prompt_is_masked_and_never_filled(qtbot):
     field = make_prompt_widget("key", Prompt(type=PromptType.PASSWORD), PromptContext())
+    qtbot.addWidget(field)
     assert field.editor.echoMode() == QLineEdit.EchoMode.Password
     field.set_value("********")  # what history keeps: never written back
     assert field.raw_value() == ""
@@ -111,9 +112,10 @@ def test_password_prompt_is_masked_and_never_filled(qapp):
     assert PASSWORD_HINT in hints
 
 
-def test_secret_prompt_offers_saved_names_only(qapp):
+def test_secret_prompt_offers_saved_names_only(qtbot):
     context = PromptContext(secrets=frozenset({"snmpv3", "tacacs"}))
     field = make_prompt_widget("snmp", Prompt(type=PromptType.SECRET), context)
+    qtbot.addWidget(field)
     items = [field.editor.itemText(i) for i in range(field.editor.count())]
     assert items == ["", "snmpv3", "tacacs"]
     field.set_value("tacacs")
