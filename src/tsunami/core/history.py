@@ -523,6 +523,31 @@ class History:
             )
             return int(cur.lastrowid or 0)
 
+    def add_reveal(
+        self,
+        *,
+        revealed_by: str,
+        kind: str,
+        customer: str,
+        device: str | None,
+        item: str,
+        context: str,
+        masked_line: str,
+    ) -> int:
+        """Audit one reveal (core/reveal.py). masked_line is the line as shown, masked: the
+        revealed value is never passed here."""
+        with self._tx() as conn:
+            cur = conn.execute(
+                "INSERT INTO reveals (revealed_at, revealed_by, kind, customer, device, item,"
+                " context, masked_line) VALUES (?,?,?,?,?,?,?,?)",
+                (self._now(), revealed_by, kind, customer, device, item, context, masked_line),
+            )
+            return int(cur.lastrowid or 0)
+
+    def list_reveals(self, *, limit: int = 500) -> list[dict[str, Any]]:
+        rows = self._query("SELECT * FROM reveals ORDER BY id DESC LIMIT ?", (limit,))
+        return [{**dict(r), "revealed_at": _parse_ts(r["revealed_at"])} for r in rows]
+
     def pending_allowlist_requests(self) -> list[dict[str, Any]]:
         rows = self._query(
             "SELECT id, family, command, reason, requested_at FROM allowlist_requests"

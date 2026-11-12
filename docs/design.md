@@ -196,6 +196,7 @@ A list of devices. Each device has:
 - `model`: optional hardware catalog id. Written by `add_to_inventory`; used for the facts sanity check.
 - `credential`: optional login credential name for this device.
 - `jump_host`: optional jump host for this device (same shape as the customer's). `null` or `none` connects directly. Absent: inherit.
+- `canary_priority`: 0 to 254, default 100 (left out of the file at the default). In an apply with canary on, the target with the highest priority is the canary, ties in inventory order. 0 means never the canary, unless it is the only target; an apply with canary on whose targets are all 0 is refused before any device is contacted (MCP `request_run` refuses it at once). Set in the device editor; MCP `list_devices` shows it.
 - `vars`: device-level variables.
 
 A device logs in with its own `credential`, else its site's entry in `site_credentials`, else the customer's `credential`. Day-0 staging over console has no device yet and uses the customer's.
@@ -567,7 +568,7 @@ Every device goes through the same pipeline. Batching, canary, and max-fail wrap
 3. Collect prompt values (once, then per device) and validate their types.
 4. Validation render for every device. Any failure aborts the run before any connection.
 5. Mode `render` stops here and shows the output.
-6. If apply mode and `canary: true`, run one device, then pause for confirmation.
+6. If apply mode and `canary: true`, run one device, the one with the highest `canary_priority` (see devices.yml), then pause for confirmation.
 7. Run the remaining devices in batches of `batch_size` in parallel.
 8. In apply mode, after each batch, check `max_fail_percent` two ways and schedule no further batches if either exceeds it: change failures (`failed`, `rolled_back`, `rollback_failed`, `render_changed`, `interrupted`) over the devices attempted so far, and change failures plus devices never reached (`unreachable`, `hostkey_mismatch`) over every device in the run. A device that was never reached changed nothing, so one dead switch in a first batch of five does not stop a 49-device run, while a config failure still stops it after its batch. In-flight devices finish. Unstarted devices get `skipped_maxfail`. `skipped_precheck` and `device_busy` count neither way. Check and compliance runs read every device: max-fail never stops them, so an approval request shows every device's diff or failure.
 9. Write the job summary.
@@ -1021,7 +1022,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
 |Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete. Promote checks whether the live file exists when it is pressed, refuses a draft rewritten since its tab showed it (Claude can rewrite a draft at any time), retries a live file another program holds open for a moment, and reports any failure with its reason.|
-|History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
+|History|Jobs filtered by customer, play, actor, and status, with Show operations for show commands, discovery, drift checks, Trust host keys and connection tests (Local data and audit: Operations in history). Opens any past job view. Per-customer compliance history. Reveals: every press-to-reveal.|
 |Credentials|Names only. Device logins on one side; on the other, Secrets (per customer): values plays push that are not logins (SNMP, TACACS+ and RADIUS keys, pre-shared keys), each a single value or named fields (see Secrets with fields). Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
 |Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
 
@@ -1030,7 +1031,18 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 - Never block the UI thread. All device work runs in the runner's `QThread`.
 - Prompt widgets match prompt types: spin box for `vlan`, dropdown for `choice`, `site`, `role`, `login`, `secret` (the customer's saved secret names) and `model` (grouped by vendor), a masked line edit for `password` (never filled in from history), and validated line edits for IP and interface types.
 - The serial port picker is filled from `serial.tools.list_ports` and refreshes when opened.
-- Masked views use `********` for secret values and `<redacted>` for redacted running-config tokens. Raw values appear only in the backup viewer's reveal toggle.
+- Masked views use `********` for secret values and `<redacted>` for redacted running-config tokens. Raw values appear only through press-to-reveal (below).
+- Read-only text views with Ctrl+F: the backups viewer (the backup or the diff shown). Enter or F3 finds the next match, Shift+Enter or Shift+F3 the previous, wrapping; Esc closes the bar. It searches the redacted text shown, so a secret is never found by its value.
+
+#### Revealing a masked value
+
+In the run wizard's preview and the backups viewer, one masked value at a time can be revealed (`core/reveal.py`, `gui/widgets/reveal_text.py`).
+
+- Per value, not a global toggle: pressing a `********` or `<redacted>` token asks for the Tsunami password again, though Tsunami is unlocked (`LockManager.confirm_password`, checked against the vault; locked, it is refused). One confirmation lasts two minutes in that view; after it, pressing and holding the token shows its value over it, and releasing the left mouse button masks it again. Losing focus, leaving the view or hiding it masks it too.
+- The value is read at that moment: in a preview from the secret store (a single value, a field, a login's password or enable), or for a `password` prompt from what was typed in that wizard; in the backups viewer from the backup file, matched to its token by the text around it on the same line, so a line that does not match the file reveals nothing. It is never taken from a stored render or job record.
+- It is shown only in an overlay label over the token: it never enters the document, so selecting and copying the text copies the mask, and the label cannot be selected, copied or right-clicked. Nothing writes it to a log, the job record, history or anything MCP reads, so the redactor's guarantee for what Claude sees is unchanged and no path can put a revealed value into a `get_job` result.
+- Every reveal is audited first (`reveals` in history.db): who (Windows user), when, which secret (`secret() field 'auth_key'`) or backup token (`line 12, token 1`), and the play previewed or the backup file it was viewed in, with the line as shown, masked. If the audit row cannot be written, nothing is shown. History's Reveals tab lists them. MCP has no tool that reads them.
+- Job views show stored, masked renders and have no reveal: the render they hold is not read again.
 - A job with any `rollback_failed` or `interrupted` device shows a red banner that is only dismissed by explicit acknowledgment, and a red status bar item until then.
 - Every action is reachable from the command palette, with VS Code's shortcut where an equivalent exists.
 - Open tabs, panel sizes, and the window layout are restored on restart. Job tabs reopen from `history.db`.
@@ -1061,8 +1073,13 @@ SQLite in WAL mode with a `schema_version` table and forward-only migrations.
 - **job_devices**: `job_id`, `device`, `status`, `started_at`, `finished_at`, `render_hash`, `render_masked`, `output_redacted`, `diff_redacted`, `failed_line`, `error_redacted`, `rollback_status`, `backup_path`.
 - **mcp_calls**: `id`, `ts`, `tool`, `args_redacted_json`, `status`, `duration_ms`, `result_bytes`, `job_id` (nullable).
 - **compliance_results**: `job_id`, `device`, `missing_count`, `extra_count`, `details_json`.
+- **reveals**: `id`, `revealed_at`, `revealed_by`, `kind` (`preview` or `backup`), `customer`, `device`, `item` (the secret or backup token), `context` (the play previewed or the backup file), `masked_line` (the line as shown, masked). Never the revealed value (see GUI: Revealing a masked value).
 - **device_leases**: `customer`, `device`, `job_id`, `acquired_at`. Primary key (`customer`, `device`). A lease is live while its job's heartbeat is.
 - **inventory_proposals**: `id`, `created_at`, `customer`, `status`, `source`, `reason`, `changes_json`, `decided_by`, `decided_at`, `error` (see Inventory proposals).
+
+#### Operations in history
+
+What is not a play run is recorded as a job too, so History, the job view, Last job and Last contact show it (`core/operations.py`): MCP `show` (mode `show`, actor `mcp`, the command in the summary, the output as Claude got it, fully redacted), discovery (`discovery`) and Check for unlearned neighbors (`neighbors`), one row per device visited, Trust host keys (`hostkeys`), one row per device and jump host, Test connection from Credentials or the device page (`test`), and drift checks (`drift`, see Backups). Each job's play path is the operation's name. History's Jobs tab lists them only with Show operations ticked; the side bar lists plays only. The job view offers no Run again for them. A history write that fails is logged and never stops the operation.
 
 Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `running`, `paused`, `completed`, `partial` (some devices succeeded, some failed), `no_changes`, `failed`, `interrupted`, `cancelled`.
 
@@ -1559,3 +1576,8 @@ Changes since the original draft, with reasons:
   - MCP `request_run` takes `targets` as optional and falls back to every device the play targets.
   - Draft promotion checks the live file when Promote is pressed, refuses a draft rewritten after its tab showed it, retries a briefly locked live file, and reports a failed move instead of raising it unhandled. The reported failure promoting over a live play came with no error text; an unhandled `OSError` from the move fits that, but the cause is not confirmed.
   - A refused or timed-out jump host channel names the reason, not only `SSHException`.
+- 0.6.1, canary priority, Ctrl+F in backups, press-to-reveal, and operations in history:
+  - `canary_priority` per device (0 to 254, default 100): the highest is the canary, 0 never unless it is the only target. The canary was always the first target in inventory order. Higher wins, as in VRRP; a run with canary on whose targets are all 0 is refused rather than run without a canary, since dropping the canary silently would remove a safety step nobody turned off.
+  - Ctrl+F in the backups viewer.
+  - Press-to-reveal in the run preview and the backups viewer, per value, after the Tsunami password again, held only while the mouse button is down, never copyable, read from the store or backup file at that moment, and audited (`history.db` migration 007, `reveals`). The design said the backup viewer had a reveal toggle and the code had none; the toggle became a per-value reveal so a whole backup is never shown unmasked. One password confirmation lasts two minutes per view: asking on every press would put a dialog between every press and its release, which the hold-to-show gesture cannot survive. Job views have no reveal, because their render is a stored copy and the value must come from the store.
+  - MCP show commands, discovery, Check for unlearned neighbors, Trust host keys and Test connection are recorded as jobs (operations), shown in History with Show operations; before, only plays and drift checks were. A connection test's error text now passes the redactor with the login's own values.

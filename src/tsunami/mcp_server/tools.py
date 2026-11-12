@@ -49,7 +49,7 @@ from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.logins import customer_logins, jump_logins, referenced_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
 from tsunami.core.models.inventory import DEVICE_TYPES
-from tsunami.core.models.jobs import Actor, JobStatus
+from tsunami.core.models.jobs import Actor, DeviceStatus, JobStatus
 from tsunami.core.models.play import (
     GLOBAL_CUSTOMER,
     ConnectionMethod,
@@ -59,9 +59,10 @@ from tsunami.core.models.play import (
 )
 from tsunami.core.models.policy import has_control_chars
 from tsunami.core.models.proposals import ProposalStatus
+from tsunami.core.operations import SHOW_MODE, OperationLog, connect_status
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
 from tsunami.core.policy import PolicyError, check_show_command, validate_allowlist_request
-from tsunami.core.redact import supplied_values
+from tsunami.core.redact import redact_exception, supplied_values
 from tsunami.core.render.environment import TemplateError, compile_template, make_environment
 from tsunami.core.render.lookup import find_snippet
 from tsunami.core.render.secret_refs import LOGIN_PREFIX, PROMPT_PREFIX
@@ -69,7 +70,10 @@ from tsunami.core.runner import Runner, RunRequest, masked_prompts, play_hash
 from tsunami.core.services import play_entry, render_play
 from tsunami.core.showfilter import FilterError, apply_filter, compile_pattern, split_command
 from tsunami.core.targets import resolve_targets
-from tsunami.core.transports.base import ConnectTarget, JumpTarget
+from tsunami.core.transports.base import (
+    ConnectTarget,
+    JumpTarget,
+)
 from tsunami.core.workspace import validate_play_text
 from tsunami.core.yamlio import YamlLoadError, load_yaml_text
 from tsunami.mcp_server.enforcement import McpApp, ToolRefused
@@ -171,6 +175,7 @@ class Tools:
                         "platform": str(d.platform),
                         "model": d.model,
                         "jump_host": _jump_view(cust, d),
+                        "canary_priority": d.canary_priority,
                     }
                     for d in cust.devices
                     if (site is None or d.site == site) and (role is None or d.role == role)
@@ -682,19 +687,39 @@ class Tools:
                     policy.trust_new_host_keys and dev.name not in self._mcp_added(cust)
                 ),
             )
+            # Recorded in History as an operation: the command and the fully redacted
+            # output Claude was given (every stored secret masked, none exempt).
+            record = OperationLog(
+                self.app.history,
+                mode=SHOW_MODE,
+                customer=customer,
+                actor=Actor.MCP,
+                devices=[dev.name],
+                summary={"command": normalized},
+            )
+            full = self.app.full_redactor()
             transport = self.app.transport()
-            session = transport.open(target)
             try:
-                output = session.send_exec(parts.base).output
+                session = transport.open(target)
+                try:
+                    output = session.send_exec(parts.base).output
+                finally:
+                    session.close()
+            except Exception as exc:
+                status = connect_status(exc)
+                record.device(dev.name, status, error=redact_exception(exc, full))
+                record.finish()
+                raise
             finally:
-                session.close()
                 close = getattr(transport, "close", None)
                 if callable(close):
                     close()
             # The pipe runs here, on fully redacted text. On the device it would see the
             # secrets, and which lines came back would reveal them (showfilter.py). The
             # command is not echoed back: Claude knows what it sent.
-            output = apply_filter(self.app.full_redactor().text(output), parts)
+            output = apply_filter(full.text(output), parts)
+            record.device(dev.name, DeviceStatus.SUCCESS, output=f"{normalized}\n{output}")
+            record.finish()
             return {"device": dev.name, "untrusted_device_output": output}
 
         args = {"customer": customer, "device": device, "command": command}
@@ -994,6 +1019,7 @@ class Tools:
             tags=tags,
             limit=devices,
             customer=entry.play.customer,
+            approval_check=mode == RunMode.CHECK,  # the run it asks for is an apply
         )
         try:
             runner.preflight(request)

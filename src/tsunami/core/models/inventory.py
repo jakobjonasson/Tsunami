@@ -97,6 +97,9 @@ class CustomerFile(StrictModel):
     )
 
 
+DEFAULT_CANARY_PRIORITY = 100
+
+
 class Device(StrictModel):
     name: Slug
     host: Host
@@ -112,6 +115,14 @@ class Device(StrictModel):
         None,
         description="Jump host for this device; overrides the site's and the customer's. "
         "An explicit null (or none) connects directly. Absent: inherit.",
+    )
+    canary_priority: int = Field(
+        DEFAULT_CANARY_PRIORITY,
+        ge=0,
+        le=254,
+        description="Which target is the canary in an apply with canary on: the highest "
+        "priority, ties in inventory order. 0: never the canary, unless it is the only "
+        "target.",
     )
     vars: Vars = {}
 

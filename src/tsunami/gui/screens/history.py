@@ -12,6 +12,7 @@ from pathlib import PurePosixPath
 from PySide6.QtCore import QSize, Qt
 from PySide6.QtGui import QBrush, QColor
 from PySide6.QtWidgets import (
+    QCheckBox,
     QComboBox,
     QHBoxLayout,
     QHeaderView,
@@ -27,6 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.models.jobs import ALARM_DEVICE_STATUSES, JobRecord, JobStatus
+from tsunami.core.operations import is_operation
 from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
@@ -39,6 +41,16 @@ ALARM_TOOLTIP = "A device may be half-configured (rollback failed or interrupted
 _JOB_ID_ROLE = Qt.ItemDataRole.UserRole
 _ALARM_ROLE = Qt.ItemDataRole.UserRole + 1
 JOB_COLUMNS = ["Time", "Actor", "Play", "Customer", "Mode", "Status"]
+REVEAL_COLUMNS = [
+    "Time",
+    "By",
+    "Kind",
+    "Customer",
+    "Device",
+    "Revealed",
+    "Viewed in",
+    "Line (masked)",
+]
 
 _STATUS_ICONS = {
     JobStatus.COMPLETED: "check",
@@ -148,7 +160,13 @@ class HistoryView(QWidget):
 
     def refresh(self) -> None:
         colors = theme.current()
-        jobs = self.ctx.history.list_jobs(limit=RECENT_LIMIT)
+        # Plays only: operations (show commands, discovery, drift checks...) are in the
+        # History tab behind Show operations.
+        jobs = [
+            j
+            for j in self.ctx.history.list_jobs(limit=RECENT_LIMIT * 4)
+            if not is_operation(j.mode)
+        ][:RECENT_LIMIT]
         alarms = _alarm_job_ids(self.ctx, jobs)
         self.recent_list.clear()
         for job in jobs:
@@ -214,6 +232,14 @@ class HistoryTab(QWidget):
             filters.addWidget(label)
             filters.addWidget(combo, 1)
             combo.currentIndexChanged.connect(self._render_jobs)
+        self.operations_box = QCheckBox("Show operations")
+        self.operations_box.setToolTip(
+            "Also list what is not a play run: show commands Claude ran, discovery, "
+            "Check for unlearned neighbors, backups and drift checks, Trust host keys and "
+            "Test connection"
+        )
+        self.operations_box.toggled.connect(lambda _on: self.refresh())
+        filters.addWidget(self.operations_box)
         self.refresh_button = QPushButton(icon("refresh", theme.current().text), "Refresh")
         self.refresh_button.clicked.connect(self.refresh)
         filters.addWidget(self.refresh_button)
@@ -239,6 +265,15 @@ class HistoryTab(QWidget):
         comp_layout.addWidget(self.compliance_table, 1)
         self.tabs.addTab(comp_page, "Compliance")
 
+        # Every press-to-reveal (run preview, backups): who, when, what and where. Only
+        # the masked line is stored, never the value (core/reveal.py).
+        reveals_page = QWidget()
+        reveals_layout = QVBoxLayout(reveals_page)
+        reveals_layout.setContentsMargins(8, 8, 8, 8)
+        self.reveals_table = _table(REVEAL_COLUMNS)
+        reveals_layout.addWidget(self.reveals_table, 1)
+        self.tabs.addTab(reveals_page, "Reveals")
+
         ctx.jobs_changed.connect(self.refresh)
         ctx.workspace_changed.connect(self._reload_customers)
         self._reload_customers()
@@ -254,7 +289,10 @@ class HistoryTab(QWidget):
     # -- jobs -------------------------------------------------------------------
 
     def refresh(self) -> None:
-        self._jobs = self.ctx.history.list_jobs(limit=500)
+        jobs = self.ctx.history.list_jobs(limit=500)
+        if not self.operations_box.isChecked():
+            jobs = [j for j in jobs if not is_operation(j.mode)]
+        self._jobs = jobs
         self._alarms = _alarm_job_ids(self.ctx, self._jobs)
         for combo, values in (
             (self.customer_filter, {j.customer for j in self._jobs}),
@@ -265,6 +303,24 @@ class HistoryTab(QWidget):
             self._fill_combo(combo, [ALL, *sorted(values)])
         self._render_jobs()
         self._render_compliance()
+        self._render_reveals()
+
+    def _render_reveals(self) -> None:
+        rows = self.ctx.history.list_reveals(limit=500)
+        self.reveals_table.setRowCount(len(rows))
+        for r, row in enumerate(rows):
+            cells = [
+                _local_time(row["revealed_at"]),
+                row["revealed_by"],
+                row["kind"],
+                row["customer"],
+                row["device"] or "",
+                row["item"],
+                row["context"],
+                row["masked_line"],
+            ]
+            for c, text in enumerate(cells):
+                self.reveals_table.setItem(r, c, QTableWidgetItem(str(text)))
 
     @staticmethod
     def _fill_combo(combo: QComboBox, values: list[str]) -> None:

@@ -44,7 +44,6 @@ from PySide6.QtWidgets import (
 
 from tsunami.core import rerun
 from tsunami.core.approvals import would_change
-from tsunami.core.drift import DRIFT_MODE
 from tsunami.core.events import (
     BatchFinished,
     CanaryWaiting,
@@ -63,6 +62,7 @@ from tsunami.core.models.jobs import (
     JobRecord,
 )
 from tsunami.core.models.play import RunMode
+from tsunami.core.operations import is_operation
 from tsunami.core.runner import RunRequest
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
@@ -612,7 +612,7 @@ class JobView(QWidget):
             self._finished
             and self.job_id is not None
             and self.ctx.workspace is not None
-            and self._mode() != DRIFT_MODE
+            and not is_operation(self._mode())
         )
         if done:
             try:
@@ -667,8 +667,8 @@ class JobView(QWidget):
             self.table.item(row, 2).setText(self._elapsed(name))
             rec = self._records.get(name)
             detail = self._detail.get(name) or (rec.error_redacted if rec else "") or ""
-            if rec is not None and self._mode() == DRIFT_MODE:
-                detail = rec.output_redacted or detail  # the drift result, with its detail
+            if rec is not None and is_operation(self._mode()):
+                detail = rec.output_redacted or detail  # an operation's result, as recorded
             self.table.item(row, 3).setText(" ".join(detail.split()))
 
     def _tick(self) -> None:

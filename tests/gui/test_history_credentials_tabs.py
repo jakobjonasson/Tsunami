@@ -55,7 +55,11 @@ def test_history_button_opens_one_tab_with_labelled_filters(main_window):
         strict=True,
     ):
         assert label.buddy() is combo
-    assert [tab.tabs.tabText(i) for i in range(tab.tabs.count())] == ["Jobs", "Compliance"]
+    assert [tab.tabs.tabText(i) for i in range(tab.tabs.count())] == [
+        "Jobs",
+        "Compliance",
+        "Reveals",
+    ]
     view.open_button.click()  # focuses the same tab
     assert main_window._tabs["history"] is tab
 

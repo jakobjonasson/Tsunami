@@ -115,6 +115,22 @@ class SecretCollector:
     def mask(self, text: str) -> str:
         return self._sentinel.sub(MASK, text)
 
+    def mask_spans(self, text: str) -> tuple[str, list[tuple[int, int, str]]]:
+        """text masked, and where each mask is: (start, end, reference) in the masked text.
+        For the GUI's press-to-reveal; the reference names the secret, never its value."""
+        out: list[str] = []
+        spans: list[tuple[int, int, str]] = []
+        length, last = 0, 0
+        for match in self._sentinel.finditer(text):
+            out.append(text[last : match.start()])
+            length += match.start() - last
+            spans.append((length, length + len(MASK), self.refs[int(match.group(1))]))
+            out.append(MASK)
+            length += len(MASK)
+            last = match.end()
+        out.append(text[last:])
+        return "".join(out), spans
+
     def materialize(self, text: str, values: Mapping[str, str]) -> str:
         """Swap sentinels for real values. Apply mode only; never store the result."""
         return self._sentinel.sub(lambda m: values[self.refs[int(m.group(1))]], text)

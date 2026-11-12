@@ -715,3 +715,23 @@ def test_no_backups_unless_asked(root, app_paths):
 def test_backups_need_the_backups_folder(root):
     with pytest.raises(TsunamiError, match="backups folder"):
         Discovery(root, request(backup=True), login=LOGIN, transport=FakeTransport({}))
+
+
+def test_discovery_is_recorded_in_history_as_an_operation(root, tmp_path):
+    from tsunami.core.history import History
+    from tsunami.core.models.jobs import DeviceStatus
+
+    history = History(tmp_path / "history.db")
+    try:
+        report = discover(
+            root, request(), login=LOGIN, transport=FakeTransport(lab()), history=history
+        )
+        [job] = history.list_jobs()
+        assert (job.mode, job.play_path, job.customer) == ("discovery", "Discovery", "acme")
+        assert job.summary["added"] == len(report.added)
+        rows = {d.device: d for d in history.devices(job.id)}
+        assert set(report.added) <= set(rows)
+        assert rows["site-sw1"].status == DeviceStatus.SUCCESS
+        assert LOGIN.password not in str(list(rows.values()))
+    finally:
+        history.close()

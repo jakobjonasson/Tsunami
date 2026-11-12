@@ -1247,3 +1247,17 @@ def test_a_lab_run_says_no_person_approved_it(env):
     env.join()
     job = env.tools.get_job(started["job_id"])
     assert job["phase"] == "apply" and job["approved_by"] == "lab policy (no approval)"
+
+
+def test_show_is_recorded_in_history_with_redacted_output(env):
+    env.tools.show("acme", "sa-as01", "show running-config")
+    [job] = [j for j in env.history.list_jobs() if j.mode == "show"]
+    assert (job.actor, job.play_path, job.status) == (
+        Actor.MCP,
+        "Show command",
+        JobStatus.COMPLETED,
+    )
+    assert job.summary["command"] == "show running-config"
+    [row] = env.history.devices(job.id)
+    assert row.device == "sa-as01" and "hostname sa-as01" in row.output_redacted
+    assert TACACS not in row.output_redacted and LOGIN_PASSWORD not in row.output_redacted

@@ -268,6 +268,17 @@ class Runner:
                 problems.append(f"{target.label}: {exc}")
         if problems:
             raise TsunamiError("render failed:\n  " + "\n  ".join(problems[:20]))
+        settings = play.settings()
+        if (
+            (request.mode == RunMode.APPLY or request.approval_check)
+            and settings.canary
+            and len(targets) > 1
+            and pick_canary(targets) is None
+        ):
+            raise TsunamiError(
+                "canary is on, but every target has canary_priority 0 (never the canary): "
+                "give one a priority above 0, or turn canary off for this play"
+            )
         return targets
 
     def _context(self, job_id: str, entry: Any, targets: list[_Target], request: RunRequest):
@@ -401,7 +412,9 @@ class Runner:
         batch_size = max(1, min(settings.batch_size, self.max_sessions))
         batches: list[list[_Target]] = []
         if request.mode == RunMode.APPLY and settings.canary and len(pending) > 1:
-            batches.append([pending.pop(0)])
+            chosen = pick_canary(pending)
+            assert chosen is not None  # _prepare refused a run with no eligible device
+            batches.append([pending.pop(chosen)])
         batches += [pending[i : i + batch_size] for i in range(0, len(pending), batch_size)]
         canary = request.mode == RunMode.APPLY and settings.canary and len(targets) > 1
 
@@ -573,6 +586,17 @@ class Runner:
         )
         self.on_event(JobFinished(job_id=job_id, status=JobStatus.FAILED, counts={}))
         return job_id
+
+
+def pick_canary(targets: Sequence[_Target]) -> int | None:
+    """Index of the canary: the highest canary_priority, ties in inventory order. A device
+    with priority 0 is never chosen; None if none can be."""
+    best: tuple[int, int] | None = None
+    for index, target in enumerate(targets):
+        priority = target.device.canary_priority if target.device is not None else 1
+        if priority > 0 and (best is None or priority > best[0]):
+            best = (priority, index)
+    return None if best is None else best[1]
 
 
 def batch_rest(batches: list[list[_Target]], start: int) -> list[_Target]:

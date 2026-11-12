@@ -144,6 +144,30 @@ class Rendering:
             out.extend(f"exec: {line}" if step.kind == "exec" else line for line in step.lines)
         return "\n".join(out) + "\n"
 
+    def masked_text_spans(self) -> tuple[str, list[tuple[int, int, str]]]:
+        """masked_text(), and where each ******** sits in it: (start, end, reference).
+        The run preview uses it to reveal one value on request (core/reveal.py)."""
+        parts: list[str] = []
+        spans: list[tuple[int, int, str]] = []
+        offset = 0
+
+        def add(line: str) -> None:
+            nonlocal offset
+            masked, found = self._secrets.mask_spans(line)
+            spans.extend((offset + a, offset + b, ref) for a, b, ref in found)
+            parts.append(masked)
+            offset += len(masked) + 1  # the newline
+
+        for step in self.steps:
+            header = f"! step {step.index + 1}: {step.label}"
+            if step.skipped:
+                add(f"{header} (skipped: {step.skipped})")
+                continue
+            add(header)
+            for line in step.lines:
+                add(f"exec: {line}" if step.kind == "exec" else line)
+        return "\n".join(parts) + "\n", spans
+
     def render_hash(self) -> str:
         """sha256 of the masked render: approvals compare it at execution time."""
         payload = {

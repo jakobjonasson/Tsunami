@@ -37,6 +37,7 @@ from tsunami.core.hostkey_trust import (
     trust_host_keys,
 )
 from tsunami.core.issues import TsunamiError
+from tsunami.core.operations import record_host_keys
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import Shell
@@ -182,8 +183,10 @@ class HostKeysTab(QWidget):
             self._cancel,
         )
 
+        history = self.ctx.history
+
         def run(emit: Any) -> None:
-            trust_host_keys(
+            results = trust_host_keys(
                 paths,
                 customer,
                 devices,
@@ -193,6 +196,7 @@ class HostKeysTab(QWidget):
                 cancel=cancel,
                 on_result=emit,
             )
+            record_host_keys(history, customer, results, cancel)  # shown in History
 
         QThreadPool.globalInstance().start(_Task(self._signals, run))
         self._refresh_buttons()

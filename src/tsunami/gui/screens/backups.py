@@ -36,6 +36,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tsunami.core import reveal
 from tsunami.core.backups import (
     RUN_TAGS,
     BackupEntry,
@@ -58,7 +59,8 @@ from tsunami.gui.icons import icon
 from tsunami.gui.screens.history import relative_time
 from tsunami.gui.shell import Shell
 from tsunami.gui.widgets.diff_view import DiffView
-from tsunami.gui.widgets.masked_text import MaskedTextView
+from tsunami.gui.widgets.find_bar import FindBar
+from tsunami.gui.widgets.reveal_text import BackupRevealer, RevealTextView
 
 log = logging.getLogger(__name__)
 
@@ -195,12 +197,16 @@ class BackupsTab(QWidget):
         self.message.setObjectName("Muted")
         self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
         self.message.setWordWrap(True)
-        self.content_view = MaskedTextView()
+        # Press and hold a <redacted> token to reveal it (Tsunami password first; audited).
+        self.content_view = RevealTextView()
         self.diff_view = DiffView()
         self.stack.addWidget(self.message)
         self.stack.addWidget(self.content_view)
         self.stack.addWidget(self.diff_view)
         lower_layout.addWidget(self.stack, 1)
+        # Ctrl+F searches the backup or the diff shown (its redacted text).
+        self.find_bar = FindBar(self, lambda: self.stack.currentWidget())
+        lower_layout.addWidget(self.find_bar)
         self.splitter.addWidget(lower)
         self.splitter.setStretchFactor(0, 0)
         self.splitter.setStretchFactor(1, 1)
@@ -328,7 +334,10 @@ class BackupsTab(QWidget):
             self._say(str(exc), self._label(entry))
             return
         self.diff_view.clear()
-        self.content_view.setPlainText(text)
+        revealer = BackupRevealer(
+            self.ctx, customer=self.customer, device=self.device, path=entry.path
+        )
+        self.content_view.set_reveal(text, reveal.backup_spans(text), revealer)
         self.caption.setText(self._label(entry))
         self.stack.setCurrentIndex(_PAGE_CONTENT)
 

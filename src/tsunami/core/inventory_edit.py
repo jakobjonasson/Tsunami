@@ -23,6 +23,7 @@ from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
 from tsunami.core.models.inventory import (
+    DEFAULT_CANARY_PRIORITY,
     DEVICE_TYPES,
     CustomerFile,
     Device,
@@ -50,6 +51,7 @@ DEVICE_KEYS = (
     "model",
     "credential",
     "jump_host",
+    "canary_priority",
     "vars",
 )
 # Written for "connect directly" in a site or device (a jump host setting of None means
@@ -66,7 +68,11 @@ CUSTOMER_KEYS = (
     "site_credentials",
     "push_logins",
 )
-OPTIONAL_DEVICE_KEYS = frozenset({"port", "model", "credential", "jump_host", "vars"})
+OPTIONAL_DEVICE_KEYS = frozenset(
+    {"port", "model", "credential", "jump_host", "canary_priority", "vars"}
+)
+# Defaults left out of devices.yml, as in hand-written files.
+IMPLICIT_DEFAULTS = {"port": 22, "canary_priority": DEFAULT_CANARY_PRIORITY}
 
 
 class InventoryEditError(TsunamiError):
@@ -262,7 +268,7 @@ class InventoryEditor:
         item = CommentedMap()
         for key in DEVICE_KEYS:
             value = fields.get(key)
-            if value is not None and not (key == "port" and value == 22):
+            if value is not None and IMPLICIT_DEFAULTS.get(key) != value:
                 item[key] = _plain(value)
         devices.data.append(item)
         self._check_devices(customer, devices.data)
@@ -288,7 +294,7 @@ class InventoryEditor:
             item = CommentedMap()
             for key in DEVICE_KEYS:
                 value = fields.get(key)
-                if value is not None and not (key == "port" and value == 22):
+                if value is not None and IMPLICIT_DEFAULTS.get(key) != value:
                     item[key] = _plain(value)
             devices.data.append(item)
         created: list[Path] = []
@@ -501,7 +507,7 @@ def _set_device_fields(item: CommentedMap, fields: Mapping[str, Any]) -> None:
     for key, value in fields.items():
         if value is None and key not in OPTIONAL_DEVICE_KEYS:
             raise InventoryEditError(f"device field {key!r} is required")
-        if key == "port" and value == 22:
+        if key in IMPLICIT_DEFAULTS and value == IMPLICIT_DEFAULTS[key]:
             value = None  # the default stays implicit, as in hand-written files
         _set_key(item, key, _plain(value), DEVICE_KEYS)
 

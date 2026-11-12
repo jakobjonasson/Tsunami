@@ -34,6 +34,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
+from tsunami.core import reveal
 from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.logins import allowed_logins
@@ -54,9 +55,9 @@ from tsunami.core.targets import resolve_targets
 from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import Shell
-from tsunami.gui.widgets.masked_text import MaskedTextView
 from tsunami.gui.widgets.port_picker import PortPicker
 from tsunami.gui.widgets.prompt_widgets import PromptField, make_prompt_widget
+from tsunami.gui.widgets.reveal_text import PreviewRevealer, RevealTextView
 
 MODE_LABELS = {
     RunMode.CHECK: "Check (diff only, no changes)",
@@ -755,7 +756,8 @@ class RunWizard(QWidget):
         renderer = Renderer(workspace, self.ctx.settings, self.ctx.secrets)
         tags = self.selected_tags()
         shared = self._shared_raw()
-        rendered: list[tuple[str, str]] = []
+        # (tab label, device, masked text, where each mask is, the answers it rendered with)
+        rendered: list[tuple[str, str | None, str, list, dict[str, Any]]] = []
         try:
             if self.initial:
                 values = collect_prompts(workspace, self.entry, shared)
@@ -763,7 +765,7 @@ class RunWizard(QWidget):
                 rendering = renderer.render(
                     self.entry, device=None, prompt_values=values, tags=tags
                 )
-                rendered.append((label, rendering.masked_text()))
+                rendered.append((label, None, *rendering.masked_text_spans(), values))
             else:
                 for device in self.selected_devices():
                     raw = {**shared, **self._device_raw(device.name)}
@@ -771,13 +773,26 @@ class RunWizard(QWidget):
                     rendering = renderer.render(
                         self.entry, device=device.name, prompt_values=values, tags=tags
                     )
-                    rendered.append((device.name, rendering.masked_text()))
+                    rendered.append(
+                        (device.name, device.name, *rendering.masked_text_spans(), values)
+                    )
         except TsunamiError as exc:
             self._show_error(str(exc))
             self._update_buttons()
             return False
-        for label, text in rendered:
-            self.preview_tabs.addTab(MaskedTextView(text), label)
+        for label, device_name, text, spans, values in rendered:
+            # Press and hold a ******** to reveal it, after the Tsunami password: the value
+            # is read from the store then (or the password typed here), never from this text.
+            view = RevealTextView()
+            revealer = PreviewRevealer(
+                self.ctx,
+                customer=self.play.customer if self.cust is not None else "",
+                device=device_name,
+                play_path=self.entry.path.as_posix(),
+                typed=values,
+            )
+            view.set_reveal(text, reveal.preview_spans(text, spans), revealer)
+            self.preview_tabs.addTab(view, label)
         self.preview_tabs.setVisible(True)
         self._previewed = True
         self._update_buttons()

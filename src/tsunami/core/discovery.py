@@ -46,6 +46,7 @@ from tsunami.core.inventory_edit import InventoryEditError, InventoryEditor
 from tsunami.core.inventory_import import load_snapshot
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily, require_slug
+from tsunami.core.models.jobs import DeviceStatus
 from tsunami.core.models.play import ConnectionMethod
 from tsunami.core.paths import AppPaths
 from tsunami.core.redact import Redactor, redact_exception
@@ -395,6 +396,17 @@ class VisitStatus(StrEnum):
 
 
 LEARNED = frozenset({VisitStatus.ADDED, VisitStatus.KNOWN})
+# How a visit reads as a device row of the discovery's job in History.
+VISIT_STATUS = {
+    VisitStatus.ADDED: DeviceStatus.SUCCESS,
+    VisitStatus.KNOWN: DeviceStatus.SUCCESS,
+    VisitStatus.CONFLICT: DeviceStatus.FAILED,
+    VisitStatus.UNREACHABLE: DeviceStatus.UNREACHABLE,
+    VisitStatus.LOGIN_FAILED: DeviceStatus.FAILED,
+    VisitStatus.HOSTKEY_CHANGED: DeviceStatus.HOSTKEY_MISMATCH,
+    VisitStatus.FAILED: DeviceStatus.FAILED,
+    VisitStatus.CANCELLED: DeviceStatus.CANCELLED,
+}
 
 
 class Reason(StrEnum):
@@ -595,6 +607,28 @@ class Discovery:
     # -- driving ----------------------------------------------------------------------
 
     def run(self) -> DiscoveryReport:
+        # Recorded in History as an operation, one row per device visited.
+        from tsunami.core.operations import DISCOVERY_MODE, NEIGHBORS_MODE, OperationLog
+
+        self.record = OperationLog(
+            self.history,
+            mode=DISCOVERY_MODE if self.request.add else NEIGHBORS_MODE,
+            customer=self.request.customer,
+            summary={"site": self.request.site},
+        )
+        try:
+            report = self._run()
+        except BaseException:
+            self.record.finish(cancelled=self.cancel_event.is_set())
+            raise
+        self.record.finish(
+            cancelled=report.cancelled,
+            added=len(report.added),
+            unlearned=len(report.unlearned),
+        )
+        return report
+
+    def _run(self) -> DiscoveryReport:
         snapshot = load_snapshot(self.root, self.request.customer)
         self._sites = set(snapshot.sites)
         for name, device in snapshot.devices.items():
@@ -631,6 +665,14 @@ class Discovery:
     def _emit(self, event: DeviceVisit | Unlearned) -> None:
         if isinstance(event, DeviceVisit):
             self.visits.append(event)
+            record = getattr(self, "record", None)
+            if record is not None:
+                record.device(
+                    event.name or event.host,
+                    VISIT_STATUS.get(event.status, DeviceStatus.FAILED),
+                    output=self.redactor.text(visit_text(event)),
+                    error=self.redactor.text(event.detail) if event.status not in LEARNED else None,
+                )
         else:
             self.unlearned.append(event)
         if self.on_event is not None:
@@ -967,6 +1009,18 @@ class Discovery:
         if self._count >= self.request.max_devices:
             return Reason.DEVICE_LIMIT
         return None
+
+
+def visit_text(visit: DeviceVisit) -> str:
+    """One line about a visit, for the job's device row."""
+    parts = [f"{visit.status}: {visit.host}", f"hop {visit.hop}", f"{visit.neighbors} neighbors"]
+    if visit.version:
+        parts.append(f"version {visit.version}")
+    if visit.backup:
+        parts.append(f"backup {visit.backup}")
+    if visit.detail:
+        parts.append(visit.detail)
+    return "; ".join(parts)
 
 
 def _merge(neighbors: Sequence[Neighbor]) -> list[Neighbor]:

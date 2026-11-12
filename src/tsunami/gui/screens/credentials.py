@@ -38,6 +38,8 @@ from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.issues import TsunamiError
 from tsunami.core.logins import customer_logins
 from tsunami.core.models.play import ConnectionMethod
+from tsunami.core.operations import record_test
+from tsunami.core.redact import Redactor, redact_exception
 from tsunami.core.secret_store import SINGLE_FIELD, LoginCredential, SecretFields
 from tsunami.core.transports import DeviceTransport
 from tsunami.core.transports.base import ConnectTarget
@@ -477,19 +479,33 @@ class _TestTask(QRunnable):
 
     def run(self) -> None:
         transport = None
+        failure: Exception | None = None
+        cred = self.target.credential
+        redactor = Redactor([v for v in (cred.password, cred.enable) if v] if cred else [])
         try:
             transport = DeviceTransport(self.ctx.paths, self.ctx.settings)
             session = transport.open(self.target)
             session.close()
             result = (True, f"Logged in to {self.target.device} and closed the session.")
-        except Exception as exc:  # noqa: BLE001 - reported to the person; messages are redacted
-            result = (False, f"{type(exc).__name__}: {exc}")
+        except Exception as exc:  # noqa: BLE001 - reported to the person, redacted
+            failure = exc
+            result = (False, redact_exception(exc, redactor))
         finally:
             try:
                 if transport is not None:
                     transport.close()
             except Exception:  # noqa: BLE001, S110
                 pass
+        # Shown in History as an operation (Test connection).
+        record_test(
+            self.ctx.history,
+            self.target.customer,
+            self.target.device,
+            self.name,
+            result[0],
+            result[1],
+            failure,
+        )
         self.signals.done.emit(self.name, *result)
 
 

@@ -164,6 +164,37 @@ class UnlockDialog(_Dialog):
         return True
 
 
+class ConfirmPasswordDialog(_Dialog):
+    """The Tsunami password again, before a masked value is revealed. Checked against the
+    vault; the lock state does not change."""
+
+    def __init__(self, vault: Vault, what: str, parent: QWidget | None = None) -> None:
+        super().__init__(
+            "Reveal a masked value",
+            f"Enter the Tsunami password to reveal {what}. The value shows only while the "
+            "mouse button is held, cannot be copied, and every reveal is recorded in History.",
+            parent,
+        )
+        self.vault = vault
+        self.password_edit = _password_field()
+        self.form.addRow("Password", self.password_edit)
+        ok = _primary_button("Confirm")
+        self.buttons.addButton(ok, QDialogButtonBox.ButtonRole.AcceptRole)
+        ok.setDefault(True)
+        ok.clicked.connect(self.save)
+
+    def save(self) -> bool:
+        try:
+            self.vault.unlock(self.password_edit.text())  # verifies; the cipher is dropped
+        except VaultError as exc:
+            self.fail(str(exc))
+            return False
+        finally:
+            self.password_edit.clear()
+        self.accept()
+        return True
+
+
 class LockManager(QObject):
     """Owns the lock state: the secret store's cipher, and the idle timer."""
 
@@ -250,6 +281,13 @@ class LockManager(QObject):
                 return True
         finally:
             self._prompting = False
+
+    def confirm_password(self, what: str, parent: QWidget | None = None) -> bool:
+        """Ask for the Tsunami password again (before a reveal). False if cancelled, wrong,
+        or Tsunami is locked."""
+        if not self._unlocked or not self.vault.exists():
+            return False
+        return run_dialog(ConfirmPasswordDialog(self.vault, what, parent))
 
     def lock_now(self, parent: QWidget | None = None) -> None:
         """The lock command: lock, then ask for the password again."""

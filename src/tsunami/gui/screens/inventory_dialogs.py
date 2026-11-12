@@ -45,7 +45,7 @@ from tsunami.core.catalog import load_catalog
 from tsunami.core.inventory_edit import DIRECT, KEEP, InventoryEditor
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import Platform
-from tsunami.core.models.inventory import DEVICE_TYPES, Device, JumpHost
+from tsunami.core.models.inventory import DEFAULT_CANARY_PRIORITY, DEVICE_TYPES, Device, JumpHost
 from tsunami.core.yamlio import load_yaml_text
 from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
@@ -422,6 +422,15 @@ class DeviceDialog(_EditDialog):
             inherit_label=inherit_label(inv, site=self.site_combo.currentData()),
         )
         self.site_combo.currentIndexChanged.connect(lambda _=0: self._update_default())
+        self.canary_spin = wheel.SpinBox()
+        self.canary_spin.setRange(0, 254)
+        self.canary_spin.setFixedWidth(96)
+        self.canary_spin.setValue(device.canary_priority if device else DEFAULT_CANARY_PRIORITY)
+        self.canary_spin.setToolTip(
+            "In an apply with canary on, the target with the highest priority runs first, "
+            "alone (ties: inventory order). 0: never the canary, unless it is the only "
+            "target."
+        )
         self.original_vars = dict(device.vars) if device else {}
         self.vars_edit = _plain_edit(vars_to_text(self.original_vars))
         self.vars_edit.setPlaceholderText("Optional YAML, e.g.\nmgmt_ip: 192.0.2.10/24")
@@ -435,6 +444,7 @@ class DeviceDialog(_EditDialog):
         self.form.addRow("Model", self.model_combo)
         self.form.addRow("Login", self.login)
         self.form.addRow("Jump host", self.jump)
+        self.form.addRow("Canary priority", self.canary_spin)
         self.form.addRow("Variables", self.vars_edit)
         if self.login.load_error:
             self.set_error(self.login.load_error)
@@ -481,6 +491,7 @@ class DeviceDialog(_EditDialog):
             "model": self.model_combo.currentData(),
             "credential": self.login.login(),
             "jump_host": self.jump.setting(),
+            "canary_priority": self.canary_spin.value(),
             "vars": values or None,
         }
 
@@ -515,6 +526,7 @@ class DeviceDialog(_EditDialog):
             "model": old.model,
             "credential": old.credential,
             "jump_host": jump_setting_of(old.jump_host, old.jump_set),
+            "canary_priority": old.canary_priority,
             "vars": dict(old.vars) or None,
         }
         changed = {k: v for k, v in fields.items() if before[k] != v}
