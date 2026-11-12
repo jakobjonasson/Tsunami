@@ -12,7 +12,7 @@ dist/
 packaging/Output/
 
 # Guard: device configs, logs and databases never belong in this repo.
-# Device-output test fixtures use .txt (see CLAUDE.md).
+# Device-output test fixtures use .txt.
 *.cfg
 *.log
 *.db
@@ -23,6 +23,7 @@ packaging/Output/
 .vscode/
 .idea/
 .claude/settings.local.json
+CLAUDE.md
 .claude/worktrees/
 .scratch/
 packaging/version_info.txt

@@ -28,7 +28,7 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 - Four run modes: render (no connection), check (a diff against running config, nothing sent), compliance (baseline plays) and apply.
 - Apply runs a canary device first, then batches, with a failure threshold, pre- and post-checks, a config backup, rollback on failure or a revert timer, and `write memory` when the checks pass.
 - Typed prompts with dropdowns (site, role, hardware model, a saved login) and per-device answers.
-- Secrets reach templates only as `secret('name')`, or `login(name).password` for a saved login. Both are placeholders that may sit only on password lines, and real values exist only in memory during apply.
+- Secrets reach templates only as `secret('name')` (or `secret('name', 'field')` for a secret with fields such as an SNMPv3 user), a prompt of type `secret` or `password`, or `login(name).password` for a saved login. All are placeholders that may sit only on password lines, and real values exist only in memory during apply. A secret the play uses that is not saved is reported at validate, render and request time.
 - History of every job with masked renders and redacted diffs and output; retry failed devices, apply after a check, or run again.
 
 **Inventory and onboarding**
@@ -61,7 +61,7 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 
 ## Development setup
 
-Requires Windows 10 or 11 and [uv](https://docs.astral.sh/uv/). uv installs Python 3.12 itself if it isn't already present. Read [CLAUDE.md](CLAUDE.md) before changing code: it holds the rules the tests enforce and the conventions they don't.
+Requires Windows 10 or 11 and [uv](https://docs.astral.sh/uv/). uv installs Python 3.12 itself if it isn't already present. The architecture test, ruff and the rest of the suite enforce the code rules; `docs/design.md` is the spec.
 
 ```powershell
 uv sync                                  # create .venv and install everything
