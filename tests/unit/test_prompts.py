@@ -417,6 +417,8 @@ VALID_FOR_CONTROL: dict[PromptType, tuple[object, dict[str, object]]] = {
     P.ROLE: ("core", {}),
     P.MODEL: ("c9300-48p", {}),
     P.LOGIN: ("netadmin2", {}),
+    P.SECRET: ("snmpv3", {}),
+    P.PASSWORD: ("Typed-Pass-1", {}),
 }
 
 
@@ -466,7 +468,7 @@ def test_injection_payload_rejected_for_string_with_permissive_pattern() -> None
 # ---- whitespace -----------------------------------------------------------
 
 
-@pytest.mark.parametrize("ptype", [t for t in PromptType if t not in (P.STRING,)])
+@pytest.mark.parametrize("ptype", [t for t in PromptType if t not in (P.STRING, P.PASSWORD)])
 def test_surrounding_spaces_stripped_for_text_types(ptype: PromptType) -> None:
     raw, kw = VALID_FOR_CONTROL[ptype]
     assert run(ptype, f"  {raw}  ", **kw) == run(ptype, raw, **kw)
@@ -558,3 +560,26 @@ def test_a_login_outside_the_customer_reads_the_same(name: str) -> None:
     assert str(caught.value) == (
         f"login {name!r} is not available to this customer; valid: acme-netadmin, netadmin2"
     )
+
+
+# ---- secret and password prompts ----------------------------------------------
+
+
+def test_secret_prompt_checks_saved_names_when_known() -> None:
+    saved = PromptContext(secrets=frozenset({"snmpv3", "tacacs"}))
+    assert run(P.SECRET, "snmpv3", context=saved) == "snmpv3"
+    with pytest.raises(PromptValueError, match="not saved"):
+        run(P.SECRET, "radius", context=saved)
+    # Without the store any slug passes; the render checks it is saved.
+    assert run(P.SECRET, "radius", context=PromptContext()) == "radius"
+    with pytest.raises(PromptValueError):
+        run(P.SECRET, "Not A Slug", context=PromptContext())
+
+
+def test_password_prompt_keeps_spaces_and_never_echoes() -> None:
+    assert run(P.PASSWORD, " with spaces ") == " with spaces "
+    with pytest.raises(PromptValueError) as err:
+        run(P.PASSWORD, "Secret-Typed-9\nno shutdown")
+    assert "Secret-Typed-9" not in str(err.value)
+    with pytest.raises(PromptValueError, match="required"):
+        run(P.PASSWORD, "")

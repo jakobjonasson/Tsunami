@@ -61,6 +61,8 @@ class PromptType(StrEnum):
     ROLE = "role"
     MODEL = "model"  # hardware catalog entry
     LOGIN = "login"  # a saved login's name; templates read it through login()
+    SECRET = "secret"  # a saved secret's name; templates read its fields, masked
+    PASSWORD = "password"  # typed for one run, masked everywhere, never stored
 
 
 # Built-in variables an initial play may set, because its device is not in inventory.
@@ -144,6 +146,16 @@ class Prompt(StrictModel):
             raise ValueError("min and max are only valid for type int")
         if self.min is not None and self.max is not None and self.min > self.max:
             raise ValueError("min is greater than max")
+        if self.type == PromptType.PASSWORD:
+            if self.default is not None:
+                raise ValueError(
+                    "a prompt of type 'password' has no default: a saved value belongs in "
+                    "Credentials, Secrets (use a prompt of type 'secret')"
+                )
+            if self.per_device:
+                raise ValueError(
+                    "a prompt of type 'password' is asked once per run, not per device"
+                )
         return self
 
 

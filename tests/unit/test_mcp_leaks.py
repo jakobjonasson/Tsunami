@@ -1122,7 +1122,9 @@ def test_request_run_non_lab_diff_and_cancel(env):
     req = env.call(
         "request_run", path="plays/push/add-vlan.yml", targets=["sa-as01"], prompts=prompts
     )
-    assert_clean(env.job(req))
+    assert_clean(req)  # a request that could never run is refused at once, cleanly
+    if not req.refused:
+        assert_clean(env.job(req))
 
 
 def test_jobs_never_show_a_secret_the_caller_did_not_supply(env):

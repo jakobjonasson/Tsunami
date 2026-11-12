@@ -183,13 +183,63 @@ def test_max_fail_stops_scheduling(ws_root, history, secrets, app_paths):
         "steps:\n  - config: [vlan 40]\nexecution:\n  batch_size: 5\n  canary: false\n"
         "  max_fail_percent: 10\n",
     )
-    mock = mock_for(names, unreachable=names[:2])
+    # Unreachable devices changed nothing, so they count over the whole run: 3 of 20 is
+    # 15%, over 10%, after the first batch.
+    mock = mock_for(names, unreachable=names[:3])
     runner, events = make_runner(ws_root, mock, history, secrets, app_paths)
     job_id = runner.run(RunRequest(play, RunMode.APPLY))
     result = statuses(history, job_id)
     assert result["sa-as001"] == DeviceStatus.UNREACHABLE
     assert sum(s == DeviceStatus.SKIPPED_MAXFAIL for s in result.values()) == 15
     assert any(isinstance(e, MaxFailReached) for e in events)
+
+
+def _batch_play(root, name: str, extra: str = "  canary: false\n") -> str:
+    return write_play(
+        root,
+        name,
+        f"name: {name}\ntype: push\ncustomer: acme\ntargets:\n  roles: [access]\n"
+        f"steps:\n  - config: [vlan 40]\nexecution:\n  batch_size: 5\n{extra}"
+        "  max_fail_percent: 10\n",
+    )
+
+
+def test_one_unreachable_device_in_a_small_first_batch_does_not_stop_the_run(
+    ws_root, history, secrets, app_paths
+):
+    names = add_devices(ws_root, 49)
+    play = _batch_play(ws_root, "mf1")
+    mock = mock_for(names, unreachable=names[:1])  # 1 of the first 5: 20% of the batch
+    runner, events = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(play, RunMode.APPLY))
+    result = statuses(history, job_id)
+    assert sum(s == DeviceStatus.SUCCESS for s in result.values()) == 48
+    assert not any(isinstance(e, MaxFailReached) for e in events)
+    assert history.get_job(job_id).status == JobStatus.PARTIAL
+
+
+def test_config_failures_still_stop_after_a_batch(ws_root, history, secrets, app_paths):
+    names = add_devices(ws_root, 49)
+    play = _batch_play(ws_root, "mf2")
+    mock = mock_for(names)
+    mock.device(names[0]).reject_lines.append(r"^vlan 40$")  # 1 of 5 attempted: 20%
+    runner, events = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(play, RunMode.APPLY))
+    result = statuses(history, job_id)
+    assert result[names[0]] == DeviceStatus.ROLLED_BACK
+    assert sum(s == DeviceStatus.SKIPPED_MAXFAIL for s in result.values()) == 44
+    assert any(isinstance(e, MaxFailReached) for e in events)
+
+
+def test_max_fail_never_stops_a_check(ws_root, history, secrets, app_paths):
+    names = add_devices(ws_root, 10)
+    play = _batch_play(ws_root, "mf3")
+    mock = mock_for(names, unreachable=names[:3])
+    runner, _ = make_runner(ws_root, mock, history, secrets, app_paths)
+    job_id = runner.run(RunRequest(play, RunMode.CHECK))
+    result = statuses(history, job_id)
+    assert DeviceStatus.SKIPPED_MAXFAIL not in result.values()
+    assert sum(s == DeviceStatus.SUCCESS for s in result.values()) == 7
 
 
 def test_two_hundred_devices_stay_within_fifty_sessions(ws_root, history, secrets, app_paths):

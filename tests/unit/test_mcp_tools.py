@@ -8,6 +8,7 @@ assertions.
 from __future__ import annotations
 
 import asyncio
+import json
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
@@ -1144,3 +1145,105 @@ def test_too_many_waiting_proposals_are_refused(prop_env):
         propose(env, {"device": "sa-as01", "role": "core"})
     with pytest.raises(ToolRefused, match="too many"):
         propose(env, {"device": "sa-as01", "role": "core"})
+
+
+# -- 0.6.0: the approval check, missing secrets, password prompts ---------------------------
+
+SECRET_PLAY = """name: snmp
+type: push
+customer: acme
+targets:
+  roles: [access]
+steps:
+  - config:
+      - "snmp-server community {{ secret('snmp-ro') }} RO"
+"""
+
+
+def test_a_request_reads_as_an_approval_check_until_approved(env):
+    """The reported bug: a check that partly failed read as an apply that partly succeeded."""
+    started = env.tools.request_run(PLAY, ["sa-as01", "sa-as02"], prompts=PROMPTS)
+    assert env.tools.get_job(started["job_id"])["phase"] == "approval check"
+    env.join()
+    job = env.tools.get_job(started["job_id"])
+    assert job["phase"] == "approval check" and "Nothing has been applied" in job["note"]
+    assert job["approved_by"] is None
+    assert all(d["status"] != "success" for d in job["devices"])
+    assert "vlan 30" not in env.mock.device("sa-as02").running
+
+
+def test_a_check_failure_ends_the_request_failed(env, monkeypatch):
+    from tsunami.core.transports.base import UnreachableError
+
+    real_open = env.recorder.open
+
+    def open_(target):
+        if target.device == "sa-as01":
+            raise UnreachableError("sa-as01: timed out")
+        return real_open(target)
+
+    monkeypatch.setattr(env.recorder, "open", open_)
+    started = env.tools.request_run(PLAY, ["sa-as01", "sa-as02"], prompts=PROMPTS)
+    env.join()
+    job = env.tools.get_job(started["job_id"])
+    assert job["status"] == "failed"  # not partial, and never awaiting approval
+    states = {d["device"]: d["status"] for d in job["devices"]}
+    assert states == {"sa-as01": "unreachable", "sa-as02": "cancelled"}
+    assert "not offered for approval" in job["summary"]["error"]
+
+
+def test_request_run_refuses_a_missing_secret_at_once(env):
+    (env.root / "plays/push/snmp.yml").write_text(SECRET_PLAY, encoding="utf-8")
+    with pytest.raises(ToolRefused, match="'snmp-ro' is not among the saved secrets of"):
+        env.tools.request_run("plays/push/snmp.yml", ["sa-as01"])
+    with pytest.raises(ToolRefused, match="not among the saved secrets"):
+        env.tools.render("plays/push/snmp.yml", "sa-as01")
+    result = env.tools.validate(path="plays/push/snmp.yml")
+    assert not result["valid"]
+    assert any("not among the saved secrets" in i["message"] for i in result["issues"])
+    assert env.history.list_jobs() == []
+    env.app.secrets.set_secret("acme", "snmp-ro", "Community-Ro-41")
+    rendered = env.tools.render("plays/push/snmp.yml", "sa-as01")
+    assert "Community-Ro-41" not in str(rendered)
+    assert rendered["secret_names"] == ["acme/snmp-ro"]
+
+
+def test_request_run_without_targets_uses_the_plays_targets(env):
+    started = env.tools.request_run(PLAY, prompts=PROMPTS)
+    assert sorted(started["devices"]) == ["sa-as01", "sa-as02"]
+    env.join()
+    assert env.history.get_job(started["job_id"]).status == JobStatus.AWAITING_APPROVAL
+
+
+PASSWORD_PLAY = """name: community
+type: push
+customer: acme
+targets:
+  roles: [access]
+prompts:
+  community:
+    type: password
+steps:
+  - config:
+      - "snmp-server community {{ community }} RO"
+"""
+
+
+def test_password_prompts_are_never_taken_over_mcp(env):
+    (env.root / "plays/push/pw.yml").write_text(PASSWORD_PLAY, encoding="utf-8")
+    rendered = env.tools.render("plays/push/pw.yml", "sa-as01")  # masked, no value needed
+    assert rendered["lines"] == ["snmp-server community <redacted> RO"]
+    assert rendered["secret_names"] == ["password:community"]
+    with pytest.raises(ToolRefused, match="typed by a person"):
+        env.tools.render("plays/push/pw.yml", "sa-as01", {"community": "Guess-Value-12"})
+    with pytest.raises(ToolRefused, match="use a prompt of type 'secret'"):
+        env.tools.request_run("plays/push/pw.yml")
+    audit = json.dumps(env.audit())
+    assert "Guess-Value-12" not in audit  # the refused call's arguments are masked too
+
+
+def test_a_lab_run_says_no_person_approved_it(env):
+    started = env.tools.request_run("plays/push/lab-vlan.yml", ["lab-sw1"], prompts=PROMPTS)
+    env.join()
+    job = env.tools.get_job(started["job_id"])
+    assert job["phase"] == "apply" and job["approved_by"] == "lab policy (no approval)"

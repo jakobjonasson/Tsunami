@@ -21,7 +21,7 @@ from typing import Any
 from tsunami.core.approvals import PLAY_CHANGED, would_change
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.jobs import Actor, DeviceStatus, JobRecord, JobStatus
-from tsunami.core.models.play import PlayType, RunMode
+from tsunami.core.models.play import PlayType, PromptType, RunMode
 from tsunami.core.runner import RunRequest, play_hash
 
 # Devices a retry leaves alone: they finished, or a precheck deliberately skipped them.
@@ -67,6 +67,8 @@ def rebuild_problem(workspace: Any, job: JobRecord) -> str | None:
         return "an initial play needs its console port and device details again"
     if any(p.per_device for p in entry.play.prompts.values()):
         return "per-device answers are not kept in history"
+    if any(p.type == PromptType.PASSWORD for p in entry.play.prompts.values()):
+        return "a password prompt is typed again for every run; history never keeps it"
     return None
 
 

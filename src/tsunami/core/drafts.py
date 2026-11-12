@@ -11,8 +11,10 @@ See design.md, GUI: Drafts; Workspace layout.
 from __future__ import annotations
 
 import difflib
+import hashlib
 import os
 import re
+import time
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -116,16 +118,63 @@ def _resolve_plan(root: Path, draft_path: Path) -> tuple[Path, Path, str]:
     return source, target, kind
 
 
-def promote(root: Path, draft_path: Path, *, overwrite: bool = False) -> Path:
-    """Move the draft to its live path. Returns the live path."""
+def draft_digest(root: Path, draft_path: Path) -> str:
+    """sha256 of the draft as it is now, so a promotion can refuse content nobody saw."""
+    source, _, _ = _resolve_plan(root, draft_path)
+    try:
+        return hashlib.sha256(source.read_bytes()).hexdigest()
+    except OSError as exc:
+        raise TsunamiError(f"cannot read the draft {source.name}: {exc.strerror}") from None
+
+
+def live_exists(root: Path, draft_path: Path) -> bool:
+    """Whether the draft's live file exists now (not when the draft was listed)."""
+    _, target, _ = _resolve_plan(root, draft_path)
+    return target.exists()
+
+
+def promote(
+    root: Path,
+    draft_path: Path,
+    *,
+    overwrite: bool = False,
+    expected_digest: str | None = None,
+    attempts: int = 10,
+) -> Path:
+    """Move the draft to its live path. Returns the live path.
+
+    expected_digest: the draft as the person reviewed it; a draft rewritten since (Claude
+    can write drafts at any time) is refused. On Windows a live file another program has
+    open (an editor, the search indexer, antivirus) refuses the move for a moment, so the
+    move is retried briefly before it fails with the reason.
+    """
     source, target, _ = _resolve_plan(root, draft_path)
     if not source.is_file():
         raise TsunamiError(f"draft not found: {Path(draft_path).name}")
+    if expected_digest is not None and draft_digest(root, draft_path) != expected_digest:
+        raise TsunamiError(
+            f"the draft {source.name} changed since it was opened; review it again before "
+            "promoting it"
+        )
     if target.exists() and not overwrite:
         raise TsunamiError(f"the live file already exists: {target.name}")
     target.parent.mkdir(parents=True, exist_ok=True)
-    os.replace(source, target)
-    return target
+    for attempt in range(max(1, attempts)):
+        try:
+            os.replace(source, target)
+            return target
+        except PermissionError as exc:
+            if attempt + 1 >= attempts:
+                raise TsunamiError(
+                    f"could not replace {target.name}: {exc.strerror or exc}. Another program "
+                    "may have it open, or it is read-only; close it and promote again"
+                ) from None
+            time.sleep(0.1)
+        except OSError as exc:
+            raise TsunamiError(
+                f"could not move the draft to {target.name}: {exc.strerror or exc}"
+            ) from None
+    return target  # pragma: no cover - the loop returns or raises
 
 
 def delete(root: Path, draft_path: Path) -> None:

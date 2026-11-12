@@ -89,6 +89,9 @@ class JobContext:
     # Per target label: why it has no login (a serial run goes on without one, since a
     # factory-default console needs none; the reason is logged before connecting).
     credential_notes: Mapping[str, str] = field(default_factory=dict)
+    # The check behind an MCP change request: a checked device is ready or no_changes,
+    # never success, since nothing was applied (runner.RunRequest.approval_check).
+    approval_check: bool = False
 
 
 class _Stop(Exception):
@@ -315,20 +318,21 @@ class DevicePipeline:
                 extra_count=len(result.extra),
                 details={"missing": list(result.missing), "extra": list(result.extra)},
             )
+        status = DeviceStatus.SUCCESS
         if ctx.mode == RunMode.CHECK:
-            if changes_device(diff_text, rendering.masked_text()):
+            changes = changes_device(diff_text, rendering.masked_text())
+            if changes:
                 detail = "changes to apply"
             else:
                 detail = "no changes" + (" (device has extra lines)" if result.extra else "")
+            if ctx.approval_check:
+                status = DeviceStatus.READY if changes else DeviceStatus.NO_CHANGES
+                if changes:
+                    detail += "; nothing is applied until a person approves the request"
         else:
             detail = "in compliance" if result.clean else "drift found"
-        self.status(
-            DeviceStatus.SUCCESS,
-            detail,
-            finished_at=_now(),
-            diff_redacted=diff_text,
-        )
-        return DeviceStatus.SUCCESS
+        self.status(status, detail, finished_at=_now(), diff_redacted=diff_text)
+        return status
 
     def apply(self, rendering: Rendering, facts: Facts | None) -> DeviceStatus:
         ctx, session = self.ctx, self.session

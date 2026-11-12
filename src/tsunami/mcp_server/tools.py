@@ -21,12 +21,12 @@ import os
 import re
 import tempfile
 import threading
+from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from ruamel.yaml import YAML
 
-from tsunami.core.approvals import classify_request
 from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.inventory_import import ERROR as IMPORT_ERROR
 from tsunami.core.inventory_import import FIELDS as IMPORT_FIELDS
@@ -50,7 +50,13 @@ from tsunami.core.logins import customer_logins, jump_logins, referenced_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, SLUG_PATTERN, Platform, PlatformFamily
 from tsunami.core.models.inventory import DEVICE_TYPES
 from tsunami.core.models.jobs import Actor, JobStatus
-from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
+from tsunami.core.models.play import (
+    GLOBAL_CUSTOMER,
+    ConnectionMethod,
+    PlayType,
+    PromptType,
+    RunMode,
+)
 from tsunami.core.models.policy import has_control_chars
 from tsunami.core.models.proposals import ProposalStatus
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
@@ -58,8 +64,8 @@ from tsunami.core.policy import PolicyError, check_show_command, validate_allowl
 from tsunami.core.redact import supplied_values
 from tsunami.core.render.environment import TemplateError, compile_template, make_environment
 from tsunami.core.render.lookup import find_snippet
-from tsunami.core.render.secret_refs import LOGIN_PREFIX
-from tsunami.core.runner import Runner, RunRequest, play_hash
+from tsunami.core.render.secret_refs import LOGIN_PREFIX, PROMPT_PREFIX
+from tsunami.core.runner import Runner, RunRequest, masked_prompts, play_hash
 from tsunami.core.services import play_entry, render_play
 from tsunami.core.showfilter import FilterError, apply_filter, compile_pattern, split_command
 from tsunami.core.targets import resolve_targets
@@ -105,6 +111,15 @@ TOOL_NAMES = frozenset(
 )
 MAX_REASON = 500
 MAX_PENDING_PROPOSALS = MAX_PENDING
+# What a password prompt gets in an MCP render or check: the value is never sent there, and
+# Claude never supplies one (it would sit in the audit row and the job record).
+PASSWORD_PLACEHOLDER = "placeholder-password"
+PASSWORD_REFUSAL = (
+    "prompts of type 'password' ({names}) are typed by a person in the Tsunami GUI; never "
+    "pass a value for one. render and check mask it without a value; request_run cannot "
+    "run a play that has one, so use a prompt of type 'secret' (saved in Credentials) instead"
+)
+LAB_APPROVAL = "lab policy (no approval)"  # approved_by of a lab run Claude started
 
 
 class Tools:
@@ -294,7 +309,7 @@ class Tools:
             else:
                 text, rel = content, Path("drafts/plays/push/unsaved.yml")
             self._check_play_customer(policy, ws, text)
-            issues = validate_play_text(ws, text, rel)
+            issues = validate_play_text(ws, text, rel, self.app.secrets)
             return _issues_result(issues)
 
         args = {"path": path, "content": _short(content)}
@@ -314,11 +329,12 @@ class Tools:
             real = resolve_read(ws.root, path, allowed=PLAY_DIRS)
             rel = _rel(ws.root, real)
             self._check_play_customer(policy, ws, _read_text(real), customer)
+            answers = self._without_passwords(self._entry(ws, path, customer), prompts)
             rendering = render_play(
                 ws,
                 rel,
                 device=device,
-                prompts=prompts or {},
+                prompts=answers,
                 customer=customer,
                 secrets=self.app.secrets,
             )
@@ -332,7 +348,12 @@ class Tools:
                 "render_hash": rendering.render_hash(),
             }
 
-        args = {"path": path, "device": device, "prompts": prompts, "customer": customer}
+        args = {
+            "path": path,
+            "device": device,
+            "prompts": self._audit_prompts(path, customer, prompts),
+            "customer": customer,
+        }
         bound, known = self._customer_of(path, customer=customer), self._drafts_for(path)
         return self.app.call("render", 0, args, run, customer=bound, known=known)
 
@@ -353,7 +374,8 @@ class Tools:
             digest = hashlib.sha256(target.read_bytes()).hexdigest()
             self.app.history.record_mcp_draft(rel.as_posix(), digest)
             if target.suffix == ".yml":
-                result = _issues_result(validate_play_text(self.app.workspace(), content, rel))
+                issues = validate_play_text(self.app.workspace(), content, rel, self.app.secrets)
+                result = _issues_result(issues)
             else:
                 result = _template_check(content, rel)
             return {"path": rel.as_posix(), "written": True, **result}
@@ -681,11 +703,14 @@ class Tools:
     def get_job(self, job_id: str):
         def run(policy):
             job = self._visible_job(policy, job_id)
+            phase, note = job_phase(job)
             return {
                 "job_id": job.id,
                 "play": job.play_path,
                 "customer": job.customer,
                 "mode": job.mode,
+                "phase": phase,
+                **({"note": note} if note else {}),
                 "status": str(job.status),
                 "actor": str(job.actor),
                 "created_at": job.created_at.isoformat(),
@@ -738,7 +763,7 @@ class Tools:
     def request_run(
         self,
         path: str,
-        targets: list[str],
+        targets: list[str] | None = None,
         prompts: dict | None = None,
         tags: list[str] | None = None,
         customer: str | None = None,
@@ -750,25 +775,39 @@ class Tools:
             cust = self.app.visible_customer(policy, ws, play.customer)
             if play.type == PlayType.INITIAL:
                 raise ToolRefused("initial (day-0) plays run over a console cable from the GUI")
-            if not targets:
-                raise ToolRefused("targets must list at least one device")
-            if len(targets) > policy.max_check_targets:
-                raise ToolRefused(f"at most {policy.max_check_targets} targets per request")
+            passwords = _password_prompts(entry)
+            if passwords:
+                raise ToolRefused(PASSWORD_REFUSAL.format(names=", ".join(sorted(passwords))))
+            if targets is not None and not targets:
+                raise ToolRefused("targets must list at least one device, or be left out")
             direct = cust.config.lab and policy.apply == "lab_only"
             if entry.draft and not (direct and policy.lab_allow_drafts):
                 raise ToolRefused(
                     "drafts cannot run against devices; a person must promote it in the GUI"
                 )
-            self._check_targets(ws, cust, play, targets)
-            job_id = self._create_job(entry.path, play.customer, "apply", prompts, tags, targets)
+            # No targets: every device the play targets.
+            devices = [d.name for d in self._check_targets(ws, cust, play, targets)]
+            if len(devices) > policy.max_check_targets:
+                raise ToolRefused(
+                    f"at most {policy.max_check_targets} devices per request; this one has "
+                    f"{len(devices)}: pass targets to choose some"
+                )
+            mode = RunMode.APPLY if direct else RunMode.CHECK
+            # Everything that would stop the run before it reached a device, now: prompt
+            # answers, renders, and every secret the play uses being saved.
+            self._preflight(entry, mode, prompts, tags, devices)
+            job_id = self._create_job(entry.path, play.customer, "apply", prompts, tags, devices)
             if direct:
+                self.app.history.update_job(
+                    job_id, approved_by=LAB_APPROVAL, approved_at=datetime.now(UTC)
+                )
                 self._background(
                     RunRequest(
                         entry.path,
                         RunMode.APPLY,
                         prompts=prompts or {},
                         tags=tags,
-                        limit=targets,
+                        limit=devices,
                         actor=Actor.MCP,
                         job_id=job_id,
                         allow_new_host_key=policy.trust_new_host_keys,
@@ -780,6 +819,7 @@ class Tools:
                 return {
                     "job_id": job_id,
                     "status": "running",
+                    "devices": devices,
                     "note": "lab customer: runs without approval; poll get_job",
                 }
             self._background(
@@ -788,25 +828,31 @@ class Tools:
                     RunMode.CHECK,
                     prompts=prompts or {},
                     tags=tags,
-                    limit=targets,
+                    limit=devices,
                     actor=Actor.MCP,
                     job_id=job_id,
                     allow_new_host_key=policy.trust_new_host_keys,
                     no_new_host_key=self._mcp_added(cust),
                     exact_exempt=self._exempt(entry, prompts),
                     customer=entry.play.customer,
-                ),
-                after=lambda: self._await_approval(job_id),
+                    approval_check=True,
+                )
             )
             return {
                 "job_id": job_id,
                 "status": "preparing",
+                "devices": devices,
                 "note": "Tsunami renders and diffs each device, then the request waits for a "
                 "person to approve it in the Tsunami GUI. Show the user the diff from get_job.",
             }
 
-        args = {"path": path, "targets": targets, "prompts": prompts, "tags": tags}
-        args["customer"] = customer
+        args = {
+            "path": path,
+            "targets": targets,
+            "prompts": self._audit_prompts(path, customer, prompts),
+            "tags": tags,
+            "customer": customer,
+        }
         bound = self._customer_of(path, customer=customer)
         return self.app.call("request_run", 2, args, run, customer=bound)
 
@@ -873,12 +919,13 @@ class Tools:
             devices = self._check_targets(ws, cust, play, targets)
             if len(devices) > policy.max_check_targets:
                 raise ToolRefused(f"at most {policy.max_check_targets} devices per check")
-            job_id = self._create_job(entry.path, play.customer, str(mode), prompts, None, targets)
+            answers = self._without_passwords(entry, prompts)
+            job_id = self._create_job(entry.path, play.customer, str(mode), answers, None, targets)
             self._background(
                 RunRequest(
                     entry.path,
                     mode,
-                    prompts=prompts or {},
+                    prompts=answers,
                     limit=targets,
                     actor=Actor.MCP,
                     job_id=job_id,
@@ -890,7 +937,12 @@ class Tools:
             )
             return {"job_id": job_id, "status": "running", "devices": len(devices)}
 
-        args = {"path": path, "targets": targets, "prompts": prompts, "customer": customer}
+        args = {
+            "path": path,
+            "targets": targets,
+            "prompts": self._audit_prompts(path, customer, prompts),
+            "customer": customer,
+        }
         return self.app.call(
             tool, 1, args, run, customer=self._customer_of(path, customer=customer)
         )
@@ -926,6 +978,49 @@ class Tools:
             limit=list(targets) if targets else None,
         )
 
+    def _preflight(self, entry, mode: RunMode, prompts, tags, devices: list[str]) -> None:
+        runner = Runner(
+            self.app.workspace(),
+            transport=None,  # preflight never connects
+            history=self.app.history,
+            secrets=self.app.secrets,
+            paths=self.app.paths,
+            app_settings=self.app.settings(),
+        )
+        request = RunRequest(
+            entry.path,
+            mode,
+            prompts=prompts or {},
+            tags=tags,
+            limit=devices,
+            customer=entry.play.customer,
+        )
+        try:
+            runner.preflight(request)
+        except TsunamiError as exc:
+            raise ToolRefused(f"the request cannot run: {exc}") from None
+
+    def _without_passwords(self, entry, prompts) -> dict:
+        """Prompt answers for an MCP render or check: refused if Claude passed a password
+        value, with a placeholder for each password prompt (never sent in those modes)."""
+        answers = dict(prompts or {})
+        passwords = _password_prompts(entry)
+        supplied = sorted(passwords & set(answers))
+        if supplied:
+            raise ToolRefused(PASSWORD_REFUSAL.format(names=", ".join(supplied)))
+        return {**answers, **dict.fromkeys(passwords, PASSWORD_PLACEHOLDER)}
+
+    def _audit_prompts(self, path, customer, prompts):
+        """Prompt answers as an audit row may hold them: a password prompt's value masked.
+        The call is refused, but its arguments are recorded first."""
+        if not prompts or not isinstance(prompts, dict):
+            return prompts
+        try:
+            entry = self._entry(self.app.workspace(), path, customer)
+        except Exception:  # noqa: BLE001 - the call itself reports the problem
+            return prompts
+        return masked_prompts(entry.play, prompts)
+
     def _background(self, request: RunRequest, after=None) -> None:
         cancel = threading.Event()
         self._cancels[request.job_id] = cancel
@@ -951,9 +1046,6 @@ class Tools:
         thread = threading.Thread(target=work, name=f"mcp-{request.job_id[:8]}", daemon=True)
         self.app.threads.append(thread)
         thread.start()
-
-    def _await_approval(self, job_id: str) -> None:
-        classify_request(self.app.history, job_id)  # ready for approval, or no_changes
 
     def _mcp_added(self, cust) -> frozenset[str]:
         """Devices Claude added to this customer whose host is still the one it gave. MCP
@@ -1090,11 +1182,40 @@ def _plain_text(value: Any, what: str, limit: int) -> str:
     return value
 
 
+def job_phase(job: Any) -> tuple[str, str | None]:
+    """Which part of a job this is, and a note for an MCP change request not yet applied.
+
+    A change request's job has mode apply from the start, but until a person approves it
+    (or the lab policy runs it) it is only a check: nothing has been sent to any device.
+    """
+    if job.mode != str(RunMode.APPLY):
+        return job.mode, None
+    if job.actor == Actor.MCP and job.approved_at is None:
+        if job.status in (JobStatus.DENIED, JobStatus.EXPIRED):
+            return "approval check", f"Nothing was applied: the request was {job.status}."
+        return "approval check", (
+            "Nothing has been applied. This is the check behind a change request: devices "
+            "marked ready would change, as their diff shows, once a person approves the "
+            "request in the Tsunami GUI."
+        )
+    return "apply", None
+
+
+def _password_prompts(entry: Any) -> set[str]:
+    return {n for n, p in entry.play.prompts.items() if p.type == PromptType.PASSWORD}
+
+
 def secret_names(refs: Any) -> list[str]:
-    """The secrets a render uses: customer/name, or login:<name> once per login."""
+    """The secrets a render uses: customer/name (customer/name.field for one field of a
+    secret with fields), login:<name> once per login, password:<prompt> per password prompt."""
     names: list[str] = []
     for ref in refs:
-        name = ref.split("/", 1)[0] if ref.startswith(LOGIN_PREFIX) else ref
+        if ref.startswith(LOGIN_PREFIX):
+            name = ref.split("/", 1)[0]
+        elif ref.startswith(PROMPT_PREFIX):
+            name = "password:" + ref[len(PROMPT_PREFIX) :]
+        else:
+            name = ref
         if name not in names:
             names.append(name)
     return names

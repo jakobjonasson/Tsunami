@@ -115,7 +115,9 @@ def test_missing_does_not_leak(store):
     with pytest.raises(TsunamiError) as exc:
         store.get_secret("acme", "nope")
     assert "topsecretvalue" not in str(exc.value)
-    assert "acme/nope" in str(exc.value)
+    # Names the secret and the customer, and where to add it.
+    assert "'nope'" in str(exc.value) and "'acme'" in str(exc.value)
+    assert "Credentials, Secrets" in str(exc.value)
 
 
 def test_repr_has_no_password(store):

@@ -5,6 +5,7 @@ See design.md, GUI.
 
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 
 from PySide6.QtCore import Qt
@@ -94,10 +95,14 @@ class DraftView(QWidget):
         layout.addWidget(sub)
 
         try:
-            text = (root / draft.path).read_text(encoding="utf-8")
+            raw = (root / draft.path).read_bytes()
+            text = raw.decode("utf-8").replace("\r\n", "\n")
             diff = drafts_core.unified_diff(root, draft)
+            # The draft exactly as shown: promotion refuses one rewritten since.
+            self.digest: str | None = hashlib.sha256(raw).hexdigest()
         except (OSError, UnicodeDecodeError, TsunamiError) as exc:
             text, diff = "", [f"cannot read draft: {exc}"]
+            self.digest = None
         self.found = drafts_core.highlights(text)
         lines = summarize(self.found) or ["No secret() calls or destructive commands."]
         self.summary = QLabel("\n".join(lines))
@@ -150,7 +155,15 @@ class DraftView(QWidget):
     def promote(self) -> None:
         d = self.draft
         live = d.live_path.as_posix()
-        if d.live_exists:
+        if self.digest is None:
+            self.shell.notify("This draft could not be read, so it cannot be promoted.", "error")
+            return
+        try:  # now, not when the draft was listed: a live file may have appeared since
+            exists = drafts_core.live_exists(self.ctx.workspace_path, d.path)
+        except TsunamiError as exc:
+            self.shell.notify(str(exc), "error")
+            return
+        if exists:
             ok = _confirm(
                 self,
                 "Overwrite live file",
@@ -162,9 +175,11 @@ class DraftView(QWidget):
         if not ok:
             return
         try:
-            drafts_core.promote(self.ctx.workspace_path, d.path, overwrite=d.live_exists)
+            drafts_core.promote(
+                self.ctx.workspace_path, d.path, overwrite=exists, expected_digest=self.digest
+            )
         except TsunamiError as exc:
-            self.shell.notify(str(exc), "error")
+            self.shell.notify(f"Could not promote {d.path.name}: {exc}", "error")
             return
         self.ctx.reload_workspace(block=False)
         self.shell.notify(f"Promoted to {live}")

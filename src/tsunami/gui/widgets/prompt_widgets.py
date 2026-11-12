@@ -36,8 +36,22 @@ _COMBO_TYPES = {
     PromptType.ROLE,
     PromptType.MODEL,
     PromptType.LOGIN,
+    PromptType.SECRET,
 }
 LOGIN_HINT = "Pushes this login's current username and password."
+SECRET_HINT = (
+    "A secret saved for this customer in Credentials, Secrets. Its secret fields are "
+    "masked in the preview, diff and job record."
+)
+PASSWORD_HINT = (
+    "Typed for this run only: masked in the preview, diff and job record, and never saved. "
+    "Running the job again asks for it again."
+)
+HINTS = {
+    PromptType.LOGIN: LOGIN_HINT,
+    PromptType.SECRET: SECRET_HINT,
+    PromptType.PASSWORD: PASSWORD_HINT,
+}
 
 
 class PromptField(QWidget):
@@ -66,8 +80,8 @@ class PromptField(QWidget):
         layout.setContentsMargins(0, 0, 0, 0)
         layout.setSpacing(2)
         layout.addWidget(editor)
-        if prompt.type == PromptType.LOGIN:
-            hint = QLabel(LOGIN_HINT)
+        if prompt.type in HINTS:
+            hint = QLabel(HINTS[prompt.type])
             hint.setObjectName("Muted")
             hint.setWordWrap(True)
             layout.addWidget(hint)
@@ -235,11 +249,28 @@ def make_prompt_widget(
             combo, getter, setter = _combo_field(
                 name, prompt, [(n, n) for n in sorted(context.logins)]
             )
+        elif ptype == PromptType.SECRET:
+            # Secret names only: never a value.
+            combo, getter, setter = _combo_field(
+                name, prompt, [(n, n) for n in sorted(context.secrets or ())]
+            )
         else:
             combo, getter, setter = _combo_field(
                 name, prompt, [(r, r) for r in sorted(context.roles)]
             )
         field = PromptField(name, prompt, combo, getter, setter, combo.currentIndexChanged)
+    elif ptype == PromptType.PASSWORD:
+        line = QLineEdit()
+        line.setEchoMode(QLineEdit.EchoMode.Password)
+        line.setPlaceholderText("typed for this run, never saved")
+        field = PromptField(
+            name,
+            prompt,
+            line,
+            lambda: line.text(),
+            lambda v: None,  # never filled from anywhere: history keeps only a mask
+            line.textChanged,
+        )
     else:
         line = QLineEdit()
         if ptype == PromptType.VLAN_LIST:

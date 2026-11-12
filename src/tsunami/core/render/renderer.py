@@ -53,6 +53,7 @@ from tsunami.core.render.environment import (
 )
 from tsunami.core.render.lookup import find_snippet
 from tsunami.core.render.secret_refs import SecretCollector, SecretRefError
+from tsunami.core.secret_store import FIELD_NAME_RE, SINGLE_FIELD, missing_secret_message
 from tsunami.core.targets import resolve_targets
 
 PLACEHOLDER_FACTS = {
@@ -211,6 +212,94 @@ class _LoginFunction:
         return self._seen[name]
 
 
+@dataclass(frozen=True)
+class _Shape:
+    """What a render may know about a saved secret: its field names and its plain fields'
+    values (an SNMPv3 username, say). Never a secret field's value."""
+
+    fields: frozenset[str]
+    plain: Mapping[str, str]
+    single: bool
+
+
+class _SecretFunction:
+    """secret(name) and secret(name, field) in templates, and the fields of a secret prompt.
+
+    With the saved secrets at hand (every render that can reach a device, and MCP validate),
+    a name that is not saved is a render error, so a missing secret is found at validate,
+    render and request time instead of when the run sends config. A secret's shape (its
+    field names, which fields are plain) comes from the store; without the store (workspace
+    validation) a field reads as plain placeholder text and the sink rule for it is checked
+    when the play renders with the store.
+    """
+
+    def __init__(self, collector: SecretCollector, secrets: Any, *, validation: bool) -> None:
+        self.collector, self.secrets, self.validation = collector, secrets, validation
+        self._names: dict[str, frozenset[str]] = {}
+        self._shapes: dict[tuple[str, str], _Shape] = {}
+
+    def shape(self, customer: str, name: str) -> _Shape | None:
+        if self.secrets is None:
+            return None
+        if customer not in self._names:
+            self._names[customer] = frozenset(self.secrets.list_secrets(customer))
+        if name not in self._names[customer]:
+            raise SecretRefError(missing_secret_message(customer, name))
+        key = (customer, name)
+        if key not in self._shapes:
+            saved = self.secrets.get_secret_fields(customer, name)
+            plain = {k: saved.values[k] for k in saved.plain}
+            self._shapes[key] = _Shape(frozenset(saved.values), plain, saved.single)
+        return self._shapes[key]
+
+    def __call__(self, ref: object, field: object = None) -> str:
+        customer, name = self.collector.parse(ref)
+        shape = self.shape(customer, name)
+        if field is None:
+            if shape is not None and not shape.single:
+                raise SecretRefError(
+                    f"{name!r} has fields ({', '.join(sorted(shape.fields))}): use "
+                    f"secret({name!r}, 'field'), or prompt_name.field with a prompt of type "
+                    "'secret'"
+                )
+            return self.collector.field_ref(customer, name)
+        if not isinstance(field, str) or not FIELD_NAME_RE.fullmatch(field):
+            raise SecretRefError(f"secret({name!r}, ...) takes a field name, got {field!r}")
+        if shape is None:
+            # Unknown shape: a placeholder in validation, masked otherwise.
+            if self.validation:
+                return "placeholder"
+            return self.collector.field_ref(customer, name, field)
+        if shape.single:
+            if field == SINGLE_FIELD:
+                return self.collector.field_ref(customer, name)
+            raise SecretRefError(f"{name!r} is a single value, with no field {field!r}")
+        if field not in shape.fields:
+            raise SecretRefError(
+                f"{name!r} has no field {field!r}; its fields: " + ", ".join(sorted(shape.fields))
+            )
+        if field in shape.plain:
+            return shape.plain[field]
+        return self.collector.field_ref(customer, name, field)
+
+
+class SecretView:
+    """A secret prompt's value in templates: {{ snmp.auth_key }} reads a field, {{ snmp }}
+    a single-value secret. The sandbox blocks underscore attributes, so the slots stay
+    hidden and every lookup goes through __getitem__."""
+
+    __slots__ = ("_fn", "_name")
+
+    def __init__(self, fn: _SecretFunction, name: str) -> None:
+        self._fn, self._name = fn, name
+
+    def __getitem__(self, field: object) -> str:
+        return self._fn(self._name, field)
+
+    def __str__(self) -> str:
+        return self._fn(self._name)
+
+
 class Renderer:
     """Renders plays from one loaded workspace. Compiled templates are cached."""
 
@@ -266,7 +355,15 @@ class Renderer:
             None if validation else self.secrets,
             validation=validation,
         )
-        context = {**variables, "secret": collector, "login": login}
+        secret = _SecretFunction(collector, self.secrets, validation=validation)
+        for name, prompt in play.prompts.items():
+            if name not in answers:
+                continue
+            if prompt.type == PromptType.PASSWORD:  # the typed value never reaches a template
+                variables[name] = collector.prompt_ref(name)
+            elif prompt.type == PromptType.SECRET:
+                variables[name] = SecretView(secret, str(answers[name]))
+        context = {**variables, "secret": secret, "login": login}
 
         steps = tuple(
             self._step(entry, play, i, context, collector, driver, platform, tags, validation)
@@ -509,7 +606,7 @@ def entry_render_issues(
     renderer = renderer or Renderer(workspace)
     path = entry.path
     issues: dict[tuple, Issue] = {}
-    for device, answers, who in _validation_targets(workspace, entry):
+    for device, answers, who in _validation_targets(workspace, entry, renderer.secrets):
         try:
             renderer.render(entry, device=device, prompt_values=answers, validation=True)
         except RenderError as exc:
@@ -524,11 +621,16 @@ def entry_render_issues(
     return list(issues.values())
 
 
-def _validation_targets(workspace: Any, entry: Any) -> Iterator[tuple[str | None, dict, str]]:
+def _validation_targets(
+    workspace: Any, entry: Any, secrets: Any = None
+) -> Iterator[tuple[str | None, dict, str]]:
     play: Play = entry.play
     cust = workspace.customers.get(play.customer)
     if cust is None:
         return
+    # With the store, a secret prompt's placeholder is a saved secret (or its default), so
+    # the render checks the real shape; without it, any name and a lenient shape.
+    saved = frozenset(secrets.list_secrets(cust.slug)) if secrets is not None else None
     catalog = load_catalog()
     sites, roles = frozenset(cust.sites), frozenset(workspace.roles)
     logins = allowed_logins(cust)
@@ -536,7 +638,7 @@ def _validation_targets(workspace: Any, entry: Any) -> Iterator[tuple[str | None
         result = resolve_targets(play.targets, cust.devices, sites=sites, roles=roles)
         for device in result.devices:
             family = PLATFORM_FAMILY[device.platform]
-            context = PromptContext(sites, roles, catalog.ids(), family, logins)
+            context = PromptContext(sites, roles, catalog.ids(), family, logins, saved)
             yield device.name, _placeholders(play.prompts, context), f"device {device.name}"
         return
     # A new device: one render per platform the play can stage.
@@ -559,7 +661,8 @@ def _validation_targets(workspace: Any, entry: Any) -> Iterator[tuple[str | None
             if s.snippet
         ):
             continue  # the model dropdown will not offer this platform
-        context = PromptContext(sites, roles, catalog.ids(), PLATFORM_FAMILY[platform], logins)
+        family = PLATFORM_FAMILY[platform]
+        context = PromptContext(sites, roles, catalog.ids(), family, logins, saved)
         answers = _placeholders(play.prompts, context)
         if model_prompt:
             answers[model_prompt] = next(

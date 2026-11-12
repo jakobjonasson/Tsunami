@@ -14,6 +14,7 @@ from typing import Any
 from PySide6.QtCore import QObject, QRunnable, Qt, QThreadPool, Signal
 from PySide6.QtWidgets import (
     QCheckBox,
+    QComboBox,
     QDialog,
     QDialogButtonBox,
     QFormLayout,
@@ -37,7 +38,7 @@ from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.issues import TsunamiError
 from tsunami.core.logins import customer_logins
 from tsunami.core.models.play import ConnectionMethod
-from tsunami.core.secret_store import LoginCredential
+from tsunami.core.secret_store import SINGLE_FIELD, LoginCredential, SecretFields
 from tsunami.core.transports import DeviceTransport
 from tsunami.core.transports.base import ConnectTarget
 from tsunami.core.workspace import Workspace
@@ -258,6 +259,182 @@ class _ValueDialog(QDialog):
             edit.clear()
 
 
+# Kinds offered by New secret. A kind only fills in field names; every field can be edited.
+SINGLE, SNMPV3, FIELDS = "Single value", "SNMPv3 user", "Fields"
+SNMPV3_FIELDS = (
+    ("username", True),
+    ("auth_protocol", True),
+    ("auth_key", False),
+    ("priv_protocol", True),
+    ("priv_key", False),
+)
+
+
+class _FieldRow(QWidget):
+    """One field of a secret: name, write-only value, and whether it is not secret."""
+
+    def __init__(self, name: str = "", plain: bool = False) -> None:
+        super().__init__()
+        row = QHBoxLayout(self)
+        row.setContentsMargins(0, 0, 0, 0)
+        self.name_edit = QLineEdit(name)
+        self.name_edit.setPlaceholderText("field_name")
+        self.value_edit = _password_edit()
+        self.value_edit.setPlaceholderText("value")
+        self.plain_box = QCheckBox("Not secret")
+        self.plain_box.setToolTip(
+            "Shown in previews and diffs and usable on any line, like a username or a "
+            "protocol name. Leave unticked for keys and passwords."
+        )
+        self.plain_box.toggled.connect(self._plain_changed)
+        self.plain_box.setChecked(plain)
+        self.remove_button = QPushButton("Remove")
+        for widget in (self.name_edit, self.value_edit):
+            row.addWidget(widget, 1)
+        row.addWidget(self.plain_box)
+        row.addWidget(self.remove_button)
+
+    def _plain_changed(self, plain: bool) -> None:
+        mode = QLineEdit.EchoMode.Normal if plain else QLineEdit.EchoMode.Password
+        self.value_edit.setEchoMode(mode)
+
+
+class _SecretDialog(QDialog):
+    """New or overwrite a customer's secret: a single value, or named fields (an SNMPv3
+    user, a key with its id). Values are write-only and never pre-filled; overwriting a
+    secret with fields lists its field names again so only the values need typing."""
+
+    def __init__(
+        self,
+        title: str,
+        *,
+        customer: str,
+        name: str | None,
+        parent: QWidget | None,
+        existing: SecretFields | None = None,
+    ) -> None:
+        super().__init__(parent)
+        self.setWindowTitle(title)
+        self.setMinimumWidth(560)
+        form = QFormLayout(self)
+        customer_label = QLabel(customer)
+        customer_label.setTextFormat(Qt.TextFormat.PlainText)
+        form.addRow("Customer", customer_label)
+        self.name_edit = QLineEdit()
+        if name is not None:
+            self.name_edit.setText(name)
+            self.name_edit.setReadOnly(True)
+        else:
+            self.name_edit.setPlaceholderText("lowercase letters, digits, hyphens")
+        form.addRow("Name", self.name_edit)
+        self.kind_combo = QComboBox()
+        self.kind_combo.addItems([SINGLE, SNMPV3, FIELDS])
+        form.addRow("Kind", self.kind_combo)
+        self.value_edit = _password_edit()
+        self.value_label = QLabel("Value")
+        form.addRow(self.value_label, self.value_edit)
+        self.fields_box = QWidget()
+        box = QVBoxLayout(self.fields_box)
+        box.setContentsMargins(0, 0, 0, 0)
+        self.rows_layout = QVBoxLayout()
+        box.addLayout(self.rows_layout)
+        self.add_button = QPushButton("Add field")
+        self.add_button.clicked.connect(lambda _=False: self.add_row())
+        box.addWidget(self.add_button, 0, Qt.AlignmentFlag.AlignLeft)
+        form.addRow(self.fields_box)
+        self.rows: list[_FieldRow] = []
+        self.usage = QLabel()
+        self.usage.setTextFormat(Qt.TextFormat.PlainText)
+        self.usage.setWordWrap(True)
+        self.usage.setObjectName("Muted")
+        form.addRow(self.usage)
+        note = QLabel("Values are write-only and are never shown again.")
+        note.setWordWrap(True)
+        form.addRow(note)
+        buttons = QDialogButtonBox(
+            QDialogButtonBox.StandardButton.Ok | QDialogButtonBox.StandardButton.Cancel
+        )
+        buttons.accepted.connect(self.accept)
+        buttons.rejected.connect(self.reject)
+        form.addRow(buttons)
+        if existing is not None and not existing.single:
+            self.kind_combo.setCurrentText(FIELDS)
+            for field_name in existing.values:
+                self.add_row(field_name, field_name in existing.plain)
+        self._kind_changed()
+        self.kind_combo.currentTextChanged.connect(lambda _t: self._kind_changed(preset=True))
+        self.name_edit.textChanged.connect(lambda _t: self._update_usage())
+
+    def add_row(self, name: str = "", plain: bool = False) -> _FieldRow:
+        row = _FieldRow(name, plain)
+        row.remove_button.clicked.connect(lambda _=False, r=row: self.remove_row(r))
+        row.name_edit.textChanged.connect(lambda _t: self._update_usage())
+        self.rows.append(row)
+        self.rows_layout.addWidget(row)
+        return row
+
+    def remove_row(self, row: _FieldRow) -> None:
+        if row in self.rows:
+            self.rows.remove(row)
+            row.value_edit.clear()
+            row.setParent(None)
+            row.deleteLater()
+        self._update_usage()
+
+    def _kind_changed(self, preset: bool = False) -> None:
+        kind = self.kind_combo.currentText()
+        single = kind == SINGLE
+        self.value_label.setVisible(single)
+        self.value_edit.setVisible(single)
+        self.fields_box.setVisible(not single)
+        if preset and kind == SNMPV3:
+            for row in list(self.rows):
+                self.remove_row(row)
+            for field_name, plain in SNMPV3_FIELDS:
+                self.add_row(field_name, plain)
+        elif preset and kind == FIELDS and not self.rows:
+            self.add_row()
+        self._update_usage()
+
+    def _update_usage(self) -> None:
+        name = self.name_edit.text().strip() or "name"
+        if self.kind_combo.currentText() == SINGLE:
+            self.usage.setText(
+                f"Plays use it as {{{{ secret('{name}') }}}}, or pick it in a prompt of "
+                "type secret. It may only go on lines where the redactor masks it."
+            )
+            return
+        first = next((r.name_edit.text().strip() for r in self.rows if r.name_edit.text()), "")
+        field = first or "field"
+        self.usage.setText(
+            f"Plays use a field as {{{{ secret('{name}', '{field}') }}}}, or pick this secret "
+            f"in a prompt of type secret and write {{{{ prompt_name.{field} }}}}. Secret fields "
+            "may only go on lines where the redactor masks them; fields marked Not secret may "
+            "go anywhere."
+        )
+
+    def fields(self) -> SecretFields:
+        if self.kind_combo.currentText() == SINGLE:
+            return SecretFields({SINGLE_FIELD: self.value_edit.text()})
+        values: dict[str, str] = {}
+        plain: set[str] = set()
+        for row in self.rows:
+            field_name = row.name_edit.text().strip()
+            if not field_name and not row.value_edit.text():
+                continue  # an empty row
+            if field_name in values:
+                raise TsunamiError(f"field {field_name!r} is listed twice")
+            values[field_name] = row.value_edit.text()
+            if row.plain_box.isChecked():
+                plain.add(field_name)
+        return SecretFields(values, frozenset(plain))
+
+    def clear_values(self) -> None:
+        self.value_edit.clear()
+        for row in self.rows:
+            row.value_edit.clear()
+
+
 def prompt_new_login(ctx: AppContext, parent: QWidget | None) -> str | None:
     """Ask for a new login (name, username, password, optional enable), save it to the
     store and return its name; None if cancelled or it could not be saved. Values are
@@ -472,15 +649,17 @@ class _CredentialsBase(QWidget):
         self.shell.notify(f"Saved login {name}.")
         return True
 
-    def save_secret(self, customer: str, name: str, value: str) -> bool:
+    def save_secret(self, customer: str, name: str, value: str | SecretFields) -> bool:
+        """Save a single value, or a secret with fields (SecretFields)."""
         if not customer:
             self.shell.notify("Choose a customer first.", "error")
             return False
-        if not value:
+        fields = value if isinstance(value, SecretFields) else SecretFields({SINGLE_FIELD: value})
+        if not any(fields.values.values()):
             self.shell.notify("A secret needs a value.", "error")
             return False
         try:
-            self.ctx.secrets.set_secret(customer, name, value)
+            self.ctx.secrets.set_secret_fields(customer, name, fields)
         except TsunamiError as exc:
             self.shell.notify(str(exc), "error")
             return False
@@ -558,13 +737,28 @@ class _CredentialsBase(QWidget):
 
     def _secret_dialog(self, name: str | None) -> None:
         customer = self.customer_combo.currentText()
-        title = "New secret" if name is None else f"Overwrite secret {name}"
-        dialog = _ValueDialog(title, login=False, name=name, parent=self)
+        if not customer:
+            self.shell.notify("Choose a customer first: secrets are saved per customer.", "error")
+            return
+        existing = None
+        if name is not None:
+            try:  # field names and which are plain, to type only the values again
+                existing = self.ctx.secrets.get_secret_fields(customer, name)
+            except TsunamiError:
+                existing = None
+        title = f"New secret for {customer}" if name is None else f"Overwrite secret {name}"
+        dialog = _SecretDialog(title, customer=customer, name=name, parent=self, existing=existing)
+        existing = None
         try:
             if not run_dialog(dialog):
                 return
             secret_name = name or dialog.name_edit.text().strip()
-            self.save_secret(customer, secret_name, dialog.value_edit.text())
+            try:
+                fields = dialog.fields()
+            except TsunamiError as exc:
+                self.shell.notify(str(exc), "error")
+                return
+            self.save_secret(customer, secret_name, fields)
         finally:
             dialog.clear_values()
 
@@ -713,7 +907,7 @@ class CredentialsView(_CredentialsBase):
 
         layout.addWidget(_section_label("Device logins"))
         layout.addWidget(self.login_list, 1)
-        layout.addWidget(_section_label("Template secrets"))
+        layout.addWidget(_section_label("Secrets (per customer)"))
         layout.addWidget(self.customer_combo)
         layout.addWidget(self.secret_list, 1)
         hint = QLabel("Right-click a name for New, Overwrite, Delete and Test.")
@@ -752,8 +946,16 @@ class CredentialsTab(_CredentialsBase):
         box.addWidget(self.test_label)
         layout.addWidget(logins, 1)
 
-        secrets = QGroupBox("Template secrets")
+        secrets = QGroupBox("Secrets (per customer)")
         box = QVBoxLayout(secrets)
+        hint = QLabel(
+            "Values plays push that are not logins: SNMP communities and SNMPv3 users, "
+            "TACACS+ and RADIUS keys, pre-shared keys, NTP keys. A secret is one value, or "
+            "named fields. Plays read them with secret('name') or a prompt of type secret."
+        )
+        hint.setWordWrap(True)
+        hint.setObjectName("Muted")
+        box.addWidget(hint)
         box.addWidget(QLabel("Customer"))
         box.addWidget(self.customer_combo)
         box.addWidget(self.secret_list, 1)

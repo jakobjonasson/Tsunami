@@ -25,6 +25,7 @@ from tsunami.core.render.environment import (
     render_template,
 )
 from tsunami.core.render.renderer import Renderer, Rendering
+from tsunami.core.render.secret_refs import MASK
 from tsunami.core.workspace import PlayEntry, Workspace
 
 # Asked first in initial plays; the rest are pre-filled from variables these select.
@@ -62,11 +63,13 @@ def collect_prompts(
     raw: Mapping[str, Any],
     *,
     device: str | None = None,
+    secrets: Any = None,
 ) -> dict[str, Any]:
     """Validate raw prompt answers and fill defaults (design.md, prompts).
 
     Raises TsunamiError listing every problem. In initial plays, model, site and role
-    are coerced first and the remaining defaults are resolved with them.
+    are coerced first and the remaining defaults are resolved with them. secrets (the
+    saved secrets) lets a secret prompt check its answer is saved for the customer.
     """
     play = entry.play
     assert play is not None
@@ -75,6 +78,8 @@ def collect_prompts(
     unknown = sorted(set(raw) - set(play.prompts))
     problems = [f"{name}: not a prompt of this play" for name in unknown]
     values: dict[str, Any] = {}
+    saved = frozenset(secrets.list_secrets(cust.slug)) if secrets is not None else None
+    passwords = {n for n, p in play.prompts.items() if p.type == PromptType.PASSWORD}
 
     def context() -> PromptContext:
         platform = None
@@ -99,6 +104,7 @@ def collect_prompts(
             catalog.ids(),
             family,
             allowed_logins(cust),
+            saved,
         )
 
     stages = (
@@ -113,8 +119,10 @@ def collect_prompts(
                 value = prompt.default
                 if isinstance(value, str) and "{" in value:
                     if resolved is None:
+                        # A typed password never feeds another prompt's default.
+                        known = {k: MASK if k in passwords else v for k, v in values.items()}
                         resolved = workspace.resolve_vars(
-                            play.customer, device=device, play=entry, prompt_values=values
+                            play.customer, device=device, play=entry, prompt_values=known
                         ).values
                     try:
                         template = compile_template(_ENV, value, name=f"prompt {name} default")
@@ -157,7 +165,7 @@ def render_play(
     """Render one play for one device (or a new device, for initial plays), masked.
     customer binds a global play; secrets (the saved logins) is needed for login()."""
     entry = play_entry(workspace, play_path, customer)
-    values = collect_prompts(workspace, entry, prompts or {}, device=device)
+    values = collect_prompts(workspace, entry, prompts or {}, device=device, secrets=secrets)
     return Renderer(workspace, settings, secrets).render(
         entry, device=device, prompt_values=values, tags=tags
     )

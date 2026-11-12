@@ -29,6 +29,9 @@ class PromptContext:
     model_ids: frozenset[str] = frozenset()  # hardware catalog ids
     family: PlatformFamily | None = None  # required for `interface` prompts
     logins: frozenset[str] = frozenset()  # logins the customer may push (core.logins)
+    # The customer's saved secret names; None when the store is not at hand (validation
+    # without it): then any slug is accepted and the render checks it is saved.
+    secrets: frozenset[str] | None = None
 
 
 # C0 and C1 controls, DEL, and the Unicode line and paragraph separators: str.splitlines()
@@ -264,7 +267,35 @@ def coerce(
         return _member(raw, context.model_ids, "model")
     if ptype == PromptType.LOGIN:
         return _login(raw, context.logins)
+    if ptype == PromptType.SECRET:
+        return _secret(raw, context.secrets)
+    if ptype == PromptType.PASSWORD:
+        return _password(raw)
     raise PromptValueError(f"unsupported prompt type: {ptype}")
+
+
+_SLUG_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
+MAX_PASSWORD = 512
+
+
+def _secret(raw: object, saved: frozenset[str] | None) -> str:
+    text = _text(raw)
+    if not _SLUG_RE.fullmatch(text):
+        raise PromptValueError("a secret name: lowercase letters, digits and hyphens")
+    if saved is not None and text not in saved:
+        hint = f"saved: {_options(saved)}" if saved else "none are saved for this customer"
+        raise PromptValueError(f"secret {text!r} is not saved for this customer; {hint}")
+    return text
+
+
+def _password(raw: object) -> str:
+    # Never echoed: errors say what is wrong, not what was typed. Not stripped: spaces count.
+    text = _text(raw, strip=False)
+    if not text:
+        raise PromptValueError("required")
+    if len(text) > MAX_PASSWORD:
+        raise PromptValueError(f"at most {MAX_PASSWORD} characters")
+    return text
 
 
 def _login(raw: object, valid: frozenset[str]) -> str:
@@ -335,4 +366,8 @@ def placeholder(
         return _first(context.model_ids, "models")
     if ptype == PromptType.LOGIN:
         return _first(context.logins, "logins")
+    if ptype == PromptType.SECRET:
+        return min(context.secrets) if context.secrets else "placeholder"
+    if ptype == PromptType.PASSWORD:
+        return "placeholder-password"
     raise PromptValueError(f"unsupported prompt type: {ptype}")

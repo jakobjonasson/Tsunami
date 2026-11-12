@@ -39,7 +39,13 @@ from tsunami.core.issues import TsunamiError
 from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
 from tsunami.core.models.inventory import Device
-from tsunami.core.models.play import GLOBAL_CUSTOMER, ConnectionMethod, PlayType, RunMode
+from tsunami.core.models.play import (
+    GLOBAL_CUSTOMER,
+    ConnectionMethod,
+    PlayType,
+    PromptType,
+    RunMode,
+)
 from tsunami.core.prompts import PromptContext, PromptValueError, coerce
 from tsunami.core.render.renderer import Renderer
 from tsunami.core.runner import RunRequest
@@ -336,6 +342,7 @@ class RunWizard(QWidget):
             self.catalog.ids(),
             None,
             self._pushable_logins(),
+            self._saved_secrets(),
         )
         self._stage1_names = [
             n for n, p in self.play.prompts.items() if self.initial and p.type in FIRST_STAGE
@@ -476,10 +483,11 @@ class RunWizard(QWidget):
             item.setCheckState(Qt.CheckState.Checked if on else Qt.CheckState.Unchecked)
 
     def fill_prompts(self, values: dict[str, Any]) -> None:
-        """Fill shared prompts from an earlier job; a value that no longer fits is skipped."""
+        """Fill shared prompts from an earlier job; a value that no longer fits is skipped.
+        A password prompt is never filled: history keeps only its mask."""
         for name, value in values.items():
             field = self.fields.get(name)
-            if field is None:
+            if field is None or field.prompt.type == PromptType.PASSWORD:
                 continue
             try:
                 field.set_value(value)
@@ -524,7 +532,16 @@ class RunWizard(QWidget):
             self.catalog.ids(),
             family,
             self._pushable_logins(),
+            self._saved_secrets(),
         )
+
+    def _saved_secrets(self) -> frozenset[str] | None:
+        """The customer's saved secret names, for secret prompts; None if unreadable (the
+        names are checked again when the play renders)."""
+        try:
+            return frozenset(self.ctx.secrets.list_secrets(self.cust.slug))
+        except TsunamiError:
+            return None
 
     def _pushable_logins(self) -> frozenset[str]:
         """The logins a login prompt offers: those the customer allows that are saved."""

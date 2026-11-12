@@ -125,3 +125,31 @@ def test_symlink_escape_refused(root, tmp_path_factory):
         promote(root, Path("drafts/plays/escape/ok.yml"))
     assert secret_file.exists()
     assert not (outside_dir / "ok.yml").exists()
+
+
+def test_promote_over_a_live_play_after_the_draft_was_rewritten(root):
+    """A draft reviewed, then rewritten (Claude writes drafts at any time), is refused;
+    the live file is checked when Promote is pressed, not when the draft was listed."""
+    from tsunami.core.drafts import draft_digest, live_exists
+
+    draft = Path("drafts/plays/push/reload.yml")
+    seen = draft_digest(root, draft)
+    assert not live_exists(root, draft)
+    (root / "plays/push").mkdir(parents=True)
+    (root / "plays/push/reload.yml").write_text("name: old\n", encoding="utf-8")
+    assert live_exists(root, draft)
+    (root / draft).write_text(PLAY + "# rewritten\n", encoding="utf-8")
+    with pytest.raises(TsunamiError, match="changed since it was opened"):
+        promote(root, draft, overwrite=True, expected_digest=seen)
+    promote(root, draft, overwrite=True, expected_digest=draft_digest(root, draft))
+    assert "rewritten" in (root / "plays/push/reload.yml").read_text(encoding="utf-8")
+
+
+def test_a_move_that_keeps_failing_reports_why(root, monkeypatch):
+    def refuse(src, dst):
+        raise PermissionError(13, "Access is denied")
+
+    monkeypatch.setattr("tsunami.core.drafts.os.replace", refuse)
+    monkeypatch.setattr("tsunami.core.drafts.time.sleep", lambda s: None)
+    with pytest.raises(TsunamiError, match="Access is denied.*Another program"):
+        promote(root, Path("drafts/snippets/acme/aaa.j2"), overwrite=True)

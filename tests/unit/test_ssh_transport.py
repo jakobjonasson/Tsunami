@@ -342,3 +342,19 @@ def test_aos_s_contexts_are_closed_with_exit():
         '   name "a"',
         "   exit",
     ]
+
+
+@pytest.mark.parametrize(
+    ("exc", "expected"),
+    [
+        (paramiko.ChannelException(2, "Connect failed"), "could not connect to it"),
+        (paramiko.ChannelException(1, "Administratively prohibited"), "refused to forward"),
+        (paramiko.SSHException("Timeout opening channel."), "no answer through the jump host"),
+        (OSError("boom"), "OSError (boom)"),
+    ],
+)
+def test_a_failed_jump_channel_says_why(exc, expected):
+    from tsunami.core.transports.ssh import channel_failure
+
+    message = channel_failure(exc, "192.0.2.40", 22)
+    assert message.startswith("192.0.2.40:22: ") and expected in message

@@ -9,6 +9,11 @@ The runner knows nothing about the UI: it reports through on_event and asks for 
 canary decision through confirm_canary. The GUI wraps it in a QThread; the CLI and the
 MCP server call run() directly.
 
+An approval check (RunRequest.approval_check: the check-mode diff behind an MCP change
+request) marks each device ready or no_changes, never success, and ends the job
+awaiting_approval, no_changes, or failed when any device could not be checked; a failed
+check is never offered for approval.
+
 See design.md, Execution engine: Run level; Architecture: Process model.
 """
 
@@ -37,13 +42,13 @@ from tsunami.core.issues import Severity, TsunamiError
 from tsunami.core.logins import allowed_logins
 from tsunami.core.models.inventory import Device
 from tsunami.core.models.jobs import TERMINAL_DEVICE_STATUSES, Actor, DeviceStatus, JobStatus
-from tsunami.core.models.play import ConnectionMethod, PlayType, RunMode
+from tsunami.core.models.play import ConnectionMethod, PlayType, PromptType, RunMode
 from tsunami.core.models.settings import AppSettings
 from tsunami.core.paths import AppPaths
 from tsunami.core.pipeline import DevicePipeline, JobContext
 from tsunami.core.redact import Redactor
 from tsunami.core.render.renderer import Renderer, RenderError
-from tsunami.core.render.secret_refs import LOGIN_PREFIX
+from tsunami.core.render.secret_refs import LOGIN_PREFIX, MASK, PROMPT_PREFIX, split_ref
 from tsunami.core.secret_store import LoginCredential
 from tsunami.core.services import collect_prompts, play_entry
 from tsunami.core.targets import resolve_targets
@@ -54,19 +59,36 @@ log = logging.getLogger(__name__)
 
 MAX_SESSIONS = 50
 HEARTBEAT_SECONDS = 10.0
-# Statuses that count as failed for max_fail_percent. Pre-check skips and busy devices
-# made no change, so they do not count.
-FAILURE_STATUSES = frozenset(
+# A change that failed or could not be made safely. Counted against max_fail_percent over
+# the devices attempted so far, as each batch finishes.
+CHANGE_FAILURES = frozenset(
     {
         DeviceStatus.FAILED,
         DeviceStatus.ROLLED_BACK,
         DeviceStatus.ROLLBACK_FAILED,
-        DeviceStatus.UNREACHABLE,
-        DeviceStatus.HOSTKEY_MISMATCH,
         DeviceStatus.RENDER_CHANGED,
         DeviceStatus.INTERRUPTED,
     }
 )
+# Never reached, so nothing was changed. Counted against max_fail_percent over the whole
+# run, together with change failures: one dead switch in a first batch of five must not
+# stop a 49-device run, but many dead switches still stop it.
+NOT_REACHED = frozenset({DeviceStatus.UNREACHABLE, DeviceStatus.HOSTKEY_MISMATCH})
+# Statuses that make a job partial or failed. Pre-check skips and busy devices made no
+# change, so they do not count.
+FAILURE_STATUSES = CHANGE_FAILURES | NOT_REACHED
+# What an approval check leaves on a device that was checked.
+CHECKED_STATUSES = frozenset({DeviceStatus.READY, DeviceStatus.NO_CHANGES})
+
+
+def max_fail_reached(results: Mapping[str, DeviceStatus], total: int, percent: int) -> bool:
+    """Whether to schedule no further batches (design.md, Run level step 8)."""
+    attempted = len(results)
+    changed = sum(1 for s in results.values() if s in CHANGE_FAILURES)
+    unreached = sum(1 for s in results.values() if s in NOT_REACHED)
+    if attempted and changed * 100 / attempted > percent:
+        return True
+    return bool(total) and (changed + unreached) * 100 / total > percent
 
 
 @dataclass
@@ -90,6 +112,9 @@ class RunRequest:
     # the exact-value layer where echoed; redacting a correct guess would confirm it.
     exact_exempt: frozenset[str] = frozenset()
     customer: str | None = None  # the customer a global play runs for
+    # The check-mode diff behind an MCP change request: devices end ready or no_changes,
+    # and the job awaiting_approval, no_changes, or failed (see the module docstring).
+    approval_check: bool = False
 
 
 @dataclass(frozen=True)
@@ -140,7 +165,7 @@ class Runner:
             customer=play.customer,
             mode=str(request.mode),
             status=JobStatus.PENDING,
-            prompts=dict(request.prompts),
+            prompts=masked_prompts(play, request.prompts),
             tags=list(request.tags) if request.tags is not None else None,
             limit=list(request.limit) if request.limit is not None else None,
         )
@@ -177,7 +202,18 @@ class Runner:
             close = getattr(self.transport, "close", None)
             if callable(close):  # jump-host connections live for one run
                 close()
+        if request.approval_check:
+            return self._finish_approval_check(job_id, results)
         return self._finish(job_id, results)
+
+    def preflight(self, request: RunRequest) -> list[str]:
+        """Everything run() checks before it contacts a device, without creating a job:
+        validation, targets, prompt answers, and a validation render of every target with
+        the saved secrets (a missing secret fails here). Returns the target names; raises
+        TsunamiError. MCP change requests call it so a request that could never run is
+        refused when it is made, not later in the background."""
+        entry = play_entry(self.workspace, request.play_path, request.customer)
+        return [t.label for t in self._prepare(entry, request)]
 
     # -- preparation (no device contact) ----------------------------------------------
 
@@ -192,8 +228,9 @@ class Runner:
             raise TsunamiError("compliance mode is for baseline plays only")
         cust = self.workspace.customer(play.customer)
 
+        store = self.secrets if _can_list(self.secrets) else None
         if play.type == PlayType.INITIAL:
-            values = collect_prompts(self.workspace, entry, request.prompts)
+            values = collect_prompts(self.workspace, entry, request.prompts, secrets=store)
             label = str(values.get("hostname") or "new-device").lower()
             targets = [_Target(label, None, values)]
         else:
@@ -209,11 +246,14 @@ class Runner:
             targets = []
             for device in result.devices:
                 raw = {**request.prompts, **request.device_prompts.get(device.name, {})}
-                values = collect_prompts(self.workspace, entry, raw, device=device.name)
+                values = collect_prompts(
+                    self.workspace, entry, raw, device=device.name, secrets=store
+                )
                 targets.append(_Target(device.name, device, values))
 
         # Validation render for every device before anything connects (run level step 4).
-        renderer = Renderer(self.workspace, self.app_settings, self.secrets)
+        # With the saved secrets, a secret that is not saved fails here, in every mode.
+        renderer = Renderer(self.workspace, self.app_settings, store)
         problems = []
         for target in targets:
             try:
@@ -277,6 +317,7 @@ class Runner:
                     validation=True,
                 )
                 refs.update(rendering.secret_refs)
+            groups: dict[tuple[str, str], Any] = {}
             for ref in sorted(refs):
                 if ref.startswith(LOGIN_PREFIX):  # login:<name>/password or /enable
                     name, field = ref[len(LOGIN_PREFIX) :].split("/", 1)
@@ -285,11 +326,29 @@ class Runner:
                         raise TsunamiError(f"login {name!r} has no {field} value")
                     secret_values[ref] = value
                     continue
-                customer, name = ref.split("/", 1)
-                secret_values[ref] = self.secrets.get_secret(customer, name)
+                if ref.startswith(PROMPT_PREFIX):  # a password prompt: asked once per run
+                    secret_values[ref] = str(targets[0].prompts[ref[len(PROMPT_PREFIX) :]])
+                    continue
+                customer, name, field = split_ref(ref)
+                if field is None:
+                    secret_values[ref] = self.secrets.get_secret(customer, name)
+                    continue
+                if (customer, name) not in groups:
+                    groups[customer, name] = self.secrets.get_secret_fields(customer, name)
+                values = groups[customer, name].values
+                if field not in values:
+                    raise TsunamiError(f"secret {name!r} has no field {field!r}")
+                secret_values[ref] = values[field]
 
         exact = list(self.secrets.secret_values(play.customer)) if _can_list(self.secrets) else []
         exact += list(secret_values.values())
+        # Typed passwords, in every mode: a device could echo one back.
+        exact += [
+            str(t.prompts[n])
+            for t in targets[:1]
+            for n, p in play.prompts.items()
+            if p.type == PromptType.PASSWORD and n in t.prompts
+        ]
         # Every login this customer's plays may push, in every mode: a device can echo one.
         # Usernames stay out, as for the connection logins.
         for name in sorted(allowed_logins(cust)):
@@ -328,6 +387,7 @@ class Runner:
             no_new_host_key=request.no_new_host_key,
             serial_port=request.serial_port,
             credential_notes=notes,
+            approval_check=request.approval_check,
         )
 
     # -- execution --------------------------------------------------------------------
@@ -354,6 +414,11 @@ class Runner:
                 results.update({t.label: s for t, s in zip(batch, statuses, strict=True)})
                 attempted = len(results)
                 failed = sum(1 for s in results.values() if s in FAILURE_STATUSES)
+                # max_fail_percent guards changes: a check or compliance run reads every
+                # device, so an approval request shows every device's diff or failure.
+                stop = request.mode == RunMode.APPLY and max_fail_reached(
+                    results, len(targets), settings.max_fail_percent
+                )
                 self.on_event(
                     BatchFinished(
                         job_id=ctx.job_id, batch=number, attempted=attempted, failed=failed
@@ -362,7 +427,7 @@ class Runner:
                 remaining = batch_rest(batches, number + 1)
                 if not remaining:
                     break
-                if attempted and failed * 100 / attempted > settings.max_fail_percent:
+                if stop:
                     self.on_event(
                         MaxFailReached(
                             job_id=ctx.job_id,
@@ -457,6 +522,34 @@ class Runner:
         self.on_event(JobFinished(job_id=job_id, status=status, counts=counts))
         return job_id
 
+    def _finish_approval_check(self, job_id: str, results: dict[str, DeviceStatus]) -> str:
+        """The check behind a change request: offer it for approval only if every device
+        was checked. Nothing here was applied, so no device reads success."""
+        counts: dict[str, int] = {}
+        for status in results.values():
+            counts[str(status)] = counts.get(str(status), 0) + 1
+        unchecked = sorted(d for d, s in results.items() if s not in CHECKED_STATUSES)
+        summary: dict[str, Any] = {"counts": counts}
+        if DeviceStatus.CANCELLED in results.values():
+            status = JobStatus.CANCELLED
+        elif unchecked:
+            status = JobStatus.FAILED
+            summary["error"] = (
+                f"the check failed on {len(unchecked)} of {len(results)} devices "
+                f"({', '.join(unchecked[:10])}); nothing was applied and the request was "
+                "not offered for approval"
+            )
+        elif DeviceStatus.READY in results.values():
+            status = JobStatus.AWAITING_APPROVAL
+        else:
+            status = JobStatus.NO_CHANGES
+        if status in (JobStatus.CANCELLED, JobStatus.FAILED):
+            self.history.cancel_ready_devices(job_id)  # never touched, and never will be
+        finished = {} if status == JobStatus.AWAITING_APPROVAL else {"finished_at": _now()}
+        self.history.set_job_status(job_id, status, summary=summary, **finished)
+        self.on_event(JobFinished(job_id=job_id, status=status, counts=counts))
+        return job_id
+
     def _fail_job(self, job_id: str, message: str) -> str:
         # No device may be left looking in progress. One that never started failed with
         # the job's reason; one caught mid-change may be half-configured, so it alarms.
@@ -485,6 +578,12 @@ class Runner:
 def batch_rest(batches: list[list[_Target]], start: int) -> list[_Target]:
     """Targets in batches numbered `start` (1-based) and later."""
     return [t for batch in batches[start - 1 :] for t in batch]
+
+
+def masked_prompts(play: Any, prompts: Mapping[str, Any]) -> dict[str, Any]:
+    """Prompt answers as history stores them: a typed password is never kept."""
+    passwords = {n for n, p in play.prompts.items() if p.type == PromptType.PASSWORD}
+    return {name: MASK if name in passwords else value for name, value in prompts.items()}
 
 
 def play_hash(path: Path) -> str:

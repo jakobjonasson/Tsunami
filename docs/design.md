@@ -366,6 +366,8 @@ Every prompt value, of any type, is rejected if it contains a line break or anot
 |`role`|A role slug|Slug|
 |`model`|A hardware catalog entry, chosen from a dropdown|Catalog id. Sets `platform` in initial plays|
 |`login`|A saved login the play's customer may push (see login()), chosen from a dropdown of names|The login's name. Templates read it with `login(name)`|
+|`secret`|A secret saved for the play's customer (see Secrets with fields), chosen from a dropdown of names|An object: `{{ name.field }}` reads a field, `{{ name }}` a single-value secret. Secret fields are sentinels under the sink rule; fields marked not secret render as text|
+|`password`|Text typed for this run, in a masked field. No `default`, never `per_device`|A sentinel under the sink rule, like `secret()`. Masked in the preview, diff and job record; history stores `********`, so a re-run asks for it again. MCP never supplies one (see Approval flow)|
 
 Interface values must be written the way the platform's `show running-config` prints them, because diffs compare against it: full names on IOS (`GigabitEthernet1/0/1`, never `Gi1/0/1`), `1/1/1` on AOS-CX, and `1`, `A1`, `1/1`, or `Trk1` on AOS-S. The platform driver validates them. An `interface` prompt that is not `per_device` requires all targets to share one family.
 
@@ -513,6 +515,15 @@ Each platform driver has its own default sink patterns (see Platform drivers). T
 
 The list lives in code, in the platform drivers. Extra patterns can be added in `settings.json`, never in the workspace. Each must contain a `(?P<secret>...)` group marking the secret token; the redactor masks those lines too.
 
+### Secrets with fields
+
+A customer's secret is a single value or named fields. An SNMPv3 user holds `username`, `auth_protocol`, `auth_key`, `priv_protocol` and `priv_key`; an NTP key a `key_id` and a `key`. TACACS+ and RADIUS keys, pre-shared keys and v2c communities are single values. Field names match `^[a-z][a-z0-9_]*$`. Each field is secret unless marked not secret (a username, a protocol name): a not-secret field renders as text anywhere and shows in previews and diffs, and the exact-value redactor leaves it out, because a short common value would corrupt ordinary output.
+
+- `secret('name')` reads a single value; `secret('name', 'field')` one field. A prompt of type `secret` picks a saved secret by name, and the template reads `{{ prompt_name.field }}`. Using a secret with fields as a single value, or a field it does not have, is a render error naming its fields.
+- **Missing secrets.** Every render that has the saved secrets at hand checks that each secret the play uses is saved for the customer: the run wizard's preview, MCP `render`, MCP `validate` and `write_draft`, the runner's validation render before any device is contacted (every mode), and MCP `request_run`, which refuses at once. The message names the secret, the customer and where to add it (Credentials, Secrets). Workspace validation, which never opens the store, does not check it; a field there reads as placeholder text and the sink rule for it is checked when the play renders with the store.
+- Secret names are not secret: `render` lists them in `secret_names` (`customer/name`, `customer/name.field`, `password:<prompt>`). Values never leave the store except in apply mode, when they are sent.
+- Credentials, Secrets (per customer) creates them: New secret offers Single value, SNMPv3 user (the five fields above, the protocols and username not secret) and Fields. Overwrite lists the field names again, never the values.
+
 ### login()
 
 `login(name)` pushes a saved login (Credentials) to devices: a play can create a local account without saving its password a second time as a template secret. `name` is a `login` prompt's value or a literal, such as `login('netadmin2')`.
@@ -558,7 +569,7 @@ Every device goes through the same pipeline. Batching, canary, and max-fail wrap
 5. Mode `render` stops here and shows the output.
 6. If apply mode and `canary: true`, run one device, then pause for confirmation.
 7. Run the remaining devices in batches of `batch_size` in parallel.
-8. After each batch, compute failed devices over attempted devices. If the percentage exceeds `max_fail_percent`, schedule no further batches. In-flight devices finish. Unstarted devices get `skipped_maxfail`. Failed means `failed`, `rolled_back`, `rollback_failed`, `unreachable`, `hostkey_mismatch`, `render_changed`, or `interrupted`; `skipped_precheck` and `device_busy` do not count, because nothing was changed.
+8. In apply mode, after each batch, check `max_fail_percent` two ways and schedule no further batches if either exceeds it: change failures (`failed`, `rolled_back`, `rollback_failed`, `render_changed`, `interrupted`) over the devices attempted so far, and change failures plus devices never reached (`unreachable`, `hostkey_mismatch`) over every device in the run. A device that was never reached changed nothing, so one dead switch in a first batch of five does not stop a 49-device run, while a config failure still stops it after its batch. In-flight devices finish. Unstarted devices get `skipped_maxfail`. `skipped_precheck` and `device_busy` count neither way. Check and compliance runs read every device: max-fail never stops them, so an approval request shows every device's diff or failure.
 9. Write the job summary.
 
 ### Device level (apply mode)
@@ -733,7 +744,7 @@ All entries use keyring service `tsunami`:
 |---|---|---|
 |Kind|keyring username|Value|
 |Device login|`cred/<name>`|JSON: `username`, `password`, optional `enable`|
-|Template secret|`secret/<customer>/<name>`|The secret string|
+|Template secret|`secret/<customer>/<name>`|The secret string, or `tsunami-fields:v1:` and JSON (`fields`, `plain`) for a secret with fields|
 
 - Credential Manager limits each value to 2,560 bytes. keyring stores values as UTF-16-LE, so that is about 1,280 characters. Reject larger values with a clear error.
 - Each value has its own Credential Manager entry: target `tsunami/<key>` (keyring service `tsunami/<key>`, username `<key>`), written with local-machine persistence straight to that target, so writing or deleting one value never moves another. keyring has no list API; names are listed with `CredEnumerate` (pywin32-ctypes), keeping entries whose target is `tsunami/<UserName>`. Entries in the old shared layout (`tsunami` and `<key>@tsunami`) are moved at startup: the raw value is copied, read back, and only then is the old entry deleted.
@@ -749,7 +760,7 @@ All entries use keyring service `tsunami`:
 
 ### Lifetime in memory
 
-- Values are fetched at connect time (logins) and at final render in apply mode (template secrets).
+- Values are fetched at connect time (logins) and at final render in apply mode (template secrets). A render with the store reads a secret's field names and its not-secret fields, never a secret field's value. A `password` prompt's value lives only in the run's memory.
 - They are held in local variables only and never logged.
 - Netmiko session logs, if enabled, use its string masking for every secret value in the job. The log file is still passed through the redactor on write. Verify the masking parameter name against the installed Netmiko version.
 
@@ -773,7 +784,7 @@ Every encryption type (0, 5, 7, 8, 9) is redacted. Type 7 is reversible, so it c
 
 Every platform family's rules apply to all text, so output from a mislabelled device is still covered and both sides of a diff are treated alike. Keywords match regardless of case. A rule can depend on its top-level parent line: under `key chain` (IOS) or `keychain` (AOS-CX), ` key 1` is a key id, not a secret.
 
-**Exact-value layer.** At job start, load every secret value in the customer's namespace plus the login credential's password and enable values into an in-memory set, together with the password and enable of every login the customer's plays may push (see login()), in every mode. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear. A multi-line value also matches output with CRLF line ends.
+**Exact-value layer.** At job start, load every secret value in the customer's namespace (the secret fields of a secret with fields, not the fields marked not secret), every `password` prompt answer of the run, plus the login credential's password and enable values into an in-memory set, together with the password and enable of every login the customer's plays may push (see login()), in every mode. The username is left out: it is not secret, and a short common username such as `admin` would corrupt ordinary output (`administratively down`). Replace any occurrence of any value of 4 or more characters with `<redacted>`. Patterns miss things; exact matching catches plaintext copies wherever they appear. A multi-line value also matches output with CRLF line ends.
 
 MCP results use every stored secret and login password of every customer, not just the call's customer, and a call fails if the store cannot be read. One exception: a value Claude supplied in the same call (an argument, or a word of one; for `get_job`, an MCP job's prompt values) is not exact-redacted where it is echoed back. Redacting the echo of a correct guess would confirm the guess, so a prompt value or argument set to a candidate secret would work as an oracle. The pattern layer still applies, so sink lines stay masked. MCP jobs apply the same exception to their prompt values when the runner stores diffs and output. Audit rows always get the full redaction.
 
@@ -854,9 +865,9 @@ A play was the other option. It was not chosen because plays render and push tem
 |`compliance(path)`|1|Job id. Results hold missing and extra lines|
 |`show(customer, device, command)`|1|Redacted output. Allowlisted commands only|
 |`request_allowlist_addition(family, command, reason)`|0|Queues a request (`allowlist_requests` in `history.db`). Only plain `show` commands: others, pipes and `;` are refused. Settings, MCP lists pending requests with Approve and Deny; only Approve writes the entry to `mcp-policy.yml`. Claude has no write path to the policy|
-|`get_job(job_id)`|1|Status and redacted per-device results|
+|`get_job(job_id)`|1|Status, `phase` (`approval check` for a change request nobody has approved: nothing applied; `apply`; else the mode) and redacted per-device results|
 |`list_jobs(customer?, limit?)`|1|Recent jobs|
-|`request_run(path, targets, prompts, tags?)`|2|Job id in `awaiting_approval`, or running for lab customers when policy allows|
+|`request_run(path, targets?, prompts, tags?)`|2|Job id: the approval check runs, then the job waits in `awaiting_approval`; running for lab customers when policy allows. No `targets`: every device the play targets, within `max_check_targets`. Refused at once if the play could not run (prompt answers, a render error, a secret not saved) or has a `password` prompt|
 |`cancel_job(job_id)`|2|Only jobs created by MCP that have not started|
 
 Tier 0 touches only the workspace. Tier 1 contacts devices read-only: the engine uses credentials, and Claude sees only redacted output. Tier 2 requests changes.
@@ -868,7 +879,7 @@ Mark tier 0 and tier 1 read tools with `readOnlyHint`. Treat annotations as hint
 ### Approval flow
 
 1. Claude calls `request_run` with an approved play (not a draft), targets, prompt values, and an optional tag filter.
-2. The server validates the play and creates the job as `pending` with the play hash. It renders all targets and runs a check-mode diff in the background, storing each device's masked render, render hash and diff. When the check completes, each device that would change becomes `ready` (not `success`, so nothing reads as applied before it is) and the rest `no_changes`. A device would change if its diff has new lines, its render has exec steps (a config diff never shows them), or its render carries a secret (the diff compares secret lines only up to the secret, so a rotation is invisible). With at least one `ready` device the job becomes `awaiting_approval`, and the approved run covers only the `ready` devices; with none, the job ends `no_changes` and nobody is asked to approve. If any device fails the check, the job ends `failed` and is never offered for approval. A denied, expired or cancelled request turns its `ready` devices `cancelled`.
+2. The server validates the play, answers and renders exactly as the run would before contacting a device (a secret that is not saved, a bad answer or a render error refuses the request at once), then creates the job as `pending` with the play hash. A play with a `password` prompt is refused: its value would have to wait in `history.db` for the approval, so such plays use a `secret` prompt instead. Over MCP, `render` and `check` mask a `password` prompt without a value, a value Claude passes is refused, and the audit row records it as `********`. The job's mode is `apply` from the start, but until it is approved `get_job` reports `phase: approval check` with a note that nothing has been applied. It renders all targets and runs a check-mode diff in the background (the approval check), storing each device's masked render, render hash and diff. When the check completes, each device that would change becomes `ready` (not `success`, so nothing reads as applied before it is) and the rest `no_changes`. A device would change if its diff has new lines, its render has exec steps (a config diff never shows them), or its render carries a secret (the diff compares secret lines only up to the secret, so a rotation is invisible). With at least one `ready` device the job becomes `awaiting_approval`, and the approved run covers only the `ready` devices; with none, the job ends `no_changes` and nobody is asked to approve. The approval check marks each device `ready` or `no_changes` itself, so no device of an unapproved request ever reads `success`. If any device fails the check, the job ends `failed` (never `partial`: nothing was applied), its `ready` devices become `cancelled`, the summary says it was not offered for approval, and nobody is asked. `max_fail_percent` does not stop the check, so the request shows every device's diff or failure at once. A denied, expired or cancelled request turns its `ready` devices `cancelled`.
 3. The GUI polls the database every 2 seconds, shows a badge and tray notification, and opens an approval card: play, customer, targets, prompts, and per-device masked render and diff.
 4. The person approves or denies. Approval records the Windows username and time.
 5. The GUI runs the job through the normal pipeline, including canary, backups, and rollback.
@@ -876,7 +887,7 @@ Mark tier 0 and tier 1 read tools with `readOnlyHint`. Treat annotations as hint
 7. Claude polls `get_job` for results.
 8. Unapproved jobs expire after `approval_expiry_minutes`.
 
-Lab exception: if the customer has `lab: true` and policy says `apply: lab_only`, the MCP process runs the job itself with no approval. If `lab_allow_drafts` is true, drafts can run against lab customers. This lets Claude iterate against CML without a click per run.
+Lab exception: if the customer has `lab: true` and policy says `apply: lab_only`, the MCP process runs the job itself with no approval, recording `approved_by` as `lab policy (no approval)` so `get_job` never shows an apply without saying who allowed it. Its canary does not pause: nobody is there to confirm it. If `lab_allow_drafts` is true, drafts can run against lab customers. This lets Claude iterate against CML without a click per run.
 
 ### Inventory proposals
 
@@ -1009,15 +1020,15 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
 |Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
-|Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete.|
+|Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete. Promote checks whether the live file exists when it is pressed, refuses a draft rewritten since its tab showed it (Claude can rewrite a draft at any time), retries a live file another program holds open for a moment, and reports any failure with its reason.|
 |History|Jobs filtered by customer, play, actor, and status. Opens any past job view. Per-customer compliance history.|
-|Credentials|Names only. Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
+|Credentials|Names only. Device logins on one side; on the other, Secrets (per customer): values plays push that are not logins (SNMP, TACACS+ and RADIUS keys, pre-shared keys), each a single value or named fields (see Secrets with fields). Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
 |Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
 
 ### Behavior rules
 
 - Never block the UI thread. All device work runs in the runner's `QThread`.
-- Prompt widgets match prompt types: spin box for `vlan`, dropdown for `choice`, `site`, `role`, and `model` (grouped by vendor), and validated line edits for IP and interface types.
+- Prompt widgets match prompt types: spin box for `vlan`, dropdown for `choice`, `site`, `role`, `login`, `secret` (the customer's saved secret names) and `model` (grouped by vendor), a masked line edit for `password` (never filled in from history), and validated line edits for IP and interface types.
 - The serial port picker is filled from `serial.tools.list_ports` and refreshes when opened.
 - Masked views use `********` for secret values and `<redacted>` for redacted running-config tokens. Raw values appear only in the backup viewer's reveal toggle.
 - A job with any `rollback_failed` or `interrupted` device shows a red banner that is only dismissed by explicit acknowledgment, and a red status bar item until then.
@@ -1060,6 +1071,7 @@ Job statuses: `pending`, `awaiting_approval`, `approved`, `denied`, `expired`, `
 - Trust on first use, recorded per customer in `known_hosts\<customer>` in OpenSSH known_hosts format, keyed the way paramiko looks keys up (`host`, or `[host]:port` for ports other than 22). Files are per customer because customers reuse private address ranges, so one shared file would match one customer's key against another customer's device. Jump hosts are recorded in their customer's file too.
 - Before the first login to a host with no recorded key, the transport opens an unauthenticated paramiko transport (directly, or over the jump host's `direct-tcpip` channel), reads the server key, and records it. Credentials are only ever sent to a host whose key is on file.
 - Netmiko then connects with `ssh_strict=True`, `alt_host_keys=True`, and `alt_key_file` set to a private copy of this host's entry. Netmiko accepts any host key by default, so these must always be set. The copy exists because Netmiko reads its key file during login, outside Tsunami's lock, and Windows refuses to replace a file another thread has open.
+- A `direct-tcpip` channel the jump host refuses or cannot open fails the device as `unreachable` with the reason (refused or no route from the jump host, administratively prohibited, no answer in time), not just the exception's name.
 - A later mismatch fails the device with `hostkey_mismatch`. Only the GUI can accept a new key, after showing old and new fingerprints. MCP-initiated jobs can never accept one. The error names where to accept it: Inventory, the customer, Trust host keys.
 - A jump host's changed key is accepted the same way. Trust host keys reads the jump host's key directly when the jump connection fails on a mismatch, and lists it as a `(jump host)` row above the devices. Until it is accepted, every device behind it is unreachable.
 - Every GUI connection to a customer's device goes through its jump host, the Credentials Test button included (`AppContext.jump_target`). A direct attempt at a private address could reach another machine and record that machine's key as the device's.
@@ -1538,3 +1550,12 @@ Changes since the original draft, with reasons:
   - New login and Overwrite login have *No password*. Such a login has an empty password, and Netmiko's `HPProcurveSSH` logs in with SSH `none` authentication, which an AOS-S switch with no manager or operator password accepts (Platform drivers: Families and sessions). Without the box an empty password is still refused.
   - IOS and AOS-CX refuse a login without a password before connecting. A console login never answers a set-password prompt with an empty password; before, it would have sent one.
   - Not yet run against a real factory-default ProCurve.
+- 0.6.0, change requests that say what they did, secrets with fields, and password prompts:
+  - An MCP change request's approval check could read as an applied run: its job has mode `apply`, the check marked devices `success`, and when one device failed the check `max_fail_percent` stopped it and the job ended `partial`, which the step that offers a request for approval skipped. `get_job` then showed an apply with `success` devices, diffs, facts and no approver, though nothing was applied or offered for approval. The approval check now marks devices `ready` or `no_changes` itself, ends `failed` (ready devices `cancelled`) when any device could not be checked, is never cut short by `max_fail_percent`, and `get_job` reports `phase` with a note while nothing is applied. A lab run records `approved_by: lab policy (no approval)`.
+  - `max_fail_percent` applies in apply mode only, and counts devices that were never reached over the whole run rather than over the devices attempted, so one unreachable switch in a first batch of five no longer stops a 49-device run; config failures still count per batch as before. This is the "count unreachable separately" option; evaluating everything over the whole run was rejected because the first batch of a 200-device run could then fail completely without stopping it.
+  - A secret that is not saved fails at MCP `validate` and `write_draft`, at every render with the store (preview, MCP `render`), in the runner's validation render before any device is contacted, and refuses MCP `request_run` at once. Before, check mode never read secrets, so a request diffed cleanly and only an apply found the secret missing. MCP `request_run` runs that preflight synchronously (`Runner.preflight`). The message says where to add it (Credentials, Secrets, customer, name) instead of naming a Credential Manager entry, and is worded so the redactor's catch-all, which masks the word after `secret `, leaves it readable.
+  - Secrets with fields (`SecretFields`), read with `secret('name', 'field')` or a prompt of type `secret`; fields marked not secret render as text. Pushing non-login secrets such as an SNMPv3 user through `login()` and its `.enable` was the only way to keep several values together.
+  - Prompt type `password`: typed for one run, masked everywhere, stored as `********`, never taken over MCP (refused, and masked in the audit row), never replayed by Run again or Retry failed. Typed keys used to go through `string` prompts, in clear text in the preview, diff, job record and MCP.
+  - MCP `request_run` takes `targets` as optional and falls back to every device the play targets.
+  - Draft promotion checks the live file when Promote is pressed, refuses a draft rewritten after its tab showed it, retries a briefly locked live file, and reports a failed move instead of raising it unhandled. The reported failure promoting over a live play came with no error text; an unhandled `OSError` from the move fits that, but the cause is not confirmed.
+  - A refused or timed-out jump host channel names the reason, not only `SSHException`.

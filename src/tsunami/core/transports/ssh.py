@@ -51,6 +51,31 @@ def _note_legacy(conn: Any, device: str) -> None:
         log.info("%s: SSH uses SHA-1 algorithms (the device offers nothing newer)", device)
 
 
+# RFC 4254 section 5.1 reason codes for a refused channel.
+_OPEN_FAILURES = {
+    1: "the jump host refused to forward to it (administratively prohibited)",
+    2: "the jump host could not connect to it (refused, or no route from the jump host)",
+    3: "the jump host does not forward connections (unknown channel type)",
+    4: "the jump host is out of resources (too many sessions)",
+}
+
+
+def channel_failure(exc: BaseException, host: str, port: int) -> str:
+    """Why a direct-tcpip channel through the jump host failed, in words a person can act on.
+    A timeout usually means the jump host cannot reach the device's address and port."""
+    target = f"{host}:{port}"
+    if isinstance(exc, paramiko.ChannelException):
+        reason = _OPEN_FAILURES.get(exc.code, f"refused with code {exc.code}")
+        return f"{target}: {reason}"
+    text = str(exc).strip()
+    if "timeout" in text.lower() or isinstance(exc, TimeoutError | socket.timeout):
+        return (
+            f"{target}: no answer through the jump host in time; check the jump host can "
+            "reach this address and port (routing, ACLs, the device's SSH server)"
+        )
+    return f"{target}: {type(exc).__name__}" + (f" ({text})" if text else "")
+
+
 class JumpConnection:
     """One authenticated connection to a jump host, shared by every device in a run."""
 
@@ -114,7 +139,7 @@ class JumpConnection:
                 "direct-tcpip", (host, port), ("127.0.0.1", 0), timeout=self.timeout
             )
         except (paramiko.SSHException, OSError) as exc:
-            raise UnreachableError(f"via jump host: {type(exc).__name__}") from None
+            raise UnreachableError(f"via jump host: {channel_failure(exc, host, port)}") from None
 
     def close(self) -> None:
         self.client.close()

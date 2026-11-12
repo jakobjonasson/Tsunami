@@ -25,6 +25,8 @@ MASK = "********"
 _REF_RE = re.compile(r"(?P<customer>[a-z0-9][a-z0-9-]*)/(?P<name>[a-z0-9][a-z0-9-]*)")
 _NAME_RE = re.compile(r"[a-z0-9][a-z0-9-]*")
 LOGIN_PREFIX = "login:"  # login references; secret() cannot make one, it takes slugs only
+PROMPT_PREFIX = "prompt:"  # a password prompt's value, typed for one run
+FIELD_SEP = "."  # customer/name.field: one field of a secret with fields
 
 
 class SecretRefError(TsunamiError):
@@ -49,7 +51,20 @@ class SecretCollector:
         """The sentinel for a login's password or enable (login() in core/render)."""
         return self._sentinel_for(f"{LOGIN_PREFIX}{name}/{field}")
 
+    def prompt_ref(self, name: str) -> str:
+        """The sentinel for a password prompt's value."""
+        return self._sentinel_for(f"{PROMPT_PREFIX}{name}")
+
+    def field_ref(self, customer: str, name: str, field: str | None = None) -> str:
+        """The sentinel for a secret, or for one field of a secret with fields."""
+        ref = f"{customer}/{name}" if field is None else f"{customer}/{name}{FIELD_SEP}{field}"
+        return self._sentinel_for(ref)
+
     def __call__(self, ref: object) -> str:
+        return self.field_ref(*self.parse(ref))
+
+    def parse(self, ref: object) -> tuple[str, str]:
+        """(customer, name) of a secret('name') or secret('customer/name') argument."""
         if isinstance(ref, str) and _NAME_RE.fullmatch(ref):
             ref = f"{self.customer}/{ref}"  # secret('name'): this play's customer (global plays)
         match = _REF_RE.fullmatch(ref) if isinstance(ref, str) else None
@@ -59,7 +74,7 @@ class SecretCollector:
             raise SecretRefError(
                 f"secret({ref!r}) belongs to another customer; this play is for {self.customer!r}"
             )
-        return self._sentinel_for(ref)
+        return match["customer"], match["name"]
 
     def _sentinel_for(self, ref: str) -> str:
         if ref not in self.refs:
@@ -91,9 +106,10 @@ class SecretCollector:
             start, end = match.span()
             if not any(s <= start and end <= e for s, e in sinks):
                 ref = self.refs[int(match.group(1))]
-                what = "login() password" if ref.startswith(LOGIN_PREFIX) else "secret()"
                 raise SecretRefError(
-                    f"{what} is not allowed here for {driver.family}: {self.mask(line).strip()!r}"
+                    f"{describe_ref(ref)} is not allowed here for {driver.family} (secret "
+                    "values go only on lines the redactor masks): "
+                    f"{self.mask(line).strip()!r}"
                 )
 
     def mask(self, text: str) -> str:
@@ -102,3 +118,22 @@ class SecretCollector:
     def materialize(self, text: str, values: Mapping[str, str]) -> str:
         """Swap sentinels for real values. Apply mode only; never store the result."""
         return self._sentinel.sub(lambda m: values[self.refs[int(m.group(1))]], text)
+
+
+def describe_ref(ref: str) -> str:
+    """How an error names a reference, never with its value."""
+    if ref.startswith(LOGIN_PREFIX):
+        return f"login() {ref.rsplit('/', 1)[1]}"
+    if ref.startswith(PROMPT_PREFIX):
+        return f"prompt {ref[len(PROMPT_PREFIX) :]!r} (type 'password')"
+    _, _, field = split_ref(ref)
+    return "secret()" if field is None else f"secret() field {field!r}"
+
+
+def split_ref(ref: str) -> tuple[str, str, str | None]:
+    """Customer, name and field (None for a single value) of a secret reference."""
+    customer, name = ref.split("/", 1)
+    if FIELD_SEP in name:
+        name, field = name.split(FIELD_SEP, 1)
+        return customer, name, field
+    return customer, name, None

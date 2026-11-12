@@ -59,6 +59,7 @@ from __future__ import annotations
 import json
 import logging
 import os
+import re
 import sys
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -80,10 +81,16 @@ MAX_VALUE_BYTES = 2560  # Credential Manager's per-value limit
 
 # keyring usernames under SERVICE:
 #   cred/<name>               JSON: username, password, optional enable
-#   secret/<customer>/<name>  the secret string
+#   secret/<customer>/<name>  the secret string, or FIELDS_PREFIX + JSON for a secret
+#                             with named fields (an SNMPv3 user, say)
 
 _CRED_PREFIX = "cred/"
 _SECRET_PREFIX = "secret/"
+# A secret with fields is stored as this prefix and JSON {"fields": {...}, "plain": [...]}.
+# No typed single value starts with it: the dialogs never offer it as a value.
+FIELDS_PREFIX = "tsunami-fields:v1:"
+FIELD_NAME_RE = re.compile(r"^[a-z][a-z0-9_]*$")
+SINGLE_FIELD = "value"  # the one field of a single-value secret
 _ERROR_NOT_FOUND = 1168
 # CredEnumerate reports generic targets with this prefix (CredRead does not).
 _ENUM_TARGET_PREFIX = "LegacyGeneric:target="
@@ -94,6 +101,72 @@ class LoginCredential:
     username: str
     password: str = field(repr=False)
     enable: str | None = field(default=None, repr=False)
+
+
+@dataclass(frozen=True)
+class SecretFields:
+    """A saved secret: a single value (one field, `value`) or named fields.
+
+    Fields in `plain` are not secret (an SNMPv3 username, an auth protocol): templates get
+    them as text, they show in previews, and the redactor leaves them alone. Every other
+    field is a secret value, handled exactly like secret().
+    """
+
+    values: dict[str, str] = field(repr=False)
+    plain: frozenset[str] = frozenset()
+
+    def __repr__(self) -> str:
+        return f"SecretFields(fields={sorted(self.values)}, plain={sorted(self.plain)})"
+
+    @property
+    def single(self) -> bool:
+        return set(self.values) == {SINGLE_FIELD} and not self.plain
+
+    def secret_values(self) -> list[str]:
+        return [v for k, v in self.values.items() if k not in self.plain and v]
+
+    def encode(self) -> str:
+        if self.single:
+            return self.values[SINGLE_FIELD]
+        payload = {"fields": dict(self.values), "plain": sorted(self.plain)}
+        return FIELDS_PREFIX + json.dumps(payload, separators=(",", ":"))
+
+    @classmethod
+    def decode(cls, raw: str) -> SecretFields:
+        if not raw.startswith(FIELDS_PREFIX):
+            return cls({SINGLE_FIELD: raw})
+        try:
+            data = json.loads(raw[len(FIELDS_PREFIX) :])
+            values = {str(k): str(v) for k, v in data["fields"].items()}
+            plain = frozenset(str(p) for p in data.get("plain", ())) & set(values)
+        except (ValueError, KeyError, AttributeError, TypeError):
+            raise TsunamiError("a stored secret is malformed") from None
+        return cls(values, plain)
+
+
+def missing_secret_message(customer: str, name: str) -> str:
+    """The one message for a template secret that is not saved."""
+    # Worded so no "secret <word>" appears: the redactor's catch-all would mask the word.
+    return (
+        f"{name!r} is not among the saved secrets of customer {customer!r}: add it in "
+        f"Tsunami, Credentials, Secrets (customer {customer}, name {name})"
+    )
+
+
+def check_secret_fields(fields: SecretFields) -> None:
+    """Field names usable as template attributes, at least one field, no empty value."""
+    if not fields.values:
+        raise TsunamiError("a secret needs at least one field")
+    for name, value in fields.values.items():
+        if not FIELD_NAME_RE.fullmatch(name):
+            raise TsunamiError(
+                f"field name {name!r}: lowercase letters, digits and underscores, "
+                "starting with a letter"
+            )
+        if not value:
+            raise TsunamiError(f"field {name!r} needs a value")
+        if any(c in value for c in "\r\n\x00"):
+            raise TsunamiError(f"field {name!r} contains a line break or control character")
 
 
 class SecretStore(Protocol):
@@ -109,7 +182,11 @@ class SecretStore(Protocol):
 
     def get_secret(self, customer: str, name: str) -> str: ...
 
+    def get_secret_fields(self, customer: str, name: str) -> SecretFields: ...
+
     def set_secret(self, customer: str, name: str, value: str) -> None: ...
+
+    def set_secret_fields(self, customer: str, name: str, fields: SecretFields) -> None: ...
 
     def delete_secret(self, customer: str, name: str) -> None: ...
 
@@ -220,10 +297,33 @@ class KeyringSecretStore:
     # ---- secrets ----
 
     def get_secret(self, customer: str, name: str) -> str:
-        return self._get(self._secret_key(customer, name), f"secret {customer}/{name}")
+        """A single-value secret. A secret with fields is read with get_secret_fields."""
+        fields = self.get_secret_fields(customer, name)
+        if not fields.single:
+            raise TsunamiError(
+                f"{name!r} of customer {customer!r} has fields "
+                f"({', '.join(sorted(fields.values))}): read one with secret({name!r}, "
+                "'field') or a prompt of type 'secret'"
+            )
+        return fields.values[SINGLE_FIELD]
+
+    def get_secret_fields(self, customer: str, name: str) -> SecretFields:
+        raw = self._get(
+            self._secret_key(customer, name), f"secret {customer}/{name}", missing=customer
+        )
+        return SecretFields.decode(raw)
 
     def set_secret(self, customer: str, name: str, value: str) -> None:
+        if value.startswith(FIELDS_PREFIX):
+            raise TsunamiError("a secret value cannot start with " + FIELDS_PREFIX)
         self._set(self._secret_key(customer, name), value, f"secret {customer}/{name}")
+
+    def set_secret_fields(self, customer: str, name: str, fields: SecretFields) -> None:
+        check_secret_fields(fields)
+        if fields.single:
+            self.set_secret(customer, name, fields.values[SINGLE_FIELD])
+            return
+        self._set(self._secret_key(customer, name), fields.encode(), f"secret {customer}/{name}")
 
     def delete_secret(self, customer: str, name: str) -> None:
         self._delete(self._secret_key(customer, name), f"secret {customer}/{name}")
@@ -237,7 +337,9 @@ class KeyringSecretStore:
         values = []
         for name in self.list_secrets(customer):
             try:
-                values.append(self.get_secret(customer, name))
+                values += self.get_secret_fields(customer, name).secret_values()
+            except VaultLocked:
+                raise  # never redact with a silently shorter list
             except TsunamiError:
                 continue  # removed between listing and reading
         return values
@@ -255,7 +357,7 @@ class KeyringSecretStore:
                     login = self.get_login(key[len(_CRED_PREFIX) :])
                     values += [v for v in (login.password, login.enable) if v]
                 elif key.startswith(_SECRET_PREFIX):
-                    values.append(self._get(key, "secret"))
+                    values += SecretFields.decode(self._get(key, "secret")).secret_values()
             except VaultLocked:
                 raise  # never redact with a silently empty list
             except TsunamiError:
@@ -367,12 +469,14 @@ class KeyringSecretStore:
     def _secret_key(customer: str, name: str) -> str:
         return f"{_SECRET_PREFIX}{require_slug(customer)}/{require_slug(name)}"
 
-    def _get(self, key: str, label: str) -> str:
+    def _get(self, key: str, label: str, *, missing: str | None = None) -> str:
         try:
             value = keyring.get_password(self._entry(key), key)
         except Exception as exc:  # noqa: BLE001
             raise self._backend_error("reading", label, exc) from None
         if value is None:
+            if missing is not None:  # a template secret: say where it is added
+                raise TsunamiError(missing_secret_message(missing, key.rsplit("/", 1)[-1]))
             raise TsunamiError(
                 f"{label} is not in Credential Manager; add it in Tsunami's Credentials view"
             )

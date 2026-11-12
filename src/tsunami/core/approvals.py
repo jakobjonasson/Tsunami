@@ -58,16 +58,6 @@ def would_change(record: Any) -> bool:
     return changes_device(record.diff_redacted, record.render_masked)
 
 
-def classify_request(history: Any, job_id: str) -> JobStatus | None:
-    """After an approval request's check-mode diff: ready for approval, or no_changes."""
-    if history.get_job(job_id).status != JobStatus.COMPLETED:
-        return None  # the check failed or was cancelled; nothing to offer
-    ready, unchanged = [], []
-    for record in history.devices(job_id):
-        (ready if would_change(record) else unchanged).append(record.device)
-    return history.mark_ready_for_approval(job_id, ready=ready, unchanged=unchanged)
-
-
 def deny(history: Any, job_id: str, *, denied_by: str) -> None:
     job = history.get_job(job_id)
     if job.status != JobStatus.AWAITING_APPROVAL:
