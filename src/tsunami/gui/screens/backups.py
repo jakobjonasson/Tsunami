@@ -5,7 +5,9 @@ Tsunami's redactor for the customer first: the exact values of every stored secr
 login, the platform line rules and the user's extra rules. If Tsunami is locked the
 stored values cannot be read, so the content is not shown at all (names, times and sizes
 still are). There is deliberately no "open the raw file" action; "Show in folder" only
-selects the file in Explorer.
+selects the file in Explorer. View full backup opens the redacted backup in a tab of its
+own, and Open in VS Code writes a redacted copy (core/backups.py, write_redacted_copy) and
+opens that, or VS Code's diff of two such copies.
 
 See design.md, Backups; Secrets and credentials: Redactor.
 """
@@ -47,6 +49,7 @@ from tsunami.core.backups import (
     list_backups,
     read_redacted,
     taken_by,
+    write_redacted_copy,
 )
 from tsunami.core.device_report import ReportScope, write_report
 from tsunami.core.issues import TsunamiError
@@ -101,6 +104,40 @@ def secret_redactor(ctx: AppContext) -> Redactor:
     return Redactor(values, extra_rules=ctx.settings.extra_rules())
 
 
+def redactor_or_reason(ctx: AppContext) -> Redactor | str:
+    """The redactor, or the text to show instead when it cannot be built. Fails closed: if
+    any stored value cannot be read, nothing is shown."""
+    try:
+        return secret_redactor(ctx)
+    except TsunamiError as exc:
+        if "locked" in str(exc):
+            return LOCKED_TEXT
+        return "Backups cannot be shown: the credential store cannot be read."
+
+
+def open_redacted_in_vscode(
+    ctx: AppContext, shell: Shell, customer: str, device: str, entries: list[BackupEntry]
+) -> list[Path]:
+    """Open one backup, or the diff of two (oldest first), in VS Code as redacted copies.
+    The raw backup is never opened. Returns the copies written."""
+    redactor = redactor_or_reason(ctx)
+    if isinstance(redactor, str):
+        shell.notify(redactor, "warning")
+        return []
+    try:
+        copies = [
+            write_redacted_copy(ctx.paths, customer, device, e.path, redactor) for e in entries
+        ]
+    except BackupError as exc:
+        shell.notify(f"Cannot open the backup in VS Code: {exc}", "error")
+        return []
+    if len(copies) == 1:
+        shell.open_in_vscode(copies[0])
+    elif len(copies) == 2:
+        shell.diff_in_vscode(copies[0], copies[1])
+    return copies
+
+
 def reveal_in_folder(path: Path) -> None:
     """Show the file selected in Explorer. Tests replace this."""
     if sys.platform == "win32":
@@ -153,6 +190,17 @@ class BackupsTab(QWidget):
         self.compare_button.setIcon(icon("git-compare", theme.current().accent_text))
         self.compare_button.setToolTip("Show what changed between two backups")
         self.compare_button.clicked.connect(lambda _=False: self.compare())
+        self.full_button = QPushButton("View full backup")
+        self.full_button.setIcon(icon("go-to-file", theme.current().muted))
+        self.full_button.setToolTip("Open the selected backup in its own tab (or double-click)")
+        self.full_button.clicked.connect(lambda _=False: self.view_full())
+        self.vscode_button = QPushButton("Open in VS Code")
+        self.vscode_button.setIcon(icon("code", theme.current().muted))
+        self.vscode_button.setToolTip(
+            "Open a redacted copy of the selected backup in VS Code; with two selected, "
+            "VS Code's diff of them"
+        )
+        self.vscode_button.clicked.connect(lambda _=False: self.open_in_vscode())
         self.folder_button = QPushButton("Show in folder")
         self.folder_button.setIcon(icon("folder-opened", theme.current().muted))
         self.folder_button.setToolTip("Select the selected backup file in Explorer")
@@ -160,10 +208,19 @@ class BackupsTab(QWidget):
         self.refresh_button = QPushButton("Refresh")
         self.refresh_button.setIcon(icon("refresh", theme.current().muted))
         self.refresh_button.clicked.connect(lambda _=False: self.refresh())
+        self.restore_button = QPushButton("Restore…")
+        self.restore_button.setIcon(icon("history", theme.current().muted))
+        self.restore_button.setToolTip(
+            "Send the selected backup to the device, over SSH or a console"
+        )
+        self.restore_button.clicked.connect(lambda _=False: self.restore())
         bar.addWidget(compare_label)
         bar.addWidget(self.compare_combo)
         bar.addWidget(self.compare_button)
         bar.addStretch(1)
+        bar.addWidget(self.restore_button)
+        bar.addWidget(self.full_button)
+        bar.addWidget(self.vscode_button)
         bar.addWidget(self.folder_button)
         bar.addWidget(self.refresh_button)
         layout.addLayout(bar)
@@ -183,6 +240,7 @@ class BackupsTab(QWidget):
         header.resizeSection(1, 120)
         header.setStretchLastSection(True)
         self.table.itemSelectionChanged.connect(self._selection_changed)
+        self.table.cellDoubleClicked.connect(lambda row, _col: self._view_row(row))
         self.splitter.addWidget(self.table)
 
         lower = QWidget()
@@ -250,6 +308,9 @@ class BackupsTab(QWidget):
         self.compare_button.setEnabled(has)
         self.compare_combo.setEnabled(has)
         self.folder_button.setEnabled(has)
+        self.full_button.setEnabled(has)
+        self.vscode_button.setEnabled(has)
+        self.restore_button.setEnabled(has)
         self._selection_changed()
 
     def _fill_row(self, row: int, entry: BackupEntry) -> None:
@@ -283,15 +344,7 @@ class BackupsTab(QWidget):
     # -- showing -------------------------------------------------------------------------
 
     def _redactor(self) -> Redactor | str:
-        """The customer's redactor, or the text to show instead when it cannot be built.
-
-        Fails closed: if any stored value cannot be read, nothing is shown."""
-        try:
-            return secret_redactor(self.ctx)
-        except TsunamiError as exc:
-            if "locked" in str(exc):
-                return LOCKED_TEXT
-            return "Backups cannot be shown: the credential store cannot be read."
+        return redactor_or_reason(self.ctx)
 
     def _say(self, text: str, caption: str = "") -> None:
         self.content_view.clear()
@@ -303,7 +356,10 @@ class BackupsTab(QWidget):
     def _selection_changed(self) -> None:
         chosen = self.selected_entries()
         self.folder_button.setEnabled(len(chosen) == 1)
+        self.full_button.setEnabled(len(chosen) == 1)
+        self.restore_button.setEnabled(len(chosen) == 1)
         self.compare_button.setEnabled(len(chosen) in (1, 2))
+        self.vscode_button.setEnabled(len(chosen) in (1, 2))
         if self._error:
             self._say(self._error)
         elif not self.entries:
@@ -389,6 +445,143 @@ class BackupsTab(QWidget):
         chosen = self.selected_entries()
         if len(chosen) == 1:
             reveal_in_folder(chosen[0].path)
+
+    def view_full(self) -> QWidget | None:
+        """Open the selected backup, redacted, in a tab of its own."""
+        chosen = self.selected_entries()
+        if len(chosen) != 1:
+            return None
+        return open_backup_view(self.ctx, self.shell, self.customer, self.device, chosen[0])
+
+    def _view_row(self, row: int) -> None:
+        item = self.table.item(row, 0)
+        if item is not None:
+            open_backup_view(
+                self.ctx, self.shell, self.customer, self.device, item.data(_ENTRY_ROLE)
+            )
+
+    def restore(self) -> QWidget | None:
+        """Restore the selected backup to the device (gui/screens/restore.py)."""
+        from tsunami.gui.screens.restore import start_restore
+
+        chosen = self.selected_entries()
+        if len(chosen) != 1:
+            return None
+        return start_restore(self.ctx, self.shell, self.customer, self.device, chosen[0], self)
+
+    def open_in_vscode(self) -> list[Path]:
+        """One selected: open its redacted copy. Two: VS Code's diff of them, older left."""
+        chosen = self.selected_entries()
+        if len(chosen) not in (1, 2):
+            return []
+        return open_redacted_in_vscode(
+            self.ctx, self.shell, self.customer, self.device, list(reversed(chosen))
+        )
+
+
+class BackupViewTab(QWidget):
+    """One backup, redacted, filling a tab: press and hold a <redacted> token to reveal it,
+    Ctrl+F to search, Open in VS Code for a redacted copy. Nothing shows while locked."""
+
+    def __init__(
+        self, ctx: AppContext, shell: Shell, customer: str, device: str, entry: BackupEntry
+    ) -> None:
+        super().__init__()
+        self.ctx, self.shell = ctx, shell
+        self.customer, self.device, self.entry = customer, device, entry
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(16, 14, 16, 12)
+        layout.setSpacing(8)
+        title = QLabel(f"Backup of {device}")
+        title.setObjectName("Title")
+        layout.addWidget(title)
+        subtitle = QLabel(
+            f"{customer}  |  {BackupsTab._label(entry)}  |  {format_size(entry.size)}"
+            "  |  secret values are masked"
+        )
+        subtitle.setObjectName("Muted")
+        subtitle.setTextFormat(Qt.TextFormat.PlainText)
+        layout.addWidget(subtitle)
+
+        bar = QHBoxLayout()
+        bar.addStretch(1)
+        self.vscode_button = QPushButton("Open in VS Code")
+        self.vscode_button.setIcon(icon("code", theme.current().muted))
+        self.vscode_button.setToolTip("Open a redacted copy of this backup in VS Code")
+        self.vscode_button.clicked.connect(lambda _=False: self.open_in_vscode())
+        self.backups_button = QPushButton("All backups")
+        self.backups_button.setIcon(icon("archive", theme.current().muted))
+        self.backups_button.clicked.connect(
+            lambda _=False: open_backups(ctx, shell, customer, device)
+        )
+        self.refresh_button = QPushButton("Refresh")
+        self.refresh_button.setIcon(icon("refresh", theme.current().muted))
+        self.refresh_button.clicked.connect(lambda _=False: self.refresh())
+        self.restore_button = QPushButton("Restore…")
+        self.restore_button.setIcon(icon("history", theme.current().muted))
+        self.restore_button.setToolTip("Send this backup to the device, over SSH or a console")
+        self.restore_button.clicked.connect(lambda _=False: self.restore())
+        for button in (
+            self.backups_button,
+            self.refresh_button,
+            self.restore_button,
+            self.vscode_button,
+        ):
+            bar.addWidget(button)
+        layout.addLayout(bar)
+
+        self.stack = QStackedWidget()
+        self.message = QLabel()
+        self.message.setObjectName("Muted")
+        self.message.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.message.setWordWrap(True)
+        self.content_view = RevealTextView()
+        self.stack.addWidget(self.message)
+        self.stack.addWidget(self.content_view)
+        layout.addWidget(self.stack, 1)
+        self.find_bar = FindBar(self, lambda: self.stack.currentWidget())
+        layout.addWidget(self.find_bar)
+
+        lock = getattr(ctx, "lock", None)
+        changed = getattr(lock, "lock_changed", None)
+        if changed is not None:
+            changed.connect(lambda _unlocked=False: self.refresh())
+        self.refresh()
+
+    def refresh(self) -> None:
+        redactor = redactor_or_reason(self.ctx)
+        text: str | None = None
+        if isinstance(redactor, str):
+            reason = redactor
+        else:
+            try:
+                text = read_redacted(self.entry.path, redactor, root=self.ctx.paths.backups_dir)
+            except BackupError as exc:
+                reason = str(exc)
+        if text is None:
+            self.content_view.clear()
+            self.message.setText(reason)
+            self.stack.setCurrentIndex(0)
+            self.vscode_button.setEnabled(False)
+            return
+        scroll = self.content_view.verticalScrollBar().value()
+        revealer = BackupRevealer(
+            self.ctx, customer=self.customer, device=self.device, path=self.entry.path
+        )
+        self.content_view.set_reveal(text, reveal.backup_spans(text), revealer)
+        self.content_view.verticalScrollBar().setValue(scroll)
+        self.stack.setCurrentIndex(1)
+        self.vscode_button.setEnabled(True)
+
+    def open_in_vscode(self) -> list[Path]:
+        return open_redacted_in_vscode(
+            self.ctx, self.shell, self.customer, self.device, [self.entry]
+        )
+
+    def restore(self) -> QWidget | None:
+        from tsunami.gui.screens.restore import start_restore
+
+        return start_restore(self.ctx, self.shell, self.customer, self.device, self.entry, self)
 
 
 OVERVIEW_COLUMNS = ["Device", "Site", "Host", "Backups", "Newest backup", "Taken by"]
@@ -610,6 +803,18 @@ def open_backups(ctx: AppContext, shell: Shell, customer: str, device: str) -> N
         f"backups:{customer}/{device}",
         f"Backups: {device}",
         lambda: BackupsTab(ctx, shell, customer, device),
+        "archive",
+    )
+
+
+def open_backup_view(
+    ctx: AppContext, shell: Shell, customer: str, device: str, entry: BackupEntry
+) -> QWidget | None:
+    """Open (or focus) one backup, redacted, in a tab of its own."""
+    return shell.open_tab(
+        f"backup:{customer}/{device}/{entry.path.name}",
+        f"{device} {entry.taken_at.astimezone().strftime('%m-%d %H:%M')}",
+        lambda: BackupViewTab(ctx, shell, customer, device, entry),
         "archive",
     )
 

@@ -31,6 +31,7 @@ DISCOVERY_MODE = "discovery"
 NEIGHBORS_MODE = "neighbors"
 HOSTKEYS_MODE = "hostkeys"
 TEST_MODE = "test"
+RESTORE_MODE = "restore"
 # The play path each operation's job records, shown in History's Play column.
 LABELS = {
     SHOW_MODE: "Show command",
@@ -38,14 +39,23 @@ LABELS = {
     NEIGHBORS_MODE: "Check for unlearned neighbors",
     HOSTKEYS_MODE: "Trust host keys",
     TEST_MODE: "Test connection",
+    RESTORE_MODE: "Restore from backup",
 }
 OPERATION_MODES = frozenset({DRIFT_MODE, *LABELS})
+# Operations that change a device. History lists them with play runs instead of hiding
+# them behind Show operations.
+CHANGE_MODES = frozenset({RESTORE_MODE})
 # A device row in one of these says the operation reached it and did what it was for.
 _DONE = frozenset({DeviceStatus.SUCCESS, DeviceStatus.NO_CHANGES})
 
 
 def is_operation(mode: str) -> bool:
     return mode in OPERATION_MODES
+
+
+def listed_with_plays(mode: str) -> bool:
+    """Whether History shows the job without Show operations: plays and restores."""
+    return not is_operation(mode) or mode in CHANGE_MODES
 
 
 def connect_status(exc: BaseException) -> DeviceStatus:

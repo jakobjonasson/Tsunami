@@ -421,6 +421,13 @@ class InventoryView(QWidget):
         self.filter_box.setClearButtonEnabled(True)
         self.filter_box.textChanged.connect(self._apply_filter)
         layout.addWidget(self.filter_box)
+        # What the person expanded, kept across reloads; None until the first workspace is
+        # shown. Customers and sites start collapsed.
+        self._known: set[tuple[str, ...]] | None = None
+        self._known_root: Any = None
+        # While a filter is typed, branches are expanded to show the matches; this holds
+        # what was expanded before, to put back when the filter is cleared.
+        self._before_filter: set[tuple[str, ...]] | None = None
         self.hint = QLabel("No workspace is open.")
         self.hint.setObjectName("Muted")
         self.hint.setMargin(8)
@@ -438,7 +445,8 @@ class InventoryView(QWidget):
 
     def refresh(self) -> None:
         colors = theme.current()
-        collapsed = self._collapsed()
+        expanded = self._expanded()
+        known = self._known if self._known is not None else set()
         scroll = self.tree.verticalScrollBar().value()
         self.tree.clear()
         ws = self.ctx.workspace
@@ -447,6 +455,8 @@ class InventoryView(QWidget):
         self.filter_box.setEnabled(ws is not None)
         if ws is None:
             return
+        if self._known is None or self._known_root != ws.root:
+            known, expanded = set(), set()  # first workspace shown, or another one opened
         for slug in sorted(ws.customers):
             customer = ws.customers[slug]
             c_item = QTreeWidgetItem(self.tree, [slug])
@@ -477,12 +487,36 @@ class InventoryView(QWidget):
                 if dev.model:
                     tip += f"  model {dev.model}"
                 d_item.setToolTip(0, tip + f"  login {customer.credential_for(dev)}")
-        self.tree.expandAll()
+        first = not known
         for item in self._branches():
-            if item.data(0, _KIND_ROLE) in collapsed:
-                item.setExpanded(False)
+            item.setExpanded(item.data(0, _KIND_ROLE) in expanded)
+        self._known = set()
+        for item in self._items():
+            key = item.data(0, _KIND_ROLE)
+            self._known.add(key)
+            if not first and key not in known:  # added since the last reload: show it
+                parent = item.parent()
+                while parent is not None:
+                    parent.setExpanded(True)
+                    parent = parent.parent()
+        self._known_root = ws.root
+        if self._before_filter is not None:
+            self._before_filter = self._expanded(filtering=False)
         self._apply_filter()
         self.tree.verticalScrollBar().setValue(scroll)
+
+    def _items(self) -> list[QTreeWidgetItem]:
+        """Every customer, site and device item."""
+        found: list[QTreeWidgetItem] = []
+
+        def walk(item: QTreeWidgetItem) -> None:
+            found.append(item)
+            for i in range(item.childCount()):
+                walk(item.child(i))
+
+        for i in range(self.tree.topLevelItemCount()):
+            walk(self.tree.topLevelItem(i))
+        return found
 
     def _branches(self) -> list[QTreeWidgetItem]:
         """Customer and site items that have children."""
@@ -494,13 +528,21 @@ class InventoryView(QWidget):
                     found.append(item)
         return found
 
-    def _collapsed(self) -> set[tuple[str, ...]]:
-        """What the person collapsed, kept across a reload. New customers and sites, and
-        those that had nothing in them, open expanded."""
-        return {item.data(0, _KIND_ROLE) for item in self._branches() if not item.isExpanded()}
+    def _expanded(self, *, filtering: bool = True) -> set[tuple[str, ...]]:
+        """What the person expanded, kept across a reload. While a filter is typed, that is
+        what was expanded before it (the filter expands the branches it matches)."""
+        if filtering and self._before_filter is not None:
+            return set(self._before_filter)
+        return {item.data(0, _KIND_ROLE) for item in self._branches() if item.isExpanded()}
 
     def _apply_filter(self) -> None:
         needle = self.filter_box.text().strip().lower()
+        if needle and self._before_filter is None:
+            self._before_filter = self._expanded(filtering=False)
+        elif not needle and self._before_filter is not None:
+            restore, self._before_filter = self._before_filter, None
+            for item in self._branches():
+                item.setExpanded(item.data(0, _KIND_ROLE) in restore)
 
         def visit(item: QTreeWidgetItem) -> bool:
             if not needle:
@@ -513,6 +555,7 @@ class InventoryView(QWidget):
                 visible = needle in key
             else:
                 visible = any([visit(item.child(i)) for i in range(item.childCount())])
+                item.setExpanded(visible)
             item.setHidden(not visible)
             return visible
 

@@ -2,7 +2,8 @@
 
 from __future__ import annotations
 
-from datetime import UTC, datetime
+import os
+from datetime import UTC, datetime, timedelta
 from pathlib import Path
 
 import pytest
@@ -19,6 +20,7 @@ from tsunami.core.backups import (
     read_redacted,
     save_if_changed,
     write_backup,
+    write_redacted_copy,
 )
 from tsunami.core.models.common import PlatformFamily
 from tsunami.core.redact import Redactor
@@ -313,3 +315,40 @@ def test_summaries_count_backups_and_name_the_newest(app_paths):
     assert summaries["../x"].newest is None  # not a slug: no backups, no error
     older = list_backups(app_paths, "acme", "sa-as01")[1]
     assert taken_by(older) == "Drift check"
+
+
+def test_redacted_copy_for_vs_code_has_no_secrets(app_paths, redactor):
+    path = _write(app_paths, "20260101T010101Z", "job1", _config("192.0.2.99", ENABLE_SECRET))
+
+    copy = write_redacted_copy(app_paths, "acme", "sa-as01", path, redactor)
+
+    assert copy.is_relative_to(app_paths.backup_views_dir / "acme" / "sa-as01")
+    assert copy.name == "20260101T010101Z_job1.redacted.cfg"
+    text = copy.read_text(encoding="utf-8")
+    assert text.startswith("! Redacted copy of Tsunami backup 20260101T010101Z_job1.cfg")
+    assert "do not restore" in text
+    assert "ntp server 192.0.2.99" in text and "<redacted>" in text
+    for clear in CLEAR:
+        assert clear not in text
+    assert ENABLE_SECRET in path.read_text(encoding="utf-8")  # the backup is left alone
+
+
+def test_redacted_copy_refuses_another_devices_backup(app_paths, redactor):
+    other = _write(app_paths, "20260101T010101Z", "job1", "hostname x\n", device="sa-as02")
+    with pytest.raises(BackupError):
+        write_redacted_copy(app_paths, "acme", "sa-as01", other, redactor)
+    with pytest.raises(BackupError):
+        write_redacted_copy(app_paths, "acme", "../sa-as01", other, redactor)
+    assert not app_paths.backup_views_dir.exists()
+
+
+def test_old_redacted_copies_are_deleted_when_a_new_one_is_written(app_paths, redactor):
+    a = _write(app_paths, "20260101T010101Z", "job1", _config("192.0.2.1", ENABLE_SECRET))
+    b = _write(app_paths, "20260102T010101Z", "job2", _config("192.0.2.2", ENABLE_SECRET))
+    old = write_redacted_copy(app_paths, "acme", "sa-as01", a, redactor)
+    stale = (datetime.now(UTC) - timedelta(days=2)).timestamp()
+    os.utime(old, (stale, stale))
+
+    new = write_redacted_copy(app_paths, "acme", "sa-as01", b, redactor)
+
+    assert new.exists() and not old.exists()

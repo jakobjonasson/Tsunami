@@ -27,12 +27,15 @@ import threading
 import time
 from collections.abc import Callable, Collection, Sequence
 from dataclasses import dataclass, field
+from typing import Any
 
 from tsunami.core.transports.base import (
+    ConfigChunk,
     ConfigResult,
     ConnectError,
     ConnectTarget,
     ExecResult,
+    PasteResult,
     UnreachableError,
 )
 
@@ -66,6 +69,8 @@ class MockDeviceState:
     # A session raises MockError on its (N+1)th send (config or exec); counted per session.
     drop_after_sends: int | None = None
     fail_connect_times: int = 0  # the next N connects fail
+    # IOS SSH host keys: `crypto key generate rsa` creates them (not a config line).
+    ssh_keys: bool = False
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
@@ -149,6 +154,51 @@ class MockSession:
                     parent = text
         return ConfigResult(output="")
 
+    def paste_config(
+        self,
+        chunks: Sequence[ConfigChunk],
+        *,
+        cancel: Any = None,
+        progress: Callable[[int], None] | None = None,
+    ) -> PasteResult:
+        """As send_config, but a rejected line is recorded and the rest still applied. Each
+        chunk counts as one send, so drop_after_sends ends the session part way."""
+        rejected: list[tuple[str, str]] = []
+        sent = 0
+        parent: str | None = None
+        for chunk in chunks:
+            if cancel is not None and cancel.is_set():
+                return PasteResult(sent, tuple(rejected), cancelled=True)
+            try:
+                st = self._enter(send=True)
+            except MockError as exc:
+                return PasteResult(sent, tuple(rejected), error=f"the session ended ({exc})")
+            with st.lock:
+                st.sent.append(("config", "\n".join(chunk.lines)))
+                patterns = [re.compile(p) for p in st.reject_lines]
+                for line in chunk.lines:
+                    text = line.strip()
+                    if chunk.check and any(p.search(text) for p in patterns):
+                        rejected.append((line, _INVALID))
+                        if chunk.block:
+                            break
+                        continue
+                    if text.startswith("crypto key generate"):
+                        st.ssh_keys = True
+                        continue
+                    if text == "end":
+                        continue
+                    if text == "exit":
+                        parent = None
+                        continue
+                    _apply_line(st.running, line, parent)
+                    if not line[:1].isspace() and not text.startswith("no "):
+                        parent = text
+            sent += len(chunk.lines)
+            if progress is not None:
+                progress(sent)
+        return PasteResult(sent, tuple(rejected))
+
     def send_exec(
         self,
         command: str,
@@ -181,6 +231,10 @@ class MockSession:
                 return f"% Error: {m[1]}{m[2]}: no such file"
             st.running[:] = st.flash[m[2]]
             return "The rollback configlet from the last pass is listed below:"
+        if cmd == "show crypto key mypubkey rsa":
+            if not st.ssh_keys:
+                return ""
+            return f"% Key pair was generated at: 10:00:00\nKey name: {st.name}.lab\n"
         if cmd == "write memory":
             st.startup[:] = st.running
             return "Building configuration...\n[OK]"

@@ -28,7 +28,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core.models.jobs import ALARM_DEVICE_STATUSES, JobRecord, JobStatus
-from tsunami.core.operations import is_operation
+from tsunami.core.operations import listed_with_plays
 from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
@@ -160,12 +160,12 @@ class HistoryView(QWidget):
 
     def refresh(self) -> None:
         colors = theme.current()
-        # Plays only: operations (show commands, discovery, drift checks...) are in the
-        # History tab behind Show operations.
+        # Plays and restores: other operations (show commands, discovery, drift checks...)
+        # are in the History tab behind Show operations.
         jobs = [
             j
             for j in self.ctx.history.list_jobs(limit=RECENT_LIMIT * 4)
-            if not is_operation(j.mode)
+            if listed_with_plays(j.mode)
         ][:RECENT_LIMIT]
         alarms = _alarm_job_ids(self.ctx, jobs)
         self.recent_list.clear()
@@ -291,7 +291,7 @@ class HistoryTab(QWidget):
     def refresh(self) -> None:
         jobs = self.ctx.history.list_jobs(limit=500)
         if not self.operations_box.isChecked():
-            jobs = [j for j in jobs if not is_operation(j.mode)]
+            jobs = [j for j in jobs if listed_with_plays(j.mode)]
         self._jobs = jobs
         self._alarms = _alarm_job_ids(self.ctx, self._jobs)
         for combo, values in (

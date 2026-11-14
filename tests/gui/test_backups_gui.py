@@ -19,6 +19,7 @@ from tsunami.gui.screens.backups import (
     NO_BACKUPS_TEXT,
     PREVIOUS,
     BackupsTab,
+    BackupViewTab,
 )
 from tsunami.gui.screens.job_view import JobView
 
@@ -258,7 +259,104 @@ def test_show_in_folder_selects_the_file_and_nothing_opens_the_raw_text(
     from PySide6.QtWidgets import QPushButton
 
     labels = {b.text().lower() for b in tab.findChildren(QPushButton)}
-    assert not any("vs code" in t or "raw" in t or "open file" in t for t in labels)
+    assert not any("raw" in t or "open file" in t for t in labels)
+
+
+def test_view_full_backup_opens_it_redacted_in_its_own_tab(
+    main_window, gui_ctx, two_backups, open_tab
+):
+    tab = open_tab()
+    assert not tab.full_button.isEnabled()  # nothing selected
+    _select(tab, 1)
+    view = tab.view_full()
+
+    key = f"backup:{KEY}/{tab.entries[1].path.name}"
+    assert isinstance(view, BackupViewTab) and main_window._tabs[key] is view
+    assert main_window.editor.currentWidget() is view
+    shown = view.content_view.toPlainText()
+    assert view.stack.currentWidget() is view.content_view
+    assert "hostname sa-as01" in shown and "<redacted>" in shown
+    assert "ntp server 192.0.2.150" not in shown  # the older backup, before the ntp line
+    everything = all_widget_text(main_window)
+    for clear in CLEAR:
+        assert clear not in shown and clear not in everything
+
+    tab._view_row(1)  # double-click focuses the same tab
+    assert sum(1 for k in main_window._tabs if k == key) == 1
+    _select(tab, 0, 1)
+    assert not tab.full_button.isEnabled()
+
+
+def test_full_backup_view_hides_content_while_locked(main_window, gui_ctx, two_backups, open_tab):
+    class FakeLock(QObject):
+        lock_changed = Signal(bool)
+        unlocked = True
+
+    lock = FakeLock()
+    gui_ctx.lock = lock
+    tab = open_tab()
+    _select(tab, 0)
+    view = tab.view_full()
+    assert view.stack.currentWidget() is view.content_view
+
+    lock.unlocked = False
+    lock.lock_changed.emit(False)
+    assert view.stack.currentWidget() is view.message and view.message.text() == LOCKED_TEXT
+    assert view.content_view.toPlainText() == ""
+    assert not view.vscode_button.isEnabled()
+    assert "hostname" not in all_widget_text(view)
+
+    lock.unlocked = True
+    lock.lock_changed.emit(True)
+    assert "hostname sa-as01" in view.content_view.toPlainText()
+
+
+def test_open_in_vs_code_opens_a_redacted_copy_never_the_backup(
+    main_window, gui_ctx, two_backups, open_tab, monkeypatch
+):
+    opened, diffs = [], []
+    monkeypatch.setattr(main_window, "open_in_vscode", lambda path, line=None: opened.append(path))
+    monkeypatch.setattr(main_window, "diff_in_vscode", lambda a, b: diffs.append((a, b)))
+    tab = open_tab()
+    _select(tab, 0)
+    tab.vscode_button.click()
+
+    assert len(opened) == 1
+    copy = opened[0]
+    assert copy.is_relative_to(gui_ctx.paths.backup_views_dir)
+    assert not copy.is_relative_to(gui_ctx.paths.backups_dir)
+    text = copy.read_text(encoding="utf-8")
+    assert "ntp server 192.0.2.150" in text and "<redacted>" in text
+    for clear in CLEAR:
+        assert clear not in text
+
+    _select(tab, 0, 1)
+    tab.vscode_button.click()
+    ((old, new),) = diffs
+    assert old.name.startswith(tab.entries[1].path.stem)  # older on the left
+    assert new.name.startswith(tab.entries[0].path.stem)
+    for path in (old, new):
+        for clear in CLEAR:
+            assert clear not in path.read_text(encoding="utf-8")
+
+    _select(tab, 1)  # the full view's own button opens its backup
+
+    tab.view_full().vscode_button.click()
+    assert opened[-1].name.startswith(tab.entries[1].path.stem)
+
+
+def test_open_in_vs_code_writes_nothing_while_locked(
+    main_window, gui_ctx, two_backups, open_tab, monkeypatch
+):
+    opened, notes = [], []
+    monkeypatch.setattr(main_window, "open_in_vscode", lambda path, line=None: opened.append(path))
+    monkeypatch.setattr(main_window, "notify", lambda message, level="info": notes.append(message))
+    gui_ctx.secrets.cipher = LockedCipher()
+    tab = open_tab()
+    _select(tab, 0)
+    tab.vscode_button.click()
+    assert opened == [] and notes == [LOCKED_TEXT]
+    assert not gui_ctx.paths.backup_views_dir.exists()
 
 
 def test_bad_names_are_refused_by_the_command(main_window, open_tab, monkeypatch):

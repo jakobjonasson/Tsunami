@@ -11,14 +11,22 @@ See design.md, Execution engine: Transports, Error detection; Platform drivers.
 from __future__ import annotations
 
 import re
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from typing import Any
 
 from tsunami.core.errordetect import error_pattern
 from tsunami.core.models.common import PlatformFamily
-from tsunami.core.transports.base import ConfigResult, ExecResult
+from tsunami.core.transports.base import ConfigChunk, ConfigResult, ExecResult, PasteResult
 
 _FAILED_RE = re.compile(r"at command: (?P<cmd>.*), matched error: ", re.S)
+_MATCHED_RE = re.compile(r", matched error: (?P<msg>.*)$", re.S)
+
+
+def _error_line(output: str, match: re.Match[str]) -> str:
+    """The whole output line an error match starts on."""
+    start = output.rfind("\n", 0, match.start()) + 1
+    end = output.find("\n", match.start())
+    return output[start : end if end != -1 else len(output)].strip()
 
 
 class NetmikoSession:
@@ -86,6 +94,73 @@ class NetmikoSession:
                 strip_command=False,
             )
         return ExecResult(command, output)
+
+    def paste_config(
+        self,
+        chunks: Sequence[ConfigChunk],
+        *,
+        cancel: Any = None,
+        progress: Callable[[int], None] | None = None,
+    ) -> PasteResult:
+        """Send each chunk in one config-mode session, recording rejected lines and going
+        on. Netmiko checks each one-line chunk's echo and output, so an error is pinned to
+        its line; a block is written whole (Netmiko skips the echo check for banners) and
+        its output searched once. Afterwards the prompt is learned again, because the
+        configuration may have changed the hostname."""
+        from netmiko.exceptions import ConfigInvalidException
+
+        rejected: list[tuple[str, str]] = []
+        sent = 0
+        try:
+            self.conn.config_mode()
+        except Exception as exc:  # noqa: BLE001 - reported; the type only, never the text
+            return PasteResult(0, error=f"cannot enter config mode ({type(exc).__name__})")
+        try:
+            for chunk in chunks:
+                if cancel is not None and cancel.is_set():
+                    return PasteResult(sent, tuple(rejected), cancelled=True)
+                lines = [line.rstrip() for line in chunk.lines]
+                try:
+                    if chunk.block:
+                        output = self.conn.send_config_set(
+                            lines,
+                            enter_config_mode=False,
+                            exit_config_mode=False,
+                            cmd_verify=False,
+                            read_timeout=self.timeout,
+                        )
+                        if chunk.check:
+                            match = re.search(self.error_pattern, output, re.M)
+                            if match:
+                                rejected.append((lines[0], _error_line(output, match)))
+                    else:
+                        self.conn.send_config_set(
+                            lines,
+                            enter_config_mode=False,
+                            exit_config_mode=False,
+                            error_pattern=self.error_pattern if chunk.check else "",
+                            read_timeout=self.timeout,
+                        )
+                except ConfigInvalidException as exc:
+                    found = _MATCHED_RE.search(str(exc))
+                    rejected.append((lines[0], found.group("msg").strip() if found else ""))
+                except Exception as exc:  # noqa: BLE001 - the session is gone
+                    where = f"after {sent} line{'s' if sent != 1 else ''}"
+                    return PasteResult(
+                        sent,
+                        tuple(rejected),
+                        error=f"the session ended {where} ({type(exc).__name__})",
+                    )
+                sent += len(lines)
+                if progress is not None:
+                    progress(sent)
+            return PasteResult(sent, tuple(rejected))
+        finally:
+            for step in (self.conn.exit_config_mode, self.conn.set_base_prompt):
+                try:
+                    step()
+                except Exception:  # noqa: BLE001, S110 - best effort; reported elsewhere
+                    pass
 
     def running_config(self) -> str:
         return self.conn.send_command("show running-config", read_timeout=max(self.timeout, 120))

@@ -435,6 +435,14 @@ class MainWindow(QMainWindow):
         else:
             QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
+    def diff_in_vscode(self, left: Path, right: Path) -> None:
+        """Open VS Code's side-by-side diff of two files, left the older."""
+        code = shutil.which("code")
+        if not code:
+            self.notify("VS Code's code command is not on PATH, so it cannot show a diff.", "error")
+            return
+        subprocess.Popen([code, "--diff", str(left), str(right)], close_fds=True)  # noqa: S603
+
     def show_problems(self) -> None:
         self.panel.show()
         self.panel.setCurrentWidget(self.problems)

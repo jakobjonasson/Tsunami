@@ -7,6 +7,7 @@ device. Connection failures are typed, so the pipeline can map them to device st
 
 from __future__ import annotations
 
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass, field
 from typing import Any, Protocol
 
@@ -90,6 +91,27 @@ class ExecResult:
     output: str  # raw device output; redact before storing or showing
 
 
+@dataclass(frozen=True)
+class ConfigChunk:
+    """Lines paste_config sends together. A one-line chunk is sent and checked on its own.
+    A block (a banner, a certificate) is sent whole without waiting for each line's echo,
+    since the device shows no prompt between its lines, and its output checked once.
+    check=False sends it without looking for errors (a command whose normal output looks
+    like one, such as IOS key generation)."""
+
+    lines: tuple[str, ...]
+    block: bool = False
+    check: bool = True
+
+
+@dataclass(frozen=True)
+class PasteResult:
+    sent: int  # lines sent
+    rejected: tuple[tuple[str, str], ...] = ()  # (line, device message); raw, redact them
+    error: str | None = None  # the session failed part way; already free of secrets
+    cancelled: bool = False
+
+
 class Session(Protocol):
     """One open CLI session to one device, already in enable mode."""
 
@@ -111,6 +133,17 @@ class Session(Protocol):
         read_timeout: float | None = None,
     ) -> ExecResult:
         """Run one exec-mode command, answering a confirmation prompt if given."""
+        ...
+
+    def paste_config(
+        self,
+        chunks: Sequence[ConfigChunk],
+        *,
+        cancel: Any = None,
+        progress: Callable[[int], None] | None = None,
+    ) -> PasteResult:
+        """Send a whole configuration in config mode, carrying on past rejected lines
+        (a restore). Checks cancel between chunks and reports lines sent to progress."""
         ...
 
     def running_config(self) -> str: ...

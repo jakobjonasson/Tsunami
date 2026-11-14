@@ -41,6 +41,8 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 **Backups and drift**
 - Backups come from every apply, from discovery and from drift checks. The viewer shows one or compares two, always through the redactor.
 - Back up and check for drift (a site or a customer): a first backup for new devices, and for the rest a redacted diff since the newest backup.
+- View full backup opens one in its own tab; Open in VS Code opens a redacted copy (or VS Code's diff of two), never the raw file.
+- Restore from backup, over SSH or a console, onto a replacement switch: factory-new (Tsunami answers its setup prompts) or with only a login set. Rejected lines are listed and the rest still sent; the config is saved, read back and compared with the backup.
 
 **Claude over MCP** (25 tools, listed in `TOOL_NAMES`)
 - Read the workspace and history: `list_customers`, `list_devices`, `list_plays`, `list_snippets`, `read_play`, `read_snippet`, `resolved_vars`, `validate`, `render`, `list_jobs`, `get_job`.
@@ -88,7 +90,7 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 | `core/transports/` | SSH (Netmiko, jump hosts, host-key pinning, `legacy_ssh.py` SHA-1 fallback), console, mock |
 | `core/vault.py`, `secret_store.py`, `logins.py` | The Tsunami password, the encrypted Credential Manager store, and which logins a customer's plays may push |
 | `core/discovery.py`, `hostkey_trust.py`, `inventory_import.py` | Onboarding: site discovery over CDP and LLDP, bulk host-key trust, CSV import |
-| `core/backups.py`, `drift.py` | Config backups: saving, comparing (redacted), and the drift check |
+| `core/backups.py`, `drift.py`, `restore.py` | Config backups: saving, comparing (redacted), the drift check, and restoring a backup to a device |
 | `core/approvals.py`, `history.py`, `migrations/` | Approval flow (ready / no_changes), `history.db` |
 | `core/inventory_edit.py`, `inventory_proposals.py`, `drafts.py`, `pathguard.py` | Inventory edits, inventory changes Claude proposes, draft promotion, MCP path checks |
 | `src/tsunami/gui/` | PySide6 GUI: `main_window.py` (VS Code-style shell), `lock.py` (password and auto-lock), `screens/` (one module per view) |

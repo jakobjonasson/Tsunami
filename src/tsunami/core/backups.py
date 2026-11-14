@@ -7,9 +7,14 @@ check save through save_if_changed, tagged `discovery` or `drift`: a device's fi
 backup, then a new one only when its config differs from the newest backup.
 
 Those files hold every password, SNMP community and key in clear text, so nothing here
-returns their raw text: a single backup and both sides of a diff go through the caller's
+returns their raw text except read_for_restore, whose one caller sends it back to a device
+(core/restore.py). A single backup and both sides of a diff go through the caller's
 Redactor first, and the diff is computed on the redacted text so a secret cannot appear in
 it. Customer and device must be slugs and every path must stay under backups_dir.
+
+To open a backup in VS Code, write_redacted_copy writes its redacted text to
+<backup_views_dir>/<customer>/<device>/<stem>.redacted.cfg; the raw file is never opened.
+Copies older than a day are deleted the next time one is written.
 
 See design.md, Backups; Secrets and credentials: Redactor.
 """
@@ -33,12 +38,24 @@ from tsunami.core.redact import Redactor
 
 _NAME_RE = re.compile(r"^(\d{8}T\d{6}Z)_([A-Za-z0-9][A-Za-z0-9._-]*)\.cfg$")
 _STAMP_FORMAT = "%Y%m%dT%H%M%SZ"
+VIEW_COPY_MAX_AGE = timedelta(days=1)
+VIEW_COPY_HEADER = (
+    "! Redacted copy of Tsunami backup {name}, made for viewing.\n"
+    "! Secret values are masked: do not restore a device from this file.\n"
+)
 MAX_BACKUP_BYTES = 8 * 1024 * 1024  # a running config is far smaller; refuse the absurd
 _TAG_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._-]*$")
 DISCOVERY_TAG = "discovery"
 DRIFT_TAG = "drift"
+PRE_RESTORE_TAG = "pre-restore"  # what the device had before a restore
+RESTORE_TAG = "restore"  # what the device had after a restore
 # Backups that no job took, and how the backups view names them.
-RUN_TAGS = {DISCOVERY_TAG: "Discovery", DRIFT_TAG: "Drift check"}
+RUN_TAGS = {
+    DISCOVERY_TAG: "Discovery",
+    DRIFT_TAG: "Drift check",
+    PRE_RESTORE_TAG: "Before restore",
+    RESTORE_TAG: "Restore",
+}
 # Lines the device rewrites on its own, ignored when comparing. Comments, blank lines and
 # the headers above the config are ignored too.
 _VOLATILE = {
@@ -194,6 +211,91 @@ def read_redacted(path: Path | str, redactor: Redactor, *, root: Path | None = N
     except OSError as exc:
         raise BackupError(f"cannot read the backup: {exc.strerror or 'I/O error'}") from None
     return redactor.text(raw.replace("\r\n", "\n"))
+
+
+def read_for_restore(paths: AppPaths, customer: str, device: str, path: Path | str) -> str:
+    """The raw text of one of this device's backups, to send back to a device.
+
+    The only function that returns a backup unredacted. Its one caller is core/restore.py,
+    which sends the lines to the device and redacts anything it logs or stores."""
+    source = _checked(path, backup_folder(paths, customer, device))
+    try:
+        if source.stat().st_size > MAX_BACKUP_BYTES:
+            raise BackupError("the backup file is too large to restore")
+        return source.read_text(encoding="utf-8", errors="replace").replace("\r\n", "\n")
+    except OSError as exc:
+        raise BackupError(f"cannot read the backup: {exc.strerror or 'I/O error'}") from None
+
+
+def redacted_diff(
+    old_text: str,
+    new_text: str,
+    family: PlatformFamily,
+    redactor: Redactor,
+    *,
+    fromfile: str = "",
+    tofile: str = "",
+) -> tuple[str, int, int]:
+    """The redacted diff of two configs, ignoring what comparable_lines ignores, as
+    (diff, added, removed). Body lines are written "+ line" as in diff_redacted."""
+    old_lines = old_text.replace("\r\n", "\n").split("\n")
+    new_lines = new_text.replace("\r\n", "\n").split("\n")
+    old_red = _kept(redactor.lines(old_lines), comparable_lines(old_lines, family))
+    new_red = _kept(redactor.lines(new_lines), comparable_lines(new_lines, family))
+    out: list[str] = []
+    added = removed = 0
+    for line in difflib.unified_diff(
+        old_red, new_red, fromfile=fromfile, tofile=tofile, lineterm=""
+    ):
+        if line.startswith(("--- ", "+++ ", "@@")):
+            out.append(line)
+            continue
+        added += line[0] == "+"
+        removed += line[0] == "-"
+        out.append(f"{line[0]} {line[1:]}")
+    return "\n".join(out), added, removed
+
+
+def write_redacted_copy(
+    paths: AppPaths,
+    customer: str,
+    device: str,
+    path: Path | str,
+    redactor: Redactor,
+    *,
+    now: datetime | None = None,
+) -> Path:
+    """Write the backup's redacted text, under a two-line header, to the backup views
+    folder and return the copy's path. The path must be one of this device's backups.
+    Copies older than VIEW_COPY_MAX_AGE are deleted first."""
+    source = _checked(path, backup_folder(paths, customer, device))
+    text = read_redacted(source, redactor, root=paths.backups_dir)
+    views = paths.backup_views_dir
+    prune_view_copies(views, now=now)
+    folder = views / customer / device
+    try:
+        folder.mkdir(parents=True, exist_ok=True)
+        target = folder / f"{source.stem}.redacted.cfg"
+        target.write_text(
+            VIEW_COPY_HEADER.format(name=source.name) + text, encoding="utf-8", newline="\n"
+        )
+    except OSError as exc:
+        raise BackupError(f"cannot write the copy: {exc.strerror or 'I/O error'}") from None
+    return target
+
+
+def prune_view_copies(views: Path, *, now: datetime | None = None) -> None:
+    """Delete redacted copies older than VIEW_COPY_MAX_AGE. Best effort: a copy VS Code
+    still holds open is left for next time."""
+    cutoff = (now or datetime.now(UTC)) - VIEW_COPY_MAX_AGE
+    if not views.is_dir():
+        return
+    for copy in views.rglob("*.redacted.cfg"):
+        try:
+            if datetime.fromtimestamp(copy.stat().st_mtime, UTC) < cutoff:
+                copy.unlink()
+        except OSError:
+            continue
 
 
 def diff_redacted(

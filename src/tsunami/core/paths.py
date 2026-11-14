@@ -49,6 +49,11 @@ class AppPaths:
         return self.machine / "backups"
 
     @property
+    def backup_views_dir(self) -> Path:
+        """Redacted copies of backups, written to open them in VS Code (core/backups.py)."""
+        return self.machine / "backup-views"
+
+    @property
     def logs_dir(self) -> Path:
         return self.machine / "logs"
 
