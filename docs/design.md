@@ -718,7 +718,7 @@ The driver's own rollback commands are not play steps and are not subject to thi
 
 ### Day-0 console
 
-Dialog patterns for every platform are configurable in settings, because prompts vary by model and release.
+Dialog patterns are built into the console transport (`DEFAULT_DIALOGS` in `core/transports/console.py`), one set per platform. Prompts vary by model and release, so a prompt seen on a new model becomes a built-in rule, with the model and release it came from. The transport takes extra rules ahead of the built-in ones (`dialogs=`), which tests use; Settings does not expose them.
 
 - **IOS:** see Transports.
 - **AOS-CX:** log in as `admin` with an empty password. The switch then forces `Please configure the 'admin' user account password.` Netmiko's login cannot answer that, so the driver handles it before handing the port to Netmiko. It sets the admin password to the password of the customer's login credential, so the switch is reachable with the stored login straight after staging.
@@ -1039,7 +1039,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete. Promote checks whether the live file exists when it is pressed, refuses a draft rewritten since its tab showed it (Claude can rewrite a draft at any time), retries a live file another program holds open for a moment, and reports any failure with its reason.|
 |History|Jobs filtered by customer, play, actor, and status, with Show operations for show commands, discovery, drift checks, Trust host keys and connection tests (Local data and audit: Operations in history). Opens any past job view. Per-customer compliance history. Reveals: every press-to-reveal.|
 |Credentials|Names only. Device logins on one side; on the other, Secrets (per customer): values plays push that are not logins (SNMP, TACACS+ and RADIUS keys, pre-shared keys), each a single value or named fields (see Secrets with fields). Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
-|Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, day-0 dialog patterns, theme, backup retention, log level.|
+|Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, theme, backup retention, log level.|
 
 ### Behavior rules
 
@@ -1317,7 +1317,7 @@ The biggest technical risks are day-0 console behavior and diff accuracy. The bi
 |   |   |   |
 |---|---|---|
 |Risk|Impact|Mitigation|
-|Day-0 dialogs differ by model and IOS-XE release|Serial staging hangs or misfires|Test every staged model. Make dialog patterns configurable in settings.|
+|Day-0 dialogs differ by model and IOS-XE release|Serial staging hangs or misfires|Test every staged model. Add each new prompt as a built-in rule (Day-0 console).|
 |`configure replace` is slow on large configs or behaves differently with crypto keys and certificates|Rollback takes minutes or is incomplete|Test on every platform. Raise the command timeout for rollback. Surface `rollback_failed` loudly.|
 |Revert timer needs `archive path`|revert_timer plays fail|Put an archive snippet in every baseline. Pre-check `show archive`.|
 |Diff is heuristic: hidden IOS defaults, abbreviations, ordering|False drift or missed drift|Authoring convention of full commands and one-space indentation. Lint warnings for abbreviations.|
@@ -1606,4 +1606,4 @@ Changes since the original draft, with reasons:
   - A restore takes the device's lease and keeps a heartbeat, as a run does, so a play cannot change the device during it and the approvals poller does not mark it interrupted.
   - History lists restores with play runs (`operations.listed_with_plays`); other operations stay behind Show operations.
   - `backups.read_for_restore` is the one function that returns a backup's raw text; its only caller sends it to the device.
-  - The design says day-0 dialog patterns are configurable in Settings; they are not yet (the console transport uses its built-in rules). Noted here, not changed in this release.
+  - Day-0 dialog patterns are built in, not a setting (Day-0 console). The design said Settings made them configurable, but no setting was ever built and the built-in rules cover every model tested. A Settings editor was rejected: its rules are regexes whose answers can be the login's password, so a wrong one could send the password to the wrong prompt, and an unknown prompt is better fixed once in code for everyone.
