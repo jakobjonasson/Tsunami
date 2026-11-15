@@ -11,7 +11,7 @@ import shutil
 from pathlib import Path
 
 import pytest
-from PySide6.QtCore import QSettings
+from PySide6.QtCore import QCoreApplication, QEvent, QSettings
 
 from tsunami.core.history import History
 from tsunami.core.models.settings import AppSettings
@@ -21,6 +21,22 @@ from tsunami.core.transports.mock import MockTransport
 FIXTURE = Path(__file__).parents[1] / "fixtures" / "workspace"
 LOGIN_PASSWORD = "Login-Pass-1234"
 TACACS_SECRET = "Real-Tacacs-Key-77"
+
+
+@pytest.fixture(autouse=True)
+def delete_widgets_after_test(qapp):
+    """Destroy every widget a test leaves behind.
+
+    pytest-qt closes its widgets and calls deleteLater(), but its processEvents() never
+    runs a deferred delete, so each test's windows lived to the end of the run. Thousands
+    piled up, and the theme that gui_ctx applies restyles every live widget: setup grew
+    from half a second to several seconds a test and was most of the suite's run time.
+    Autouse fixtures finish last, after main_window has stopped its threads.
+    """
+    yield
+    for widget in qapp.topLevelWidgets():
+        widget.deleteLater()
+    QCoreApplication.sendPostedEvents(None, QEvent.Type.DeferredDelete)
 
 
 @pytest.fixture

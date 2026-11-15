@@ -3,11 +3,14 @@ two, and refuses to show content while Tsunami is locked."""
 
 from __future__ import annotations
 
+from datetime import datetime, timedelta
+
 import pytest
 from PySide6.QtCore import QObject, Signal
 from PySide6.QtWidgets import QMessageBox
 from tests.gui.conftest import LOGIN_PASSWORD, TACACS_SECRET, all_widget_text
 
+from tsunami.core import backups as backups_core
 from tsunami.core.models.play import RunMode
 from tsunami.core.runner import RunRequest
 from tsunami.core.vault import LockedCipher
@@ -49,6 +52,14 @@ def _run(main_window, qtbot, vlan: int) -> JobView:
     return view
 
 
+class _LaterClock(datetime):
+    """The clock core.backups names backups by, two seconds ahead."""
+
+    @classmethod
+    def now(cls, tz=None):
+        return datetime.now(tz) + timedelta(seconds=2)
+
+
 @pytest.fixture
 def two_backups(main_window, gui_ctx, mock_transport, qtbot, monkeypatch):
     """Two real APPLY runs; each saves a backup first. Returns their job ids, oldest first."""
@@ -57,8 +68,9 @@ def two_backups(main_window, gui_ctx, mock_transport, qtbot, monkeypatch):
     state.running += SECRET_LINES
     first = _run(main_window, qtbot, 30)
     state.running += ["ntp server 192.0.2.150"]
-    # Backups are named to the second; make sure the two files cannot collide.
-    qtbot.wait(1100)
+    # Backups are named to the second and listed newest first: the second run needs a
+    # later second. Move the clock that names them instead of waiting one out.
+    monkeypatch.setattr(backups_core, "datetime", _LaterClock)
     second = _run(main_window, qtbot, 31)
     return first.job_id, second.job_id
 

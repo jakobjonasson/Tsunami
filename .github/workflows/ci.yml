@@ -12,7 +12,7 @@ permissions:
 jobs:
   test:
     runs-on: windows-latest
-    timeout-minutes: 40
+    timeout-minutes: 20
     env:
       QT_QPA_PLATFORM: offscreen
     steps:
@@ -32,16 +32,18 @@ jobs:
       - name: Ruff format
         run: uv run ruff format --check
 
+      # --durations lists the slowest tests, so one that starts to drag shows in the log.
       - name: Tests
-        run: uv run pytest
+        run: uv run pytest --durations=15
 
       - name: Self-test
         run: uv run python -m tsunami --selftest
 
+  # Runs beside the tests, not after them: the run takes as long as the slower job, not
+  # the sum. A run is green only when both jobs are, so take the installer from a green run.
   frozen-build:
     runs-on: windows-latest
-    needs: test
-    timeout-minutes: 30
+    timeout-minutes: 20
     steps:
       - uses: actions/checkout@v7
 

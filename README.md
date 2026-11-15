@@ -104,7 +104,7 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 
 Installers for each version are on the [Releases](https://github.com/jakobjonasson/Tsunami/releases) page.
 
-Every push to `main` runs CI (GitHub Actions, Windows): lint, unit and GUI tests, then a frozen build with self-tests, an MCP smoke test and the Inno Setup installer. Each run keeps its installer as a build artifact, for builds between releases:
+Every push to `main` runs CI (GitHub Actions, Windows): lint, unit and GUI tests, and beside them a frozen build with self-tests, an MCP smoke test and the Inno Setup installer. Each run keeps its installer as a build artifact, for builds between releases; take it from a run that passed, because the build does not wait for the tests:
 
 ```powershell
 gh run download --repo jakobjonasson/Tsunami -n tsunami-installer -D <folder>
