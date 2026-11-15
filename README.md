@@ -13,11 +13,11 @@ Claude can investigate the network and draft changes through a local MCP server,
 ## Tested platforms
 | Platform | Tested on | Status |
 |---|---|---|
-| HPE Aruba AOS-S (ProCurve) | 2530-48G, YA.16.11 | Confirmed working, including console day-0 (first-boot login, speed sense) |
+| HPE Aruba AOS-S (ProCurve) | 2530, 2930F | Confirmed working in production, including console day-0 (first-boot login, speed sense) |
 | Cisco IOS | Catalyst 2960-X, Catalyst 3560-CX | Confirmed working in production |
-| Cisco IOS-XE | ISR C1101-4P, Catalyst 9500, 9300, 9200, 3850, Catalyst 9800 WLC | Confirmed working in production |
+| Cisco IOS-XE | ISR C1100 series, Catalyst 9500, 9300, 9200, 3850, Catalyst 9800 WLC | Confirmed working in production |
 | Cisco IOS on Linux (IOL) | CML lab | Confirmed working (rollback copy on the `unix:` file system) |
-| HPE Aruba AOS-CX | Not yet | Built and unit-tested against simulated devices only; checkpoint rollback is unverified on hardware |
+| HPE Aruba AOS-CX | CX6000 | Confirmed working in production |
 
 Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached through an automatic fallback (`core/transports/legacy_ssh.py`).
 
