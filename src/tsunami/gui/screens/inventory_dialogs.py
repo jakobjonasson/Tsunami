@@ -41,7 +41,7 @@ from PySide6.QtWidgets import (
 
 from tsunami.core import inventory_edit
 from tsunami.core.backups import backup_summaries
-from tsunami.core.catalog import load_catalog
+from tsunami.core.catalog import BAUD_RATES, CatalogEntry, load_catalog
 from tsunami.core.inventory_edit import DIRECT, KEEP, InventoryEditor
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import Platform
@@ -378,7 +378,7 @@ class DeviceDialog(_EditDialog):
         ws = ctx.workspace
         inv = ws.customers[customer] if ws is not None and customer in ws.customers else None
         self.inventory = inv
-        self.catalog = load_catalog()
+        self.catalog = ws.catalog if ws is not None else load_catalog()
 
         self.name_edit = QLineEdit(device.name if device else "")
         self.name_edit.setPlaceholderText("e.g. sa-as01")
@@ -441,7 +441,18 @@ class DeviceDialog(_EditDialog):
         self.form.addRow("Site", self.site_combo)
         self.form.addRow("Type", self.type_combo)
         self.form.addRow("Platform", self.platform_combo)
-        self.form.addRow("Model", self.model_combo)
+        model_row = QWidget()
+        model_layout = QHBoxLayout(model_row)
+        model_layout.setContentsMargins(0, 0, 0, 0)
+        model_layout.addWidget(self.model_combo, 1)
+        self.new_model_button = QPushButton("New model…")
+        self.new_model_button.setToolTip(
+            "Add a hardware model the catalog does not have. It is saved in the workspace "
+            "(inventory/models.yml)."
+        )
+        self.new_model_button.clicked.connect(lambda _=False: self.new_model())
+        model_layout.addWidget(self.new_model_button)
+        self.form.addRow("Model", model_row)
         self.form.addRow("Login", self.login)
         self.form.addRow("Jump host", self.jump)
         self.form.addRow("Canary priority", self.canary_spin)
@@ -477,6 +488,20 @@ class DeviceDialog(_EditDialog):
             self.model_combo.addItem(select, select)  # not in the catalog; the editor says so
         index = self.model_combo.findData(keep) if keep else 0
         self.model_combo.setCurrentIndex(max(index, 0))
+
+    def new_model(self) -> bool:
+        """Add a custom model for this platform and select it."""
+        dialog = ModelDialog(
+            self.ctx, self.shell, platform=self.platform_combo.currentData(), parent=self
+        )
+        if not run_dialog(dialog) or dialog.saved_id is None:
+            return False
+        self.catalog = load_catalog(self.ctx.workspace_path)
+        platform = str(self.catalog.get(dialog.saved_id).platform)
+        if platform != self.platform_combo.currentData():  # another platform was chosen
+            self.platform_combo.setCurrentIndex(self.platform_combo.findData(platform))
+        self._fill_models(dialog.saved_id)
+        return True
 
     def fields(self) -> dict[str, Any]:
         """The device as the form describes it. Raises ValueError for bad variables."""
@@ -783,6 +808,219 @@ class CustomerDialog(_EditDialog):
 
 
 SITE_DEVICE_COLUMNS = ["Device", "Type", "Platform", "Login", "Backup"]
+
+
+class ModelDialog(_EditDialog):
+    """Add a custom hardware model (entry is None) or edit one. Saved in the workspace's
+    inventory/models.yml; built-in models are not editable."""
+
+    def __init__(
+        self,
+        ctx: AppContext,
+        shell: Shell,
+        *,
+        entry: CatalogEntry | None = None,
+        platform: str | None = None,
+        parent: QWidget | None = None,
+    ) -> None:
+        title = "New hardware model" if entry is None else f"Edit model {entry.id}"
+        super().__init__(title, ctx, shell, parent)
+        self.entry = entry
+        self.saved_id: str | None = None
+        self.id_edit = QLineEdit(entry.id if entry else "")
+        self.id_edit.setPlaceholderText("e.g. cisco-ie3300")
+        self.id_edit.setEnabled(entry is None)  # devices name it; a rename would orphan them
+        self.label_edit = QLineEdit(entry.label if entry else "")
+        self.label_edit.setPlaceholderText("Shown in model dropdowns, e.g. Catalyst IE3300")
+        self.platform_combo = wheel.ComboBox()
+        for p in Platform:
+            self.platform_combo.addItem(str(p), str(p))
+        wanted = str(entry.platform) if entry else (platform or str(Platform.IOS_XE))
+        self.platform_combo.setCurrentIndex(max(self.platform_combo.findData(wanted), 0))
+        self.pattern_edit = QLineEdit((entry.model_pattern or "") if entry else "")
+        self.pattern_edit.setPlaceholderText("Optional regex, e.g. ^IE-3300")
+        self.pattern_edit.setToolTip(
+            "Searched in the model a device reports (show version, show system). Discovery "
+            "sets this model on a device whose reported model matches only this one."
+        )
+        self.examples_edit = QLineEdit(", ".join(entry.examples) if entry else "")
+        self.examples_edit.setPlaceholderText("Optional model numbers, comma separated")
+        self.baud_combo = wheel.ComboBox()
+        self.baud_combo.addItem("Platform default", None)
+        for rate in BAUD_RATES:
+            self.baud_combo.addItem(str(rate), rate)
+        if entry is not None:
+            written = self._written(entry.id).get("console_baud")
+            self.baud_combo.setCurrentIndex(max(self.baud_combo.findData(written), 0))
+        self.form.addRow("Id", self.id_edit)
+        self.form.addRow("Label", self.label_edit)
+        self.form.addRow("Platform", self.platform_combo)
+        self.form.addRow("Model pattern", self.pattern_edit)
+        self.form.addRow("Examples", self.examples_edit)
+        self.form.addRow("Console speed", self.baud_combo)
+
+    def _written(self, model_id: str) -> dict[str, Any]:
+        try:
+            items = make_editor(self.ctx).read_models()
+        except TsunamiError:
+            return {}
+        return next((m for m in items if m.get("id") == model_id), {})
+
+    def fields(self) -> dict[str, Any]:
+        examples = [e.strip() for e in self.examples_edit.text().split(",") if e.strip()]
+        fields: dict[str, Any] = {
+            "id": self.id_edit.text().strip(),
+            "label": self.label_edit.text().strip(),
+            "platform": self.platform_combo.currentData(),
+            "model_pattern": self.pattern_edit.text().strip() or None,
+            "examples": examples or None,
+            "console_baud": self.baud_combo.currentData(),
+        }
+        if self.entry is not None:  # keep what this form does not show
+            written = self._written(self.entry.id)
+            for key in ("lifecycle", "eos_year"):
+                if key in written:
+                    fields[key] = written[key]
+        return fields
+
+    def save(self) -> bool:
+        self.set_error("")
+        try:
+            editor = make_editor(self.ctx)
+        except TsunamiError as exc:
+            self.set_error(str(exc))
+            return False
+        fields = self.fields()
+        if self.entry is None:
+            ok = self._run(lambda: editor.add_model(fields), f"Added model {fields['id']}.")
+        else:
+            ok = self._run(
+                lambda: editor.update_model(self.entry.id, fields),  # type: ignore[union-attr]
+                f"Saved model {fields['id']}.",
+            )
+        if ok:
+            self.saved_id = fields["id"]
+        return ok
+
+
+class HardwareModelsDialog(QDialog):
+    """The hardware catalog: built-in models (read only) and the workspace's own, which can
+    be added, edited and deleted."""
+
+    def __init__(self, ctx: AppContext, shell: Shell, parent: QWidget | None = None) -> None:
+        super().__init__(parent)
+        self.ctx, self.shell = ctx, shell
+        self.setWindowTitle("Hardware models")
+        self.resize(720, 520)
+        outer = QVBoxLayout(self)
+        note = QLabel(
+            "Custom models are saved in the workspace (inventory/models.yml) and offered "
+            "wherever a model is chosen. Built-in models cannot be changed."
+        )
+        note.setWordWrap(True)
+        note.setObjectName("Muted")
+        outer.addWidget(note)
+        self.tree = QTreeWidget()
+        self.tree.setHeaderLabels(["Model", "Id", "Platform", "Console", "Source"])
+        self.tree.setRootIsDecorated(False)
+        self.tree.itemSelectionChanged.connect(self._update_buttons)
+        self.tree.itemDoubleClicked.connect(lambda *_: self.edit_selected())
+        outer.addWidget(self.tree, 1)
+        self.error_label = QLabel()
+        self.error_label.setWordWrap(True)
+        self.error_label.setStyleSheet(f"color: {theme.current().error};")
+        self.error_label.setVisible(False)
+        outer.addWidget(self.error_label)
+        row = QHBoxLayout()
+        self.add_button = QPushButton("Add…")
+        self.edit_button = QPushButton("Edit…")
+        self.delete_button = QPushButton("Delete")
+        self.add_button.clicked.connect(lambda _=False: self.add_model())
+        self.edit_button.clicked.connect(lambda _=False: self.edit_selected())
+        self.delete_button.clicked.connect(lambda _=False: self.delete_selected())
+        for button in (self.add_button, self.edit_button, self.delete_button):
+            row.addWidget(button)
+        row.addStretch(1)
+        close = QPushButton("Close")
+        close.clicked.connect(self.accept)
+        row.addWidget(close)
+        outer.addLayout(row)
+        self.refresh()
+
+    def save(self) -> bool:  # run_dialog's tests call save(); nothing to save here
+        return True
+
+    def refresh(self, select: str | None = None) -> None:
+        self.tree.clear()
+        for entry in load_catalog(self.ctx.workspace_path).entries:
+            item = QTreeWidgetItem(
+                [
+                    entry.label,
+                    entry.id,
+                    str(entry.platform),
+                    str(entry.console_baud),
+                    "custom" if entry.custom else "built in",
+                ]
+            )
+            item.setData(0, Qt.ItemDataRole.UserRole, entry.id)
+            if not entry.custom:
+                item.setForeground(0, QColor(theme.current().muted))
+            self.tree.addTopLevelItem(item)
+            if entry.id == select:
+                self.tree.setCurrentItem(item)
+        for column in range(self.tree.columnCount()):
+            self.tree.resizeColumnToContents(column)
+        self._update_buttons()
+
+    def _selected(self) -> CatalogEntry | None:
+        item = self.tree.currentItem()
+        if item is None:
+            return None
+        model_id = item.data(0, Qt.ItemDataRole.UserRole)
+        return load_catalog(self.ctx.workspace_path).get(model_id)
+
+    def _update_buttons(self) -> None:
+        entry = self._selected()
+        custom = entry is not None and entry.custom
+        self.edit_button.setEnabled(custom)
+        self.delete_button.setEnabled(custom)
+        self.add_button.setEnabled(self.ctx.workspace_path is not None)
+
+    def _say(self, message: str) -> None:
+        self.error_label.setText(message)
+        self.error_label.setVisible(bool(message))
+
+    def add_model(self) -> bool:
+        dialog = ModelDialog(self.ctx, self.shell, parent=self)
+        if not run_dialog(dialog):
+            return False
+        self.refresh(dialog.saved_id)
+        return True
+
+    def edit_selected(self) -> bool:
+        entry = self._selected()
+        if entry is None or not entry.custom:
+            return False
+        dialog = ModelDialog(self.ctx, self.shell, entry=entry, parent=self)
+        if not run_dialog(dialog):
+            return False
+        self.refresh(entry.id)
+        return True
+
+    def delete_selected(self) -> bool:
+        self._say("")
+        entry = self._selected()
+        if entry is None or not entry.custom:
+            return False
+        try:
+            make_editor(self.ctx).delete_model(entry.id)
+        except TsunamiError as exc:
+            self._say(str(exc))
+            return False
+        self.shell.refresh_all()
+        self.shell.notify(f"Deleted model {entry.id}.")
+        self.refresh()
+        return True
 
 
 class SiteView(QWidget):

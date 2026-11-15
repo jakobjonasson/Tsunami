@@ -23,7 +23,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
-from tsunami.core.catalog import load_catalog
+from tsunami.core.catalog import Catalog, load_catalog
 from tsunami.core.inventory_edit import CUSTOMERS, ROLES, InventoryEditor
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import SLUG_PATTERN, Platform, require_slug
@@ -310,6 +310,7 @@ class InventorySnapshot:
     sites: set[str]
     roles: set[str]
     devices: dict[str, dict[str, Any]]
+    catalog: Catalog | None = None  # built-in plus the workspace's custom models
 
 
 def load_snapshot(root: Path, customer: str) -> InventorySnapshot:
@@ -332,7 +333,7 @@ def load_snapshot(root: Path, customer: str) -> InventorySnapshot:
         for item in data:
             if isinstance(item, Mapping) and isinstance(item.get("name"), str):
                 devices[item["name"]] = dict(item)
-    return InventorySnapshot(sites, roles, devices)
+    return InventorySnapshot(sites, roles, devices, load_catalog(root))
 
 
 def _resolve_type(text: str, roles: Collection[str]) -> str | None:
@@ -352,8 +353,7 @@ def _resolve_platform(text: str) -> str | None:
     return next((p.value for p in Platform if _key(p.value) == key), None)
 
 
-def _resolve_model(text: str) -> str | None:
-    catalog = load_catalog()
+def _resolve_model(text: str, catalog: Catalog) -> str | None:
     if text in catalog.ids():
         return text
     wanted = text.lower()
@@ -506,14 +506,15 @@ def _check_row(
         errors.append("missing platform")
 
     if raw["model"]:
-        model = _resolve_model(raw["model"])
+        catalog = inventory.catalog or load_catalog()
+        model = _resolve_model(raw["model"], catalog)
         if model is None:
             errors.append(f"unknown model {raw['model']!r}")
         else:
             fields["model"] = model
             platform = fields.get("platform")
             if platform in {p.value for p in Platform}:
-                wanted = load_catalog().get(model).platform
+                wanted = catalog.get(model).platform
                 if wanted != platform:
                     errors.append(f"model {model!r} runs {wanted}, not {platform}")
 

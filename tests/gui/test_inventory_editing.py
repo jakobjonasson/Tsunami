@@ -365,7 +365,7 @@ def test_menu_contents(main_window):
         "Properties…",
         "Delete…",
     ]
-    assert _texts(view.menu_for(None)) == ["New customer…"]
+    assert _texts(view.menu_for(None)) == ["New customer…", "Hardware models…"]
 
 
 def test_new_menu_entries_open_their_screens(main_window, gui_ctx, monkeypatch):

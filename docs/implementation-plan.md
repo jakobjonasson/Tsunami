@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–6 are built, and CI produces the installer. Confirmed working on real devices: AOS-S (2530-48G), IOS (2960-X), IOS-XE (C1101-4P) and IOS on Linux in CML. Not yet done: AOS-CX on hardware (3.11), code signing, and hands-on checks (5.5, 6.3, 6.5). See Open items, and After the plan for work added since.
+**Status:** Phases 0–6 are built, and CI produces the installer. Confirmed working on real devices for every platform: AOS-S (2530, 2930F), AOS-CX (CX6000), IOS (2960-X, 3560-CX), IOS-XE (C1100 series, Catalyst 9500, 9300, 9200, 3850, 9800 WLC) and IOS on Linux in CML. Not yet done: the AOS-CX edge cases still marked *verify* (3.11), code signing, and hands-on checks (5.5, 6.3, 6.5). See Open items, and After the plan for work added since.
 
 ---
 
@@ -24,15 +24,15 @@ This file goes with [design.md](design.md), which is the spec. The spec says *wh
 
 What is left, roughly in priority order. Check the user's wishes before starting any of them.
 
-1. **Real-device testing.** Confirmed working on an AOS-S 2530-48G (YA.16.11, including console day-0), a Catalyst 2960-X (IOS), an ISR C1101-4P (IOS-XE) and IOS on Linux in CML. Bench fixes from that testing: the IOS rollback copy uses the device's default file system, console output is matched after escape codes are stripped, and the 2530 first-boot login is created on the console. Remaining: AOS-CX on hardware, and the facts still marked *verify* in design.md, Platform drivers:
+1. **Real-device testing.** Confirmed working in production on every platform (see the README's tested-platforms table), AOS-CX on a CX6000 included, and on IOS on Linux in CML. Bench fixes from that testing: the IOS rollback copy uses the device's default file system, console output is matched after escape codes are stripped, and the 2530 first-boot login is created on the console. Remaining: the facts still marked *verify* in design.md, Platform drivers, which everyday use does not exercise:
    - the AOS-CX auto-checkpoint behavior after a dropped session
    - how AOS-CX's revert-now path interacts with a running auto-checkpoint timer
    - whether `cfg-restore` leaves flash-stored credentials alone
-   Work package 3.11 (Aruba lab) covers the AOS-CX items.
+   Work package 3.11 (Aruba lab) covers these items.
 2. **Code signing.** `packaging/sign.ps1` is ready; it needs a certificate (an internal CA if the tool stays in-house, else an OV certificate with cloud signing) and EDR allowlisting.
 3. **Versioning.** `__version__` in `src/tsunami/__init__.py` is the only place it is set; the installer is named from it. Bump the minor version for a build with new features and the patch version for a fix-only build, in the commit that ships it. 0.2.0 was the first bump.
 4. **MCP Inspector pass** (5.5) and a Claude Desktop check after each MCP change. The Store build of Claude Desktop keeps its config under `%LOCALAPPDATA%\Packages\Claude_*`; `core/registration.py` handles both locations.
-5. **Ideas raised but not built:** a "Trust host keys" bulk probe for a customer or site (records keys without logging in, flags changes); import of known host keys from MobaXterm; reloading the workspace automatically when files change; generating `no` commands to remove compliance extras; listing "inventory only" devices (APs, controllers on unsupported platforms).
+5. **Ideas raised but not built:** import of known host keys from MobaXterm; reloading the workspace automatically when files change; generating `no` commands to remove compliance extras; listing "inventory only" devices (APs, controllers on unsupported platforms).
 6. **Catalog verification** (1.9): lifecycle, end-of-sale years, example SKUs and model patterns in `core/data/hardware.yml` are unverified against vendor sources.
 7. **Accepted residuals** (design.md, Redaction): a secret also stored in plain text in workspace variables can be confirmed by a whole-value guess; a secret the device wraps over two lines is not exact-redacted. Both are strict xfails in `tests/unit/test_mcp_leaks.py`.
 
@@ -51,7 +51,10 @@ Built after Phase 6 at the user's request, each with tests and a design.md revis
 - 0.5.2: `login()` and the `login` prompt type push a saved login from a play (`core/logins.py`, renderer, runner); `push_logins` in `customer.yml` and the customer dialog. Still to do: run the rewritten `tb-add-admin2.yml` on the CML test bed.
 - 0.5.3: MCP `add_role` and `add_devices(create_roles=True)` (issue 1); five more default ios show commands and `request_allowlist_addition`, approved in Settings (issue 3).
 - 0.6.0: MCP change requests report `phase` and never read as applied before approval (the approval check marks devices `ready`/`no_changes` and ends `failed` when a device cannot be checked); `max_fail_percent` in apply mode only, with unreached devices counted over the whole run; missing secrets refused at validate, render and request time (`Runner.preflight`); secrets with fields and the `secret` and `password` prompt types (`SecretFields`, Credentials, Secrets); `request_run` without targets; safer draft promotion; jump host channel errors with a reason. Still to do: try the new SNMPv3 flow and an approval request on the CML test bed.
+- Trust host keys in bulk for a customer or site (`core/hostkey_trust.py`, `gui/screens/host_keys.py`): records keys without logging in, jump hosts included, and replaces a changed key only after a confirmation that shows both fingerprints.
 - 0.6.1: `canary_priority` per device; Ctrl+F in the backups viewer (`gui/widgets/find_bar.py`); press-to-reveal in the run preview and backups viewer, after the Tsunami password, audited in `reveals` (`core/reveal.py`, `gui/widgets/reveal_text.py`, migration 007); MCP show, discovery, neighbor checks, Trust host keys and Test connection recorded as jobs (`core/operations.py`), in History with Show operations, and a Reveals tab. Reveal positions are not testable offscreen (no fonts): check a reveal by hand on Windows.
+- 0.7.0: customers and sites start collapsed in the Inventory tree; View full backup and Open in VS Code (a redacted copy); Restore from backup over SSH or a console (`core/restore.py`, `gui/screens/restore.py`), tested against simulated devices only so far.
+- 0.7.1: MCP `compliance` takes `targets` and `prompts`; `check` and `compliance` return device names; the `add_site`/`add_role` vars rule matches the linter's (`workspace.secret_literal_keys`); `get_job` filters, detail levels and `wait_seconds`; new tools `get_policy`, `show_many`, `list_models` and `add_model`; policy `max_tier` (Settings, Highest tool tier); `cancel_job` stops running lab runs, checks and `show_many` jobs; `propose_inventory_change` covers every device field; custom hardware models in `inventory/models.yml` (`core/catalog.py`, Inventory, Hardware models…). Still to do: try `show_many`, a waiting `get_job` and a jump host proposal against the CML test bed through Claude Desktop.
 
 ---
 

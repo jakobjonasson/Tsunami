@@ -14,6 +14,12 @@ from ruamel.yaml import YAML
 
 from tsunami.core.models.common import PlatformFamily, Slug, StrictModel
 
+# What each tool tier does; max_tier turns off every tool above it.
+TIERS = {
+    0: "the workspace only (read, drafts, inventory additions)",
+    1: "read-only device access (show, check, compliance)",
+    2: "change requests (request_run, inventory proposals)",
+}
 # Pipe modifiers that can write output to files or remote URLs. Never allowed.
 FORBIDDEN_PIPES = frozenset({"redirect", "tee", "append"})
 
@@ -61,12 +67,16 @@ def default_pipes() -> dict[PlatformFamily, list[str]]:
 
 class McpPolicy(StrictModel):
     enabled: bool = False
+    # The highest tool tier Claude may call (TIERS). 1 makes MCP read-only: no change
+    # requests and no inventory proposals, for lab customers too. 0 keeps it off devices.
+    max_tier: int = Field(2, ge=0, le=2)
     apply: Literal["never", "lab_only"] = "lab_only"
     lab_allow_drafts: bool = True
     # Claude's connections record a device's host key on first contact, as the GUI's runs
     # do. Off: a person makes first contact. A changed key is refused either way.
     trust_new_host_keys: bool = False
-    # Claude may add customers, sites and devices to the inventory (never edit or delete).
+    # Claude may add customers, sites, roles, devices and hardware models to the inventory,
+    # and propose edits and removals of devices for a person to approve.
     inventory_edits: bool = False
     customers_blocked: list[Slug] = []
     show_allowlist: dict[PlatformFamily, list[AllowEntry]] = Field(

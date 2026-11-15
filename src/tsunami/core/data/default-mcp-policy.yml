@@ -3,10 +3,11 @@
 # Settings screen: Settings reloads this file when shown and asks before saving over a
 # change made here. The MCP server has no write path to it. Re-read on every tool call.
 enabled: false             # MCP stays off until you turn it on
+max_tier: 2                # 0 workspace | 1 + read-only device access | 2 + change requests
 apply: lab_only            # never | lab_only
 lab_allow_drafts: true
 trust_new_host_keys: false  # true: Claude may make first contact with a device
-inventory_edits: false     # true: Claude may add customers, sites and devices (add only)
+inventory_edits: false     # true: Claude may add to the inventory and propose device edits
 customers_blocked: []      # hidden from MCP entirely
 show_allowlist:            # per platform family
   ios:

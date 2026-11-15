@@ -35,7 +35,6 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core import reveal
-from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform, PlatformFamily
@@ -153,7 +152,7 @@ class RunWizard(QWidget):
         self.play = play
         self.cust: Any = None if self.is_global else ctx.workspace.customer(play.customer)
         self.customer_combo: QComboBox | None = None
-        self.catalog = load_catalog()
+        self.catalog = ctx.workspace.catalog
         self.initial = play.type == PlayType.INITIAL
         self.devices: tuple[Device, ...] = ()
         self.target_error = ""
@@ -360,7 +359,7 @@ class RunWizard(QWidget):
             if prompt.per_device and not self.initial:
                 per_device.append((name, prompt))
                 continue
-            field = make_prompt_widget(name, prompt, base)
+            field = make_prompt_widget(name, prompt, base, catalog=self.catalog)
             self.fields[name] = field
             label = QLabel(field.label_text)
             label.setToolTip(prompt.help or "")
@@ -390,7 +389,7 @@ class RunWizard(QWidget):
                 grid.addWidget(label, row, 0, Qt.AlignmentFlag.AlignTop)
                 widgets.append(label)
                 for col, (name, prompt) in enumerate(per_device, start=1):
-                    field = make_prompt_widget(name, prompt, base)
+                    field = make_prompt_widget(name, prompt, base, catalog=self.catalog)
                     self.device_fields[(device.name, name)] = field
                     grid.addWidget(field, row, col)
                     widgets.append(field)

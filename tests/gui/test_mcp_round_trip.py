@@ -140,9 +140,9 @@ def test_proposal_card_shows_source_and_before_after_and_approval_applies(
     card = view.open_request(proposal_id)
     table = card.changes
     rows = [[table.item(r, c).text() for c in range(4)] for r in range(table.rowCount())]
-    assert rows == [
-        ["sa-as01", "role", "access", "distribution"],
+    assert rows == [  # in devices.yml order
         ["sa-as01", "host", "203.0.113.11", "203.0.113.77"],
+        ["sa-as01", "role", "access", "distribution"],
     ]
     shown = " ".join(label.text() for label in card.findChildren(type(card.status_label)))
     assert "Claude, over MCP" in shown and "the site survey says so" in shown
@@ -171,3 +171,38 @@ def test_proposal_denied_in_the_gui_changes_nothing(
     assert tools.get_inventory_proposal(proposal_id)["status"] == "denied"
     assert devices_text(workspace_root) == before
     qtbot.waitUntil(lambda: view.list.count() == 0, timeout=10_000)
+
+
+def test_proposal_card_shows_every_kind_of_field_as_plain_text(mcp, main_window, app_paths, qtbot):
+    app, tools = mcp
+    save_policy(McpPolicy(enabled=True, inventory_edits=True), app_paths.policy_file)
+    hostile = "<a href='http://example.invalid'>click</a>"
+    proposal_id = tools.propose_inventory_change(
+        "acme",
+        [
+            {
+                "device": "sa-as01",
+                "port": 2022,
+                "jump_host": {"host": "192.0.2.5", "credential": "acme-netadmin"},
+                "canary_priority": 0,
+                "vars": {"note": hostile},
+            },
+            {"device": "sa-as02", "jump_host": "none", "vars": None},
+        ],
+    )["proposal_id"]
+    view = approvals_view(main_window)
+    qtbot.waitUntil(lambda: view.list.count() == 1, timeout=10_000)
+    table = view.open_request(proposal_id).changes
+    rows = {
+        (table.item(r, 0).text(), table.item(r, 1).text()): (
+            table.item(r, 2).text(),
+            table.item(r, 3).text(),
+        )
+        for r in range(table.rowCount())
+    }
+    assert rows[("sa-as01", "port")] == ("22", "2022")
+    assert rows[("sa-as01", "jump_host")] == ("(inherit)", "192.0.2.5:22 as acme-netadmin")
+    assert rows[("sa-as01", "canary_priority")] == ("100", "0")
+    assert hostile in rows[("sa-as01", "vars")][1]  # shown literally, never as a link
+    assert rows[("sa-as02", "jump_host")] == ("(inherit)", "(direct)")
+    assert rows[("sa-as02", "vars")] == ('{"mgmt_ip": "203.0.113.12/24"}', "(none)")

@@ -8,7 +8,7 @@ Claude can investigate the network and draft changes through a local MCP server,
 
 **Try it:** download the Windows installer from [Releases](https://github.com/jakobjonasson/Tsunami/releases/latest). It runs on Windows 10 and 11; builds are not code-signed yet, so SmartScreen asks once. Tsunami is free software under the [GNU GPL v3](LICENSE).
 
-**Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 3,000 unit and 300 GUI tests run in CI, plus a frozen-build check. Restore from backup (0.7.0) is tested against simulated devices only so far. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
+**Status:** Feature-complete for v1 and confirmed working on real devices for every platform (table below). About 3,000 unit and 300 GUI tests run in CI, plus a frozen-build check. Restore from backup (0.7.0) is tested against simulated devices only so far. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
 
 ## Tested platforms
 | Platform | Tested on | Status |
@@ -34,7 +34,7 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 
 **Inventory and onboarding**
 - An Inventory tree of customers, sites and devices (collapsed at start; the filter opens what matches). Customers have sites, devices, device types (roles), a default login per customer and per site, logins on single devices, an optional jump host, and `push_logins` (accounts plays may create on devices).
-- Import devices from CSV (Save example CSV gives every column), or edit them through the Inventory menus.
+- Import devices from CSV (Save example CSV gives every column), or edit them through the Inventory menus. Hardware models the built-in catalog lacks can be added per workspace (Inventory, Hardware models…).
 - Discover a site over CDP and LLDP: start from seeds, add each device and follow its neighbors inside a scope. Check for unlearned neighbors lists neighbors missing from the inventory.
 - Trust host keys in bulk without logging in, the jump host's included. A changed key is shown with both fingerprints and replaced only after confirmation.
 - Device page: the model, version and serial the device reported, recent jobs, Test connection, Open SSH (MobaXterm when installed, else OpenSSH) and Backups.
@@ -46,12 +46,12 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 - Restore from backup, over SSH or a console, onto a replacement switch: factory-new (Tsunami answers its setup prompts) or with only a login set. Rejected lines are listed and the rest still sent; the config is saved, read back and compared with the backup.
 
 **Claude over MCP** (the tools are listed in `TOOL_NAMES`)
-- Read the workspace and history: `list_customers`, `list_devices`, `list_plays`, `list_snippets`, `read_play`, `read_snippet`, `resolved_vars`, `validate`, `render`, `list_jobs`, `get_job`.
+- Read the workspace and history: `list_customers`, `list_devices`, `list_plays`, `list_snippets`, `read_play`, `read_snippet`, `resolved_vars`, `validate`, `render`, `list_models`, `list_jobs`, `get_job` (filtered to some devices, a summary or diff only, and able to wait for the job to change instead of polling), and `get_policy` (what Claude may do now, and its allowlist requests).
 - Write drafts under `drafts/` (`write_draft`, `delete_draft`); only a person promotes one.
-- Read devices: `show` for allowlisted commands (matched by command prefix), `check` and `compliance`. `request_allowlist_addition` asks a person to allow another `show` command in Settings.
-- Change devices: `request_run`, approved in the GUI (lab customers may skip approval if the policy allows), and `cancel_job`. No tool reads backups or restores one.
-- Add to the inventory when Settings allow it (off by default): `add_customer`, `add_site`, `add_role`, `add_devices` (with `create_sites` and `create_roles`). Edits and removals are only proposed: `propose_inventory_change` waits for approval, and `get_inventory_proposal` reports the outcome.
-- `mcp-policy.yml` sets whether MCP is on, whether lab changes need approval, blocked customers, the rate limit and the show allowlist. Edit it in Settings or in VS Code.
+- Read devices: `show` for allowlisted commands (matched by command prefix), `show_many` (one command on many devices, as a job), `check` and `compliance` (both with `targets`, so a big fleet can be split). `request_allowlist_addition` asks a person to allow another `show` command in Settings.
+- Change devices: `request_run`, approved in the GUI (lab customers may skip approval if the policy allows), and `cancel_job` (a request before approval, or a lab run, check or sweep while it runs). No tool reads backups or restores one.
+- Add to the inventory when Settings allow it (off by default): `add_customer`, `add_site`, `add_role`, `add_devices` (with `create_sites` and `create_roles`) and `add_model` (a custom hardware model). Changes to any device field and removals are only proposed: `propose_inventory_change` waits for approval, and `get_inventory_proposal` reports the outcome.
+- `mcp-policy.yml` sets whether MCP is on, the highest tool tier (read-only stops all change requests), whether lab changes need approval, blocked customers, the rate limit and the show allowlist. Edit it in Settings or in VS Code.
 - Claude never receives a credential or secret value, every result is redacted, and every call is audited.
 
 ## How it works

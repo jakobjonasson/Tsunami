@@ -372,7 +372,7 @@ def test_show_refuses_commands_outside_the_allowlist(env, command):
 
 def test_check_job(env):
     started = env.tools.check(PLAY, prompts=PROMPTS)
-    assert started["devices"] == 2
+    assert started["devices"] == ["sa-as01", "sa-as02"]  # names, as request_run returns
     env.join()
     job = env.tools.get_job(started["job_id"])
     assert job["actor"] == "mcp" and job["status"] == "completed"
@@ -385,8 +385,11 @@ def test_check_job(env):
 
 def test_check_refuses_too_many_targets(env):
     env.policy(max_check_targets=1)
-    with pytest.raises(ToolRefused, match="at most 1"):
+    with pytest.raises(ToolRefused, match="at most 1 devices per check.*pass targets"):
         env.tools.check(PLAY, prompts=PROMPTS)
+    started = env.tools.check(PLAY, ["sa-as02"], prompts=PROMPTS)
+    assert started["devices"] == ["sa-as02"]
+    env.join()
 
 
 def test_compliance_only_for_baselines(env):
@@ -454,7 +457,7 @@ def test_cancel_job(env):
     env.join()
     assert env.tools.cancel_job(started["job_id"])["status"] == "cancelled"
     assert env.history.get_job(started["job_id"]).status == JobStatus.CANCELLED
-    with pytest.raises(ToolRefused, match="not yet started"):
+    with pytest.raises(ToolRefused, match="nothing to cancel"):
         env.tools.cancel_job(started["job_id"])
 
     gui_job = env.history.create_job(
@@ -971,9 +974,9 @@ def test_a_proposal_changes_nothing_until_approved(prop_env):
     )
     assert result["status"] == "awaiting_approval"
     by_device = {c["device"]: c for c in result["changes"]}
-    assert by_device["sa-as01"]["fields"] == [
-        {"field": "role", "before": "access", "after": "distribution"},
+    assert by_device["sa-as01"]["fields"] == [  # in devices.yml order
         {"field": "host", "before": "203.0.113.11", "after": "203.0.113.99"},
+        {"field": "role", "before": "access", "after": "distribution"},
     ]
     assert by_device["sa-as02"]["action"] == "remove"
     assert devices_file(env) == env.original
@@ -1065,8 +1068,29 @@ def test_lab_customers_need_approval_too(prop_env):
         ({"device": "sa-as01", "site": "nowhere"}, "does not exist"),
         ({"device": "sa-as01", "host": "bad host!"}, "IP address or DNS name"),
         ({"device": "sa-as01", "model": "no-such-model"}, "not in the catalog"),
-        ({"device": "sa-as01", "credential": "x"}, "unknown field"),
-        ({"device": "sa-as01", "port": 2222}, "unknown field"),
+        ({"device": "sa-as01", "credential": "x"}, "not a login this customer uses"),
+        ({"device": "sa-as01", "colour": "red"}, "unknown field"),
+        ({"device": "sa-as01", "port": 0}, "whole number from 1 to 65535"),
+        ({"device": "sa-as01", "port": "22"}, "whole number"),
+        ({"device": "sa-as01", "canary_priority": 255}, "from 0 to 254"),
+        ({"device": "sa-as01", "canary_priority": True}, "whole number"),
+        ({"device": "sa-as01", "name": "Bad Name"}, "name"),
+        ({"device": "sa-as01", "name": "sa-as02"}, "already used"),
+        ({"device": "sa-as01", "vars": ["x"]}, "vars must be a mapping"),
+        ({"device": "sa-as01", "vars": {"snmp_community": "public"}}, "never hold secrets"),
+        ({"device": "sa-as01", "vars": {"Bad-Key": 1}}, "vars"),
+        ({"device": "sa-as01", "jump_host": "somewhere"}, "jump_host is a mapping"),
+        (
+            {"device": "sa-as01", "jump_host": {"host": "192.0.2.9", "credential": "x"}},
+            "not a login this customer uses",
+        ),
+        (
+            {
+                "device": "sa-as01",
+                "jump_host": {"host": "192.0.2.9", "credential": "acme-netadmin", "user": "a"},
+            },
+            "unknown field",
+        ),
         ({"device": "sa-as01", "remove": True, "role": "core"}, "cannot be combined"),
         ({"device": "sa-as01", "remove": "yes"}, "remove must be true"),
         ({"device": "sa-as01", "role": None}, "role must be text"),
@@ -1261,3 +1285,333 @@ def test_show_is_recorded_in_history_with_redacted_output(env):
     [row] = env.history.devices(job.id)
     assert row.device == "sa-as01" and "hostname sa-as01" in row.output_redacted
     assert TACACS not in row.output_redacted and LOGIN_PASSWORD not in row.output_redacted
+
+
+# -- 0.7.1: compliance targets, vars rules, get_job, get_policy, show_many, max_tier ------
+
+PROMPTED_BASELINE = """name: Located baseline
+type: baseline
+customer: acme
+targets:
+  roles: [access]
+prompts:
+  location:
+    type: string
+steps:
+  - config:
+      - "snmp-server location {{ location }}"
+"""
+
+
+def test_compliance_takes_targets_and_prompts(env):
+    (env.root / "plays/baseline/located.yml").write_text(PROMPTED_BASELINE, encoding="utf-8")
+    env.policy(max_check_targets=1)
+    with pytest.raises(ToolRefused, match="at most 1 devices per compliance.*pass targets"):
+        env.tools.compliance(BASELINE)
+    first = env.tools.compliance(BASELINE, ["sa-as01"])
+    assert first["devices"] == ["sa-as01"]
+    located = env.tools.compliance(
+        "plays/baseline/located.yml", targets=["sa-as02"], prompts={"location": "Rack 4"}
+    )
+    env.join()
+    job = env.tools.get_job(located["job_id"])
+    assert job["status"] == "completed"
+    assert [d["device"] for d in job["devices"]] == ["sa-as02"]
+    with pytest.raises(ToolRefused, match="at least one"):
+        env.tools.compliance(BASELINE, [])
+
+
+def test_vars_refuse_only_secret_looking_keys_with_text_values(env):
+    env.policy(inventory_edits=True)
+    env.tools.add_site("acme", "site-c", {"poe_enabled": True, "ntp_key_id": 5})
+    env.tools.add_role("camera", {"enable_poe": True, "monitor": {"keyed": 1}})
+    with pytest.raises(ToolRefused, match="'snmp_community'"):
+        env.tools.add_site("acme", "site-d", {"snmp_community": "public"})
+    with pytest.raises(ToolRefused, match="'snmp.auth_key'"):
+        env.tools.add_role("printer", {"snmp": {"auth_key": "Abc-12345"}})
+    assert not (env.root / "inventory/customers/acme/sites/site-d.yml").exists()
+
+
+def test_get_job_detail_device_filter_and_counts(env):
+    started = env.tools.check(PLAY, prompts=PROMPTS)
+    env.join()
+    full = env.tools.get_job(started["job_id"])
+    assert full["finished"] is True and full["counts"] == {"success": 2}
+    summary = env.tools.get_job(started["job_id"], detail="summary")
+    keys = {"device", "status", "failed_line", "error", "rollback_status"}
+    assert all(set(d) == keys for d in summary["devices"])
+    diff = env.tools.get_job(started["job_id"], ["sa-as02", "nope"], detail="diff")
+    [row] = diff["devices"]
+    assert row["device"] == "sa-as02" and set(row["untrusted_device_output"]) == {"diff"}
+    assert "vlan 30" in row["untrusted_device_output"]["diff"]
+    assert diff["devices_not_in_job"] == ["nope"]
+    assert diff["state"] == full["state"]
+    with pytest.raises(ToolRefused, match="detail must be"):
+        env.tools.get_job(started["job_id"], detail="everything")
+
+
+def test_get_job_waits_for_a_change_and_not_for_a_finished_job(env, monkeypatch):
+    import tsunami.mcp_server.tools as tools_module
+
+    started = env.tools.check(PLAY, prompts=PROMPTS)
+    env.join()
+    done = env.tools.get_job(started["job_id"], detail="summary")
+    slept = []
+    monkeypatch.setattr(tools_module.time, "sleep", slept.append)
+    again = env.tools.get_job(started["job_id"], wait_seconds=30, since=done["state"])
+    assert again["state"] == done["state"] and slept == []  # finished: no wait
+
+    job_id = env.history.create_job(
+        actor=Actor.MCP,
+        play_path=PLAY,
+        play_hash="x",
+        customer="acme",
+        mode="check",
+        status=JobStatus.RUNNING,
+    )
+    env.history.add_devices(job_id, ["sa-as01"])
+    first = env.tools.get_job(job_id, detail="summary")
+    calls = []
+
+    def sleep(seconds):  # the device finishes while get_job waits
+        calls.append(seconds)
+        if len(calls) == 2:
+            env.history.update_device(job_id, "sa-as01", status="success")
+
+    monkeypatch.setattr(tools_module.time, "sleep", sleep)
+    changed = env.tools.get_job(job_id, detail="summary", wait_seconds=10, since=first["state"])
+    assert changed["state"] != first["state"] and changed["counts"] == {"success": 1}
+    assert len(calls) == 2
+    assert len([r for r in env.audit() if r["tool"] == "get_job"]) == 4  # one row per call
+
+
+def test_get_policy_shows_the_rules_and_request_status_but_no_blocked_customers(env):
+    env.policy(customers_blocked=["lab"], max_check_targets=7)
+    policy = env.tools.get_policy()
+    assert "customers_blocked" not in policy and "lab" not in json.dumps(policy).replace("lab_", "")
+    assert policy["max_check_targets"] == 7 and policy["max_tier"] == 2
+    assert "show version" in policy["show_allowlist"]["ios"]
+    assert policy["pipes"]["ios"] == ["include", "exclude", "section", "begin"]
+    request = env.tools.request_allowlist_addition("ios", "show ip route", "routing")
+    env.history.decide_allowlist_request(request["request_id"], approved=False, by="tech1")
+    [listed] = env.tools.get_policy()["allowlist_requests"]
+    assert (listed["request_id"], listed["status"]) == (request["request_id"], "denied")
+    assert "tech1" not in json.dumps(env.tools.get_policy())
+
+
+def test_show_many_runs_one_command_on_many_devices_as_a_job(env):
+    started = env.tools.show_many("acme", "show running-config | include hostname|key")
+    assert started["devices"] == ["sa-as01", "sa-as02"]
+    env.join()
+    job = env.tools.get_job(started["job_id"])
+    assert (job["mode"], job["status"], job["actor"]) == ("show", "completed", "mcp")
+    for row in job["devices"]:
+        output = row["untrusted_device_output"]["output"]
+        assert f"hostname {row['device']}" in output
+        assert TACACS not in output and LOGIN_PASSWORD not in output
+    assert all(t.allow_new_host_key is False for t in env.recorder.targets)
+    only = env.tools.show_many("acme", "show version", devices=["sa-as02"])
+    assert only["devices"] == ["sa-as02"]
+    env.join()
+
+
+def test_show_many_refuses_before_connecting(env):
+    env.policy(max_check_targets=1)
+    with pytest.raises(ToolRefused, match="at most 1 devices per show_many"):
+        env.tools.show_many("acme", "show version")
+    with pytest.raises(ToolRefused, match="unknown device"):
+        env.tools.show_many("acme", "show version", devices=["nope"])
+    with pytest.raises(ToolRefused, match="not on the ios show allowlist"):
+        env.tools.show_many("acme", "configure terminal", devices=["sa-as01"])
+    with pytest.raises(ToolRefused, match="no device"):
+        env.tools.show_many("acme", "show version", site="nowhere")
+    with pytest.raises(ToolRefused, match="unknown customer"):
+        env.tools.show_many("nobody", "show version")
+    assert env.recorder.targets == []
+
+
+def test_max_tier_turns_off_tools_above_it(env):
+    env.policy(max_tier=1, inventory_edits=True)
+    with pytest.raises(ToolRefused, match="tier 2 tool.*only up to tier 1"):
+        env.tools.request_run(PLAY, ["sa-as01"], prompts=PROMPTS)
+    with pytest.raises(ToolRefused, match="tier 2"):
+        env.tools.propose_inventory_change("acme", [{"device": "sa-as01", "role": "core"}])
+    env.tools.show("acme", "sa-as01", "show version")  # read-only device access still works
+    started = env.tools.check(PLAY, prompts=PROMPTS)
+    env.join()
+    assert env.tools.get_job(started["job_id"])["status"] == "completed"
+    env.policy(max_tier=0)
+    with pytest.raises(ToolRefused, match="tier 1"):
+        env.tools.show("acme", "sa-as01", "show version")
+    assert env.tools.list_customers()["customers"]
+    assert {j.mode for j in env.history.list_jobs()} == {"check", "show"}  # no request
+
+
+class GatedTransport:
+    """Holds every connection until released, so a test can act while a job runs."""
+
+    def __init__(self, inner) -> None:
+        import threading
+
+        self.inner = inner
+        self.opened = threading.Event()
+        self.gate = threading.Event()
+
+    def open(self, target):
+        self.opened.set()
+        assert self.gate.wait(20)
+        return self.inner.open(target)
+
+
+def test_a_running_lab_job_can_be_cancelled(env):
+    gated = GatedTransport(env.recorder)
+    env.app.transport_factory = lambda: gated
+    started = env.tools.request_run("plays/push/lab-vlan.yml", ["lab-sw1"], prompts=PROMPTS)
+    assert gated.opened.wait(20)
+    assert env.history.get_job(started["job_id"]).status == JobStatus.RUNNING
+    assert env.tools.cancel_job(started["job_id"])["status"] == "cancelling"
+    gated.gate.set()
+    env.join()
+    assert env.history.get_job(started["job_id"]).status == JobStatus.CANCELLED
+    assert "vlan 30" not in env.mock.device("lab-sw1").running
+
+
+def test_a_run_a_person_approved_is_stopped_only_in_the_gui(env):
+    job_id = env.history.create_job(
+        actor=Actor.MCP,
+        play_path=PLAY,
+        play_hash="x",
+        customer="acme",
+        mode="apply",
+        status=JobStatus.RUNNING,
+    )
+    with pytest.raises(ToolRefused, match="only in the Tsunami GUI"):
+        env.tools.cancel_job(job_id)
+    env.policy(max_tier=1)  # cancelling stays available to a read-only policy
+    with pytest.raises(ToolRefused, match="only in the Tsunami GUI"):
+        env.tools.cancel_job(job_id)
+
+
+def test_a_proposal_can_change_every_device_field(prop_env):
+    env = prop_env
+    InventoryEditor(env.root).create_role("camera")
+    customer = env.root / "inventory/customers/acme/customer.yml"
+    customer.write_text(
+        customer.read_text(encoding="utf-8").replace(
+            "jump_host: null", "jump_host: null\nsite_credentials:\n  site-b: acme-site-b"
+        ),
+        encoding="utf-8",
+    )
+    jump = {"host": "192.0.2.5", "port": 2222, "credential": "acme-netadmin"}
+    result = propose(
+        env,
+        {
+            "device": "sa-as01",
+            "name": "sa-cam01",
+            "port": 2022,
+            "site": "site-b",
+            "role": "camera",
+            "model": "cisco-c9300",
+            "credential": "acme-site-b",
+            "jump_host": jump,
+            "canary_priority": 0,
+            "vars": {"mgmt_ip": "203.0.113.11/24", "poe_enabled": True},
+        },
+        {"device": "sa-as02", "jump_host": "none", "vars": None},
+    )
+    fields = {f["field"]: f for f in result["changes"][0]["fields"]}
+    assert list(fields) == [
+        "name",
+        "port",
+        "site",
+        "role",
+        "model",
+        "credential",
+        "jump_host",
+        "canary_priority",
+        "vars",
+    ]
+    assert fields["port"] == {"field": "port", "before": 22, "after": 2022}
+    assert fields["jump_host"]["before"] is None and fields["jump_host"]["after"] == jump
+    approve_proposal(env.history, env.root, result["proposal_id"], approved_by="tech1")
+    cust = load_workspace(env.root, render=False).customers["acme"]
+    cam = cust.device("sa-cam01")
+    assert cust.device("sa-as01") is None
+    assert (cam.port, cam.site, cam.role, cam.model) == (2022, "site-b", "camera", "cisco-c9300")
+    assert (cam.credential, cam.canary_priority) == ("acme-site-b", 0)
+    assert (str(cam.jump_host.host), cam.jump_host.port) == ("192.0.2.5", 2222)
+    assert cam.vars == {"mgmt_ip": "203.0.113.11/24", "poe_enabled": True}
+    other = cust.device("sa-as02")
+    assert other.jump_set and other.jump_host is None and other.vars == {}
+    # A jump host Claude chose is never first-contacted over MCP.
+    assert env.history.mcp_devices("acme") == {"sa-cam01": "203.0.113.11"}
+
+
+def test_a_rename_keeps_the_first_contact_rule(prop_env):
+    env = prop_env
+    env.tools.add_devices("acme", [NEW_DEVICE])
+    proposal = propose(env, {"device": "sa-as09", "name": "sa-as10"})["proposal_id"]
+    approve_proposal(env.history, env.root, proposal, approved_by="tech1")
+    assert env.history.mcp_devices("acme")["sa-as10"] == NEW_DEVICE["host"]
+
+
+def test_proposed_vars_never_hold_a_stored_secret(prop_env):
+    env = prop_env
+    with pytest.raises(ToolRefused, match="looks like a secret"):
+        propose(env, {"device": "sa-as01", "vars": {"note": TACACS}})
+    assert env.history.list_inventory_proposals() == []
+
+
+def test_old_proposals_with_five_fields_still_apply(prop_env):
+    """A proposal stored by 0.7.0 holds five fields, as strings."""
+    env = prop_env
+    before = {
+        "role": "access",
+        "host": "203.0.113.11",
+        "site": "site-a",
+        "platform": "ios-xe",
+        "model": None,
+    }
+    proposal_id = env.history.create_inventory_proposal(
+        customer="acme",
+        source="mcp",
+        reason="",
+        changes=[{"device": "sa-as01", "remove": False, "before": before, "set": {"role": "core"}}],
+    )
+    approve_proposal(env.history, env.root, proposal_id, approved_by="tech1")
+    ws = load_workspace(env.root, render=False)
+    assert ws.customers["acme"].device("sa-as01").role == "core"
+
+
+def test_custom_models_over_mcp(env):
+    fields = {
+        "id": "cisco-ie3300",
+        "label": "Catalyst IE3300",
+        "platform": "ios-xe",
+        "model_pattern": "^IE-3300",
+        "examples": ["IE-3300-8T2S"],
+    }
+    with pytest.raises(ToolRefused, match="turned off"):
+        env.tools.add_model(**fields)
+    env.policy(inventory_edits=True)
+    added = env.tools.add_model(**fields)
+    assert added["model"]["custom"] is True and added["model"]["console_baud"] == 9600
+    listed = {m["id"]: m for m in env.tools.list_models("ios-xe")["models"]}
+    assert listed["cisco-ie3300"]["custom"] and not listed["cisco-c9300"]["custom"]
+    assert all(m["platform"] == "aos-cx" for m in env.tools.list_models("aos-cx")["models"])
+    rows = env.tools.add_devices("acme", [{**NEW_DEVICE, "model": "cisco-ie3300"}])
+    assert rows["imported"] == 1
+    with pytest.raises(ToolRefused, match="already exists"):
+        env.tools.add_model(**fields)
+    with pytest.raises(ToolRefused, match="built-in"):
+        env.tools.add_model(**{**fields, "id": "cisco-c9300"})
+    with pytest.raises(ToolRefused, match="not a valid regex"):
+        env.tools.add_model(**{**fields, "id": "x1", "model_pattern": "(unclosed"})
+    with pytest.raises(ToolRefused, match="platform"):
+        env.tools.add_model(**{**fields, "id": "x2", "platform": "junos"})
+    with pytest.raises(ToolRefused, match="label"):
+        env.tools.add_model(**{**fields, "id": "x3", "label": "two\nlines"})
+    with pytest.raises(ToolRefused, match="unknown platform"):
+        env.tools.list_models("junos")
+    with pytest.raises(ToolRefused, match="looks like a secret"):
+        env.tools.add_model(**{**fields, "id": "x4", "label": f"IE {TACACS}"})

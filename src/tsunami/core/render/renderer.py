@@ -26,7 +26,6 @@ from typing import Any
 
 import jinja2
 
-from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import Issue, Severity, TsunamiError
 from tsunami.core.logins import (
     LoginRefError,
@@ -359,7 +358,8 @@ class Renderer:
         answers = dict(prompt_values or {})
         for name, prompt in play.prompts.items():
             if prompt.type == PromptType.MODEL and name in answers:
-                answers.setdefault("platform", str(load_catalog().get(answers[name]).platform))
+                chosen = self.workspace.catalog.get(answers[name])
+                answers.setdefault("platform", str(chosen.platform))
         resolved = self.workspace.resolve_vars(
             play.customer, device=device, play=entry, prompt_values=answers
         )
@@ -655,7 +655,7 @@ def _validation_targets(
     # With the store, a secret prompt's placeholder is a saved secret (or its default), so
     # the render checks the real shape; without it, any name and a lenient shape.
     saved = frozenset(secrets.list_secrets(cust.slug)) if secrets is not None else None
-    catalog = load_catalog()
+    catalog = workspace.catalog
     sites, roles = frozenset(cust.sites), frozenset(workspace.roles)
     logins = allowed_logins(cust)
     if play.type != PlayType.INITIAL:

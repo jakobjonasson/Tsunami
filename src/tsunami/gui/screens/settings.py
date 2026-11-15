@@ -73,6 +73,14 @@ TAB_TITLE = "Settings"
 DIRTY_TITLE = "Settings ●"
 
 
+# Settings, MCP, Highest tool tier: what each choice lets Claude do (McpPolicy.max_tier).
+TIER_CHOICES = (
+    (2, "Change requests (approved in the GUI; lab per apply mode)"),
+    (1, "Read-only: show, check and compliance"),
+    (0, "Workspace only: no device access"),
+)
+
+
 def validation_message(exc: ValidationError) -> str:
     parts = []
     for err in exc.errors(include_url=False, include_input=False, include_context=False):
@@ -386,6 +394,7 @@ class SettingsTab(QWidget):
     def _policy_fields(self) -> dict[str, Any]:
         return {
             "enabled": self.mcp_enabled.isChecked(),
+            "max_tier": self.tier_combo.currentData(),
             "apply": self.apply_combo.currentText(),
             "lab_allow_drafts": self.lab_drafts.isChecked(),
             "trust_new_host_keys": self.trust_keys.isChecked(),
@@ -418,6 +427,7 @@ class SettingsTab(QWidget):
         was_loading, self._loading = self._loading, True
         try:
             self.mcp_enabled.setChecked(policy.enabled)
+            self.tier_combo.setCurrentIndex(max(self.tier_combo.findData(policy.max_tier), 0))
             self.apply_combo.setCurrentText(policy.apply)
             self.lab_drafts.setChecked(policy.lab_allow_drafts)
             self.trust_keys.setChecked(policy.trust_new_host_keys)
@@ -802,6 +812,16 @@ class SettingsTab(QWidget):
         self.mcp_enabled = QCheckBox("MCP server enabled")
         self.mcp_enabled.toggled.connect(self._on_edit)
         form.addRow(self.mcp_enabled)
+        self.tier_combo = wheel.ComboBox()
+        for tier, text in TIER_CHOICES:
+            self.tier_combo.addItem(text, tier)
+        self.tier_combo.setToolTip(
+            "Turns off every tool above the tier. Read-only keeps show, check and "
+            "compliance but refuses change requests and inventory proposals, for lab "
+            "customers too."
+        )
+        self.tier_combo.currentIndexChanged.connect(self._on_edit)
+        form.addRow("Highest tool tier", self.tier_combo)
         self.apply_combo = wheel.ComboBox()
         self.apply_combo.addItems(["never", "lab_only"])
         self.apply_combo.currentTextChanged.connect(self._on_edit)
@@ -816,10 +836,14 @@ class SettingsTab(QWidget):
         self.lab_drafts = QCheckBox("Lab customers may receive draft plays")
         self.lab_drafts.toggled.connect(self._on_edit)
         form.addRow(self.lab_drafts)
-        self.inventory_edits = QCheckBox("Claude may add customers, sites and devices")
+        self.inventory_edits = QCheckBox(
+            "Claude may add customers, sites, devices and hardware models, and propose "
+            "device changes"
+        )
         self.inventory_edits.setToolTip(
-            "Add only: Claude never edits or deletes inventory. Customers it adds are never "
-            "lab customers, and Claude cannot make first contact with a device it added."
+            "Additions are written at once; changes to and removals of existing devices "
+            "wait in Approvals for a person. Customers Claude adds are never lab customers, "
+            "and Claude cannot make first contact with a device or jump host it chose."
         )
         self.inventory_edits.toggled.connect(self._on_edit)
         form.addRow("Inventory", self.inventory_edits)

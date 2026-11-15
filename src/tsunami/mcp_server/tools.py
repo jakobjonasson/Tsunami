@@ -17,16 +17,21 @@ from __future__ import annotations
 import hashlib
 import inspect
 import io
+import json
 import os
+import queue
 import re
 import tempfile
 import threading
+import time
+from collections import Counter
 from datetime import UTC, datetime
 from pathlib import Path, PureWindowsPath
 from typing import Any
 
 from ruamel.yaml import YAML
 
+from tsunami.core.catalog import CatalogEntry
 from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.inventory_import import ERROR as IMPORT_ERROR
 from tsunami.core.inventory_import import FIELDS as IMPORT_FIELDS
@@ -57,7 +62,7 @@ from tsunami.core.models.play import (
     PromptType,
     RunMode,
 )
-from tsunami.core.models.policy import has_control_chars
+from tsunami.core.models.policy import TIERS, has_control_chars
 from tsunami.core.models.proposals import ProposalStatus
 from tsunami.core.operations import SHOW_MODE, OperationLog, connect_status
 from tsunami.core.pathguard import MAX_DRAFT_BYTES, resolve_draft_write, resolve_read
@@ -74,15 +79,13 @@ from tsunami.core.transports.base import (
     ConnectTarget,
     JumpTarget,
 )
-from tsunami.core.workspace import validate_play_text
+from tsunami.core.workspace import secret_literal_keys, validate_play_text
 from tsunami.core.yamlio import YamlLoadError, load_yaml_text
 from tsunami.mcp_server.enforcement import McpApp, ToolRefused
 
 PLAY_DIRS = ("plays", "drafts/plays")
 SLUG_RE = re.compile(SLUG_PATTERN)
 MAX_DEVICE_ROWS = 200
-# Vars keys refused over MCP: vars never hold secrets, and Claude has no reason to set these.
-_SECRET_KEY = re.compile(r"password|secret|key|community|psk|token|enable", re.I)
 _DEVICE_KEYS = frozenset({*IMPORT_FIELDS, "type"})  # `type` is the CSV name for role
 TOOL_NAMES = frozenset(
     {
@@ -111,6 +114,10 @@ TOOL_NAMES = frozenset(
         "add_devices",
         "propose_inventory_change",
         "get_inventory_proposal",
+        "get_policy",
+        "show_many",
+        "list_models",
+        "add_model",
     }
 )
 MAX_REASON = 500
@@ -124,6 +131,24 @@ PASSWORD_REFUSAL = (
     "run a play that has one, so use a prompt of type 'secret' (saved in Credentials) instead"
 )
 LAB_APPROVAL = "lab policy (no approval)"  # approved_by of a lab run Claude started
+# get_job: how much of each device to return, and how long it may wait for a change.
+JOB_DETAILS = ("full", "diff", "summary")
+MAX_WAIT_SECONDS = 50
+WAIT_POLL_SECONDS = 0.5
+# Job states nothing more will happen to: get_job never waits on them.
+FINISHED_JOBS = frozenset(
+    {
+        JobStatus.DENIED,
+        JobStatus.EXPIRED,
+        JobStatus.COMPLETED,
+        JobStatus.PARTIAL,
+        JobStatus.NO_CHANGES,
+        JobStatus.FAILED,
+        JobStatus.INTERRUPTED,
+        JobStatus.CANCELLED,
+    }
+)
+SHOW_WORKERS = 4  # show_many: devices asked at once
 
 
 class Tools:
@@ -458,11 +483,7 @@ class Tools:
             values = {} if vars is None else vars
             if not isinstance(values, dict):
                 raise ToolRefused("vars must be a mapping of variable names to values")
-            secretish = sorted(str(k) for k in values if _SECRET_KEY.search(str(k)))
-            if secretish:
-                raise ToolRefused(
-                    "vars never hold secrets; leave out " + ", ".join(repr(k) for k in secretish)
-                )
+            _refuse_secret_vars(values)
             try:
                 editor.create_site(customer, site, vars_text=_yaml_text(values))
             except TsunamiError as exc:
@@ -488,11 +509,7 @@ class Tools:
             values = {} if vars is None else vars
             if not isinstance(values, dict):
                 raise ToolRefused("vars must be a mapping of variable names to values")
-            secretish = sorted(str(k) for k in values if _SECRET_KEY.search(str(k)))
-            if secretish:
-                raise ToolRefused(
-                    "vars never hold secrets; leave out " + ", ".join(repr(k) for k in secretish)
-                )
+            _refuse_secret_vars(values)
             try:
                 editor.create_role(role, vars_text=_yaml_text(values))
             except TsunamiError as exc:
@@ -570,6 +587,67 @@ class Tools:
         }
         return self.app.call("add_devices", 0, args, run, customer=customer)
 
+    def list_models(self, platform: str | None = None):
+        """Hardware models a device's model field can name: built-in and the workspace's
+        custom ones."""
+
+        def run(policy):
+            ws = self.app.workspace()
+            plat = _platform(platform) if platform else None
+            return {
+                "models": [
+                    _model_view(e)
+                    for e in ws.catalog.entries
+                    if (plat is None or e.platform == plat) and e.selectable
+                ]
+            }
+
+        return self.app.call("list_models", 0, {"platform": platform}, run)
+
+    def add_model(
+        self,
+        id: str,  # noqa: A002
+        label: str,
+        platform: str,
+        model_pattern: str | None = None,
+        examples: list[str] | None = None,
+        console_baud: int | None = None,
+    ):
+        """Add a custom hardware model to the workspace (inventory/models.yml). Add only."""
+
+        def run(policy):
+            ws = self.app.workspace()
+            editor = self._inventory_editor(policy, ws)
+            if examples is not None and not isinstance(examples, list):
+                raise ToolRefused("examples must be a list of model numbers")
+            fields = {
+                "id": id,
+                "label": label,
+                "platform": platform,
+                "model_pattern": model_pattern,
+                "examples": examples,
+                "console_baud": console_baud,
+            }
+            redactor = self.app.full_redactor()  # the workspace never holds a secret value
+            if any(redactor.text(v) != v for v in _strings(fields)):
+                raise ToolRefused("a model field looks like a secret; refused")
+            try:
+                entry = editor.add_model(fields)
+            except TsunamiError as exc:
+                raise ToolRefused(str(exc)) from None
+            self.app.inventory_changed()
+            return {"model": _model_view(entry), "created": True}
+
+        args = {
+            "id": id,
+            "label": label,
+            "platform": platform,
+            "model_pattern": model_pattern,
+            "examples": examples,
+            "console_baud": console_baud,
+        }
+        return self.app.call("add_model", 0, args, run)
+
     def _inventory_editor(self, policy, ws) -> InventoryEditor:
         if not policy.inventory_edits:
             raise ToolRefused(
@@ -587,7 +665,7 @@ class Tools:
         def run(policy):
             ws = self.app.workspace()
             editor = self._inventory_editor(policy, ws)
-            self.app.visible_customer(policy, ws, customer)
+            cust = self.app.visible_customer(policy, ws, customer)
             note = "" if reason is None else _plain_text(reason, "reason", MAX_REASON)
             waiting = self.app.history.list_inventory_proposals(
                 status=ProposalStatus.AWAITING_APPROVAL, limit=MAX_PENDING_PROPOSALS
@@ -597,15 +675,18 @@ class Tools:
                     "too many inventory proposals are waiting for approval; ask the user to "
                     "review them in Tsunami (Approvals)"
                 )
+            # A login a proposal sets (the device's or its jump host's) must be one this
+            # customer logs in with: never another customer's, never a push-only login.
+            logins = customer_logins(cust) | jump_logins(cust)
             try:
-                stored = build_changes(editor.read_devices(customer), changes)
+                stored = build_changes(editor.read_devices(customer), changes, logins=logins)
                 check_applies(ws.root, customer, stored)
             except TsunamiError as exc:
                 raise ToolRefused(str(exc)) from None
             redactor = self.app.full_redactor()
             for change in stored:
-                for value in change["set"].values():
-                    if value is not None and redactor.text(value) != value:
+                for value in _strings(change["set"]):
+                    if redactor.text(value) != value:
                         raise ToolRefused("a proposed value looks like a secret; refused")
             proposal_id = self.app.history.create_inventory_proposal(
                 customer=customer,
@@ -657,8 +738,16 @@ class Tools:
     ):
         return self._read_only_job("check", RunMode.CHECK, path, targets, prompts, customer)
 
-    def compliance(self, path: str, customer: str | None = None):
-        return self._read_only_job("compliance", RunMode.COMPLIANCE, path, None, None, customer)
+    def compliance(
+        self,
+        path: str,
+        targets: list[str] | None = None,
+        prompts: dict | None = None,
+        customer: str | None = None,
+    ):
+        return self._read_only_job(
+            "compliance", RunMode.COMPLIANCE, path, targets, prompts, customer
+        )
 
     def show(self, customer: str, device: str, command: str):
         def run(policy):
@@ -667,26 +756,8 @@ class Tools:
             dev = cust.device(device)
             if dev is None:
                 raise ToolRefused(f"unknown device {device!r}")
-            try:
-                normalized = check_show_command(policy, PLATFORM_FAMILY[dev.platform], command)
-                parts = split_command(normalized)
-                if parts.pattern is not None:
-                    compile_pattern(parts.pattern)  # refuse a bad pattern before connecting
-            except (PolicyError, FilterError) as exc:
-                raise ToolRefused(str(exc)) from None
-            target = ConnectTarget(
-                customer=customer,
-                device=dev.name,
-                host=dev.host,
-                port=dev.port,
-                platform=dev.platform,
-                method=ConnectionMethod.SSH,
-                credential=self.app.secrets.get_login(cust.credential_for(dev)),
-                jump=self._jump(cust, dev),
-                allow_new_host_key=(
-                    policy.trust_new_host_keys and dev.name not in self._mcp_added(cust)
-                ),
-            )
+            normalized, parts = _show_parts(policy, dev, command)
+            target = self._show_target(policy, cust, dev, self._mcp_added(cust))
             # Recorded in History as an operation: the command and the fully redacted
             # output Claude was given (every stored secret masked, none exempt).
             record = OperationLog(
@@ -700,36 +771,198 @@ class Tools:
             full = self.app.full_redactor()
             transport = self.app.transport()
             try:
-                session = transport.open(target)
-                try:
-                    output = session.send_exec(parts.base).output
-                finally:
-                    session.close()
+                output = _run_show(transport, target, parts, full)
             except Exception as exc:
-                status = connect_status(exc)
-                record.device(dev.name, status, error=redact_exception(exc, full))
+                record.device(dev.name, connect_status(exc), error=redact_exception(exc, full))
                 record.finish()
                 raise
             finally:
-                close = getattr(transport, "close", None)
-                if callable(close):
-                    close()
-            # The pipe runs here, on fully redacted text. On the device it would see the
-            # secrets, and which lines came back would reveal them (showfilter.py). The
-            # command is not echoed back: Claude knows what it sent.
-            output = apply_filter(full.text(output), parts)
+                _close(transport)
             record.device(dev.name, DeviceStatus.SUCCESS, output=f"{normalized}\n{output}")
             record.finish()
+            # The command is not echoed back: Claude knows what it sent.
             return {"device": dev.name, "untrusted_device_output": output}
 
         args = {"customer": customer, "device": device, "command": command}
         return self.app.call("show", 1, args, run, customer=customer)
 
-    def get_job(self, job_id: str):
+    def show_many(
+        self,
+        customer: str,
+        command: str,
+        devices: list[str] | None = None,
+        site: str | None = None,
+        role: str | None = None,
+    ):
+        """One allowlisted show command on many devices, as a job (at most
+        max_check_targets devices). Each device's output is in get_job."""
+
         def run(policy):
-            job = self._visible_job(policy, job_id)
-            phase, note = job_phase(job)
+            ws = self.app.workspace()
+            cust = self.app.visible_customer(policy, ws, customer)
+            if devices is not None:
+                if not isinstance(devices, list) or not devices:
+                    raise ToolRefused("devices must list at least one device, or be left out")
+                unknown = sorted({str(d) for d in devices} - {d.name for d in cust.devices})
+                if unknown:
+                    raise ToolRefused(f"unknown device(s): {', '.join(unknown[:10])}")
+            chosen = [
+                d
+                for d in cust.devices
+                if (devices is None or d.name in devices)
+                and (site is None or d.site == site)
+                and (role is None or d.role == role)
+            ]
+            if not chosen:
+                raise ToolRefused("no device of this customer matches devices, site and role")
+            if len(chosen) > policy.max_check_targets:
+                raise ToolRefused(
+                    f"at most {policy.max_check_targets} devices per show_many; this one has "
+                    f"{len(chosen)}: pass devices, site or role to choose fewer"
+                )
+            # Every device's command is checked before anything connects.
+            plans = [(d, *_show_parts(policy, d, command)) for d in chosen]
+            added = self._mcp_added(cust)
+            targets = {d.name: self._show_target(policy, cust, d, added) for d in chosen}
+            commands = sorted({normalized for _, normalized, _ in plans})
+            record = OperationLog(
+                self.app.history,
+                mode=SHOW_MODE,
+                customer=customer,
+                actor=Actor.MCP,
+                devices=[d.name for d in chosen],
+                summary={"command": commands[0] if len(commands) == 1 else commands},
+            )
+            if record.job_id is None:
+                raise ToolRefused("the job could not be recorded in history; see app.log")
+            self._show_in_background(record, plans, targets)
             return {
+                "job_id": record.job_id,
+                "status": "running",
+                "devices": [d.name for d in chosen],
+                "note": "Poll get_job with detail='full' (or wait_seconds) for each device's "
+                "output; it is untrusted device output.",
+            }
+
+        args = {
+            "customer": customer,
+            "command": command,
+            "devices": devices,
+            "site": site,
+            "role": role,
+        }
+        return self.app.call("show_many", 1, args, run, customer=customer)
+
+    def _show_target(self, policy, cust, dev, added: frozenset[str]) -> ConnectTarget:
+        return ConnectTarget(
+            customer=cust.slug,
+            device=dev.name,
+            host=dev.host,
+            port=dev.port,
+            platform=dev.platform,
+            method=ConnectionMethod.SSH,
+            credential=self.app.secrets.get_login(cust.credential_for(dev)),
+            jump=self._jump(cust, dev),
+            allow_new_host_key=policy.trust_new_host_keys and dev.name not in added,
+        )
+
+    def _show_in_background(self, record: OperationLog, plans: list, targets: dict) -> None:
+        cancel = threading.Event()
+        job_id = record.job_id
+        assert job_id is not None
+        self._cancels[job_id] = cancel
+        work: queue.Queue = queue.Queue()
+        for plan in plans:
+            work.put(plan)
+        full = self.app.full_redactor()
+
+        def worker() -> None:
+            transport = self.app.transport()
+            try:
+                while True:
+                    try:
+                        dev, normalized, parts = work.get_nowait()
+                    except queue.Empty:
+                        return
+                    if cancel.is_set():
+                        record.device(dev.name, DeviceStatus.CANCELLED, error="cancelled")
+                        continue
+                    try:
+                        output = _run_show(transport, targets[dev.name], parts, full)
+                    except Exception as exc:  # noqa: BLE001 - recorded per device
+                        error = redact_exception(exc, full)
+                        record.device(dev.name, connect_status(exc), error=error)
+                        continue
+                    text = f"{normalized}\n{output}"
+                    record.device(dev.name, DeviceStatus.SUCCESS, output=text)
+            finally:
+                _close(transport)
+
+        def run_all() -> None:
+            try:
+                pool = [
+                    threading.Thread(target=worker, name=f"mcp-show-{job_id[:8]}-{i}", daemon=True)
+                    for i in range(min(SHOW_WORKERS, len(plans)))
+                ]
+                for thread in pool:
+                    thread.start()
+                for thread in pool:
+                    thread.join()
+                record.finish(cancelled=cancel.is_set())
+            finally:
+                self._cancels.pop(job_id, None)
+
+        thread = threading.Thread(target=run_all, name=f"mcp-{job_id[:8]}", daemon=True)
+        self.app.threads.append(thread)
+        thread.start()
+
+    def get_job(
+        self,
+        job_id: str,
+        devices: list[str] | None = None,
+        detail: str = "full",
+        wait_seconds: int = 0,
+        since: str | None = None,
+    ):
+        """A job's status and per-device results.
+
+        devices: only these devices' rows. detail: "full" (render, output and diff),
+        "diff" (the diff, no render or output) or "summary" (status and error only).
+        wait_seconds: wait up to this long (at most MAX_WAIT_SECONDS) for the job's state
+        to differ from since (a state token from an earlier get_job; default: its state
+        when the call started), returning at once if the job has finished. One waiting call
+        replaces many polls under the rate limit.
+        """
+
+        def run(policy):
+            if detail not in JOB_DETAILS:
+                raise ToolRefused(f"detail must be one of {', '.join(JOB_DETAILS)}")
+            if devices is not None and (
+                not isinstance(devices, list) or not all(isinstance(d, str) for d in devices)
+            ):
+                raise ToolRefused("devices must be a list of device names")
+            if isinstance(wait_seconds, bool) or not isinstance(wait_seconds, int | float):
+                raise ToolRefused("wait_seconds must be a number of seconds")
+            wait = max(0.0, min(float(wait_seconds), MAX_WAIT_SECONDS))
+            job = self._visible_job(policy, job_id)
+            rows = self.app.history.devices(job_id)
+            state = job_state(job, rows)
+            if wait:
+                target = since if since is not None else state
+                deadline = time.monotonic() + wait
+                while (
+                    state == target
+                    and job.status not in FINISHED_JOBS
+                    and time.monotonic() < deadline
+                ):
+                    time.sleep(min(WAIT_POLL_SECONDS, max(0.0, deadline - time.monotonic())))
+                    job = self._visible_job(policy, job_id)
+                    rows = self.app.history.devices(job_id)
+                    state = job_state(job, rows)
+            phase, note = job_phase(job)
+            wanted = None if devices is None else set(devices)
+            shown = [d for d in rows if wanted is None or d.device in wanted]
+            result = {
                 "job_id": job.id,
                 "play": job.play_path,
                 "customer": job.customer,
@@ -737,28 +970,28 @@ class Tools:
                 "phase": phase,
                 **({"note": note} if note else {}),
                 "status": str(job.status),
+                "finished": job.status in FINISHED_JOBS,
+                "state": state,
                 "actor": str(job.actor),
                 "created_at": job.created_at.isoformat(),
                 "approved_by": job.approved_by,
                 "summary": job.summary,
-                "devices": [
-                    {
-                        "device": d.device,
-                        "status": str(d.status),
-                        "failed_line": d.failed_line,
-                        "error": d.error_redacted,
-                        "rollback_status": d.rollback_status,
-                        "render": d.render_masked,
-                        "untrusted_device_output": {
-                            "output": d.output_redacted,
-                            "diff": d.diff_redacted,
-                        },
-                    }
-                    for d in self.app.history.devices(job_id)
-                ],
+                "counts": dict(Counter(str(d.status) for d in rows)),
+                "devices": [_device_view(d, detail) for d in shown],
             }
+            if wanted is not None:
+                missing = sorted(wanted - {d.device for d in rows})
+                if missing:
+                    result["devices_not_in_job"] = missing
+            return result
 
-        args = {"job_id": job_id}
+        args = {
+            "job_id": job_id,
+            "devices": devices,
+            "detail": detail,
+            "wait_seconds": wait_seconds,
+            "since": since,
+        }
         return self.app.call("get_job", 1, args, run, known=self._job_supplied(job_id))
 
     def list_jobs(self, customer: str | None = None, limit: int = 20):
@@ -908,24 +1141,75 @@ class Tools:
         args = {"family": family, "command": command, "reason": reason}
         return self.app.call("request_allowlist_addition", 0, args, run)
 
+    def get_policy(self):
+        """The policy as it applies to Claude now: what is allowed and the limits, and the
+        show-allowlist requests with their status. Never the blocked customers (they are
+        hidden from MCP entirely) and never who decided a request."""
+
+        def run(policy):
+            requests = [
+                {
+                    "request_id": r["id"],
+                    "family": r["family"],
+                    "command": r["command"],
+                    "status": r["status"],
+                    "requested_at": r["requested_at"],
+                    "decided_at": r["decided_at"],
+                }
+                for r in self.app.history.allowlist_requests(limit=50)
+            ]
+            return {
+                "max_tier": policy.max_tier,
+                "tiers": {str(t): text for t, text in TIERS.items()},
+                "apply": policy.apply,
+                "lab_allow_drafts": policy.lab_allow_drafts,
+                "trust_new_host_keys": policy.trust_new_host_keys,
+                "inventory_edits": policy.inventory_edits,
+                "show_allowlist": {str(f): list(v) for f, v in policy.show_allowlist.items()},
+                "pipes": {str(f): list(v) for f, v in policy.pipes.items()},
+                "max_check_targets": policy.max_check_targets,
+                "rate_limit_per_minute": policy.rate_limit_per_minute,
+                "approval_expiry_minutes": policy.approval_expiry_minutes,
+                "allowlist_requests": requests,
+            }
+
+        return self.app.call("get_policy", 0, {}, run)
+
     def cancel_job(self, job_id: str):
+        """Cancel a job Claude started: one not yet started (a change request before or
+        while it waits for approval), or one running in this process without a person's
+        approval (a lab run, a check, compliance, show_many). A run a person approved is
+        stopped in the GUI."""
+
         def run(policy):
             current = self._visible_job(policy, job_id)
             if current.actor != Actor.MCP:
                 raise ToolRefused("only jobs requested over MCP can be cancelled here")
-            if current.status not in (JobStatus.PENDING, JobStatus.AWAITING_APPROVAL):
-                raise ToolRefused(
-                    f"job is {current.status}; only jobs not yet started can be cancelled"
-                )
             event = self._cancels.get(job_id)
-            if event is not None:
+            if current.status in (JobStatus.PENDING, JobStatus.AWAITING_APPROVAL):
+                if event is not None:
+                    event.set()
+                self.app.history.set_job_status(job_id, JobStatus.CANCELLED)
+                self.app.history.cancel_ready_devices(job_id)
+                return {"job_id": job_id, "status": "cancelled"}
+            if current.status == JobStatus.RUNNING and event is not None:
                 event.set()
-            self.app.history.set_job_status(job_id, JobStatus.CANCELLED)
-            self.app.history.cancel_ready_devices(job_id)
-            return {"job_id": job_id, "status": "cancelled"}
+                return {
+                    "job_id": job_id,
+                    "status": "cancelling",
+                    "note": "No new device or step starts. A device in the middle of a change "
+                    "is rolled back as on any failure. Poll get_job for the outcome.",
+                }
+            if current.status == JobStatus.RUNNING:
+                raise ToolRefused(
+                    "a person approved and started this run; it can be stopped only in the "
+                    "Tsunami GUI"
+                )
+            raise ToolRefused(f"job is {current.status}; there is nothing to cancel")
 
         args = {"job_id": job_id}
-        return self.app.call("cancel_job", 2, args, run, known=self._job_supplied(job_id))
+        # Tier 1: cancelling only stops work Claude started, so a read-only policy keeps it.
+        return self.app.call("cancel_job", 1, args, run, known=self._job_supplied(job_id))
 
     # == helpers ===========================================================================
 
@@ -941,9 +1225,14 @@ class Tools:
                 raise ToolRefused("compliance is for baseline plays")
             if entry.draft and not (cust.config.lab and policy.lab_allow_drafts):
                 raise ToolRefused("drafts can only be checked against lab customers")
+            if targets is not None and not targets:
+                raise ToolRefused("targets must list at least one device, or be left out")
             devices = self._check_targets(ws, cust, play, targets)
             if len(devices) > policy.max_check_targets:
-                raise ToolRefused(f"at most {policy.max_check_targets} devices per check")
+                raise ToolRefused(
+                    f"at most {policy.max_check_targets} devices per {tool}; this one has "
+                    f"{len(devices)}: pass targets to choose some, and run it again for the rest"
+                )
             answers = self._without_passwords(entry, prompts)
             job_id = self._create_job(entry.path, play.customer, str(mode), answers, None, targets)
             self._background(
@@ -960,7 +1249,7 @@ class Tools:
                     customer=entry.play.customer,
                 )
             )
-            return {"job_id": job_id, "status": "running", "devices": len(devices)}
+            return {"job_id": job_id, "status": "running", "devices": [d.name for d in devices]}
 
         args = {
             "path": path,
@@ -1198,6 +1487,97 @@ def _jump_view(cust: Any, device: Any) -> dict[str, Any] | None:
     if jh is None:
         return None
     return {"host": str(jh.host), "port": jh.port, "set_at": source}
+
+
+def _refuse_secret_vars(values: Any) -> None:
+    """Vars never hold secrets: refuse a secret-looking key with a literal string value, the
+    rule the workspace linter warns on. poe_enabled: true or ntp_key_id: 5 is fine."""
+    secretish = secret_literal_keys(values)
+    if secretish:
+        raise ToolRefused(
+            "vars never hold secrets; leave out " + ", ".join(repr(k) for k in secretish)
+        )
+
+
+def _strings(value: Any) -> list[str]:
+    """Every string in a value, mapping keys included."""
+    if isinstance(value, str):
+        return [value]
+    if isinstance(value, dict):
+        return [s for k, v in value.items() for s in (*_strings(k), *_strings(v))]
+    if isinstance(value, list | tuple):
+        return [s for v in value for s in _strings(v)]
+    return []
+
+
+def _show_parts(policy: Any, dev: Any, command: str) -> tuple[str, Any]:
+    """The normalized command and its parts for this device's family, or ToolRefused
+    (a bad pattern is refused here, before anything connects)."""
+    try:
+        normalized = check_show_command(policy, PLATFORM_FAMILY[dev.platform], command)
+        parts = split_command(normalized)
+        if parts.pattern is not None:
+            compile_pattern(parts.pattern)
+    except (PolicyError, FilterError) as exc:
+        raise ToolRefused(f"{dev.name}: {exc}") from None
+    return normalized, parts
+
+
+def _run_show(transport: Any, target: ConnectTarget, parts: Any, full: Any) -> str:
+    """Run the base command, then the pipe here, on fully redacted text. On the device the
+    pipe would see the secrets, and which lines came back would reveal them
+    (showfilter.py)."""
+    session = transport.open(target)
+    try:
+        output = session.send_exec(parts.base).output
+    finally:
+        session.close()
+    return apply_filter(full.text(output), parts)
+
+
+def _close(transport: Any) -> None:
+    close = getattr(transport, "close", None)
+    if callable(close):
+        close()
+
+
+def job_state(job: Any, rows: list[Any]) -> str:
+    """A short token that changes when the job's or a device's status does (get_job since)."""
+    data = [str(job.status), str(job.approved_at)] + [
+        f"{d.device}={d.status}/{d.rollback_status}" for d in rows
+    ]
+    return hashlib.sha256(json.dumps(data).encode("utf-8")).hexdigest()[:16]
+
+
+def _device_view(d: Any, detail: str) -> dict[str, Any]:
+    view: dict[str, Any] = {
+        "device": d.device,
+        "status": str(d.status),
+        "failed_line": d.failed_line,
+        "error": d.error_redacted,
+        "rollback_status": d.rollback_status,
+    }
+    if detail == "full":
+        view["render"] = d.render_masked
+        view["untrusted_device_output"] = {"output": d.output_redacted, "diff": d.diff_redacted}
+    elif detail == "diff":
+        view["untrusted_device_output"] = {"diff": d.diff_redacted}
+    return view
+
+
+def _model_view(entry: CatalogEntry) -> dict[str, Any]:
+    return {
+        "id": entry.id,
+        "label": entry.label,
+        "vendor": entry.vendor,
+        "platform": str(entry.platform),
+        "custom": entry.custom,
+        "console_baud": entry.console_baud,
+        "model_pattern": entry.model_pattern,
+        "examples": list(entry.examples),
+        "lifecycle": entry.lifecycle,
+        "eos_year": entry.eos_year,
+    }
 
 
 def _plain_text(value: Any, what: str, limit: int) -> str:

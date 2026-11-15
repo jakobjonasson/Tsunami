@@ -555,6 +555,16 @@ class History:
         )
         return [dict(r) for r in rows]
 
+    def allowlist_requests(self, *, limit: int = 50) -> list[dict[str, Any]]:
+        """The newest requests, decided or not, for MCP get_policy. Who decided is left out:
+        it is a Windows username."""
+        rows = self._query(
+            "SELECT id, family, command, reason, status, requested_at, decided_at"
+            " FROM allowlist_requests ORDER BY id DESC LIMIT ?",
+            (limit,),
+        )
+        return [dict(r) for r in rows]
+
     def decide_allowlist_request(self, request_id: int, *, approved: bool, by: str) -> bool:
         """Record the decision on a pending request; False if it was not pending."""
         cur = self._exec(

@@ -1361,6 +1361,24 @@ ARG_CASES += [
     ("check", {"path": "plays/push/add-vlan.yml", "prompts": {"vlan_name": "{S}"}}),
     ("render", {"path": "plays/push/add-vlan.yml", "device": "sa-as01", "prompts": {"a": "{S}"}}),
 ]
+# 0.7.1 tools and arguments, appended so the case ids above keep their numbers.
+ARG_CASES += [
+    ("compliance", {"path": "plays/baseline/acme-baseline.yml", "targets": ["{S}"]}),
+    ("compliance", {"path": "plays/baseline/acme-baseline.yml", "prompts": {"a": "{S}"}}),
+    ("show_many", {"customer": "acme", "command": "show version {S}"}),
+    ("show_many", {"customer": "acme", "command": "show version", "devices": ["{S}"]}),
+    ("show_many", {"customer": "acme", "command": "show version", "site": "{S}"}),
+    ("show_many", {"customer": "{S}", "command": "show version"}),
+    ("get_job", {"job_id": "{S}", "devices": ["{S}"], "since": "{S}"}),
+    ("get_job", {"job_id": "x", "detail": "{S}"}),
+    ("list_models", {"platform": "{S}"}),
+    ("add_model", {"id": "{S}", "label": "{S}", "platform": "ios"}),
+    ("propose_inventory_change", {"customer": "acme", "changes": [{"device": "{S}"}]}),
+    (
+        "propose_inventory_change",
+        {"customer": "acme", "changes": [{"device": "sa-as01", "credential": "{S}"}]},
+    ),
+]
 CASE_IDS = [f"{tool}-{i}" for i, (tool, _) in enumerate(ARG_CASES)]
 ARG_SECRETS = (LOGIN_PW, ODD)
 

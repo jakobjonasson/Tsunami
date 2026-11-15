@@ -594,6 +594,7 @@ class InventoryView(QWidget):
 
         if kind is None:
             add("New customer…", "add", self.new_customer)
+            add("Hardware models…", "circuit-board", self.hardware_models)
         elif kind[0] == "customer":
             add("Show devices", "server-environment", self.show_devices, kind[1])
             add("Add site…", "add", self.new_site, kind[1])
@@ -722,6 +723,9 @@ class InventoryView(QWidget):
         self.shell.refresh_all()
         self.shell.notify(message)
         return True
+
+    def hardware_models(self) -> None:
+        dialogs.run_dialog(dialogs.HardwareModelsDialog(self.ctx, self.shell, parent=self))
 
     def new_customer(self) -> None:
         dialogs.run_dialog(dialogs.CustomerDialog(self.ctx, self.shell, parent=self))

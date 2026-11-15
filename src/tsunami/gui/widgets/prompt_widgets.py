@@ -23,7 +23,7 @@ from PySide6.QtWidgets import (
     QWidget,
 )
 
-from tsunami.core.catalog import load_catalog
+from tsunami.core.catalog import Catalog, load_catalog
 from tsunami.core.models.common import Platform
 from tsunami.core.models.play import Prompt, PromptType
 from tsunami.core.prompts import PromptContext
@@ -139,11 +139,14 @@ def _default(prompt: Prompt) -> Any:
     return value
 
 
-def model_combo(platforms: Collection[Platform] | None = None) -> QComboBox:
-    """Catalog models grouped by vendor. Unsupported platforms are listed but disabled."""
+def model_combo(
+    platforms: Collection[Platform] | None = None, catalog: Catalog | None = None
+) -> QComboBox:
+    """Catalog models grouped by vendor, the workspace's custom models included (catalog).
+    Unsupported platforms are listed but disabled."""
     combo = wheel.ComboBox()
     combo.addItem("", "")
-    for vendor, entries in load_catalog().by_vendor().items():
+    for vendor, entries in (catalog or load_catalog()).by_vendor().items():
         shown = [e for e in entries if platforms is None or e.platform in platforms]
         if not shown:
             continue
@@ -194,8 +197,10 @@ def make_prompt_widget(
     context: PromptContext,
     *,
     platforms: Collection[Platform] | None = None,
+    catalog: Catalog | None = None,
 ) -> PromptField:
-    """The editor for one prompt. `platforms` limits the model dropdown."""
+    """The editor for one prompt. `platforms` limits the model dropdown, which lists the
+    models in `catalog` (default: the built-in catalog)."""
     ptype = prompt.type
     if ptype in (PromptType.VLAN, PromptType.INT):
         spin = wheel.SpinBox()
@@ -236,7 +241,7 @@ def make_prompt_widget(
         )
     elif ptype in _COMBO_TYPES:
         if ptype == PromptType.MODEL:
-            combo, getter, setter = _combo_field(name, prompt, [], model_combo(platforms))
+            combo, getter, setter = _combo_field(name, prompt, [], model_combo(platforms, catalog))
         elif ptype == PromptType.CHOICE:
             items = [(c, c) for c in prompt.choices or []]
             combo, getter, setter = _combo_field(name, prompt, items)

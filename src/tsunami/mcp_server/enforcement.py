@@ -5,7 +5,7 @@ Every tool call goes through McpApp.call:
 1. the policy is enabled (re-read from %APPDATA% on every call, so GUI edits apply
    at once; the MCP server has no write path to it);
 2. the customer is not blocked (a blocked customer is reported as unknown);
-3. the tool's tier is allowed;
+3. the tool's tier is allowed (at most the policy's max_tier);
 4. paths are checked by the tool itself through core.pathguard;
 5. the rate limit holds;
 6. the tool runs;
@@ -30,7 +30,7 @@ from typing import Any
 from mcp.server.mcpserver.exceptions import ToolError
 
 from tsunami.core.issues import TsunamiError
-from tsunami.core.models.policy import McpPolicy
+from tsunami.core.models.policy import TIERS, McpPolicy
 from tsunami.core.models.settings import load_settings
 from tsunami.core.paths import AppPaths
 from tsunami.core.policy import load_policy
@@ -138,8 +138,13 @@ class McpApp:
                 raise ToolRefused("MCP access is turned off in Tsunami Settings")
             if customer is not None and customer in policy.customers_blocked:
                 raise ToolRefused(f"unknown customer {customer!r}")
-            if tier not in (0, 1, 2):
+            if tier not in TIERS:
                 raise ToolRefused("unknown tool tier")
+            if tier > policy.max_tier:
+                raise ToolRefused(
+                    f"{tool} is a tier {tier} tool ({TIERS[tier]}), and Tsunami Settings "
+                    f"(MCP, Highest tool tier) allow only up to tier {policy.max_tier}"
+                )
             self._rate_limit(policy)
             result = fn(policy)
             result = _redact_value(result, redactor)

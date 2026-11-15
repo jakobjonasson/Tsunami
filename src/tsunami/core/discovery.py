@@ -852,7 +852,9 @@ class Discovery:
         if not facts.model:
             return None
         matches = [
-            e.id for e in load_catalog().match_reported_model(facts.model) if e.platform == platform
+            e.id
+            for e in load_catalog(self.root).match_reported_model(facts.model)
+            if e.platform == platform
         ]
         return matches[0] if len(matches) == 1 else None
 

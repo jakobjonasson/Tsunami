@@ -19,7 +19,6 @@ from datetime import UTC, datetime
 from typing import Any
 
 from tsunami.core.backups import write_backup
-from tsunami.core.catalog import load_catalog
 from tsunami.core.checks import run_check
 from tsunami.core.diff import diff_config
 from tsunami.core.errordetect import find_error
@@ -221,7 +220,7 @@ class DevicePipeline:
         """Console speed of the chosen hardware model, for day-0 plays."""
         for name, prompt in self.ctx.play.prompts.items():
             if prompt.type == PromptType.MODEL and name in self.prompts:
-                return load_catalog().get(self.prompts[name]).console_baud
+                return self.ctx.workspace.catalog.get(self.prompts[name]).console_baud
         return None
 
     def platform(self) -> Platform:

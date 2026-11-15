@@ -11,7 +11,6 @@ from collections.abc import Collection, Mapping
 from pathlib import Path
 from typing import Any
 
-from tsunami.core.catalog import load_catalog
 from tsunami.core.issues import TsunamiError
 from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform
@@ -74,7 +73,7 @@ def collect_prompts(
     play = entry.play
     assert play is not None
     cust = workspace.customer(play.customer)
-    catalog = load_catalog()
+    catalog = workspace.catalog
     unknown = sorted(set(raw) - set(play.prompts))
     problems = [f"{name}: not a prompt of this play" for name in unknown]
     values: dict[str, Any] = {}

@@ -257,9 +257,10 @@ class ProposalCard(QWidget):
         self.changes.horizontalHeader().setStretchLastSection(True)
         self.changes.setEditTriggers(QAbstractItemView.EditTrigger.NoEditTriggers)
         p = theme.current()
+        show = inventory_proposals.display
         for row, (device, field_name, before, after, removed) in enumerate(rows):
-            shown_after = "(device removed)" if removed else (after if after is not None else "-")
-            cells = (device, field_name, before if before is not None else "-", shown_after)
+            shown_after = "(device removed)" if removed else show(field_name, after)
+            cells = (device, field_name, show(field_name, before), shown_after)
             for column, text in enumerate(cells):
                 item = QTableWidgetItem(str(text))
                 if column == 2:

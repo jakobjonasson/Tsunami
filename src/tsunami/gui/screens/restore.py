@@ -295,7 +295,7 @@ class RestoreDialog(QDialog):
             try:
                 from tsunami.core.catalog import load_catalog
 
-                baud = load_catalog().get(model).console_baud
+                baud = load_catalog(self.ctx.workspace_path).get(model).console_baud
             except Exception:  # noqa: BLE001 - unknown model: the platform's speed
                 pass
         return baud if baud in BAUDS else FAMILY_BAUD[self.family]

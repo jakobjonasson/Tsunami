@@ -20,7 +20,7 @@ from typing import Any, TypeVar
 
 from pydantic import BaseModel, ValidationError
 
-from tsunami.core.catalog import load_catalog
+from tsunami.core.catalog import CUSTOM_MODELS, Catalog, builtin_catalog, parse_custom_models
 from tsunami.core.issues import Finding, Issue, Severity, TsunamiError
 from tsunami.core.logins import allowed_logins
 from tsunami.core.models.common import (
@@ -55,7 +55,9 @@ from tsunami.core.yamlio import Loc, YamlDoc, YamlLoadError, load_yaml, validati
 M = TypeVar("M", bound=BaseModel)
 
 _SLUG_RE = re.compile(SLUG_PATTERN)
-_SECRET_KEY_RE = re.compile(r"password|secret|key|community|psk", re.IGNORECASE)
+# A vars key that looks like it names a secret. The linter warns when such a key holds a
+# literal string, and MCP refuses one in vars it writes (secret_literal_keys).
+_SECRET_KEY_RE = re.compile(r"password|secret|key|community|psk|token", re.IGNORECASE)
 _TEMPLATED_RE = re.compile(r"\{\{|\{%")
 
 GLOBAL_VARS = Path("inventory", "global.yml")
@@ -136,6 +138,8 @@ class Workspace:
     roles: dict[str, dict[str, Any]] = field(default_factory=dict)
     customers: dict[str, CustomerInventory] = field(default_factory=dict)
     plays: dict[Path, PlayEntry] = field(default_factory=dict)
+    # The built-in hardware catalog plus the valid models in inventory/models.yml.
+    catalog: Catalog = field(default_factory=builtin_catalog, repr=False)
     issues: list[Issue] = field(default_factory=list)
     # Line maps of loaded plays, so later checks (validation renders) can report lines.
     play_docs: dict[Path, YamlDoc] = field(default_factory=dict, repr=False)
@@ -212,6 +216,23 @@ class Workspace:
         return resolve(layers, defaults={"hostname": dev.name}, builtins=builtins)
 
 
+def secret_literal_keys(values: Any, prefix: str = "") -> list[str]:
+    """Dotted paths of keys that look like they name a secret and hold a literal string,
+    the rule the linter warns on (design.md, Merge rules). poe_enabled: true or
+    ntp_key_id: 5 is not one; snmp_community: public is."""
+    found: list[str] = []
+    if isinstance(values, Mapping):
+        for key, value in values.items():
+            path = f"{prefix}{key}"
+            if isinstance(value, str) and _SECRET_KEY_RE.search(str(key)):
+                found.append(path)
+            found += secret_literal_keys(value, path + ".")
+    elif isinstance(values, list):
+        for index, item in enumerate(values):
+            found += secret_literal_keys(item, f"{prefix}{index}.")
+    return found
+
+
 def load_workspace(root: Path, *, render: bool = True) -> Workspace:
     """Load and validate a workspace. render=False skips the validation renders."""
     workspace = _Loader(Path(root)).load()
@@ -257,6 +278,7 @@ class _Loader:
     def __init__(self, root: Path) -> None:
         self.root = root
         self.issues: list[Issue] = []
+        self.catalog = builtin_catalog()
 
     # -- helpers ---------------------------------------------------------------
 
@@ -330,6 +352,7 @@ class _Loader:
             self.load_vars(self.root / GLOBAL_VARS) if (self.root / GLOBAL_VARS).is_file() else {}
         )
         ws.roles = self.load_roles()
+        ws.catalog = self.catalog = self.load_models()
         for folder in sorted((self.root / CUSTOMERS_DIR).glob("*")):
             if folder.is_dir():
                 cust = self.load_customer(folder, ws.roles)
@@ -398,6 +421,23 @@ class _Loader:
             return {}
         self.lint_vars(doc, model.root, ())
         return dict(model.root)
+
+    def load_models(self) -> Catalog:
+        """The built-in catalog plus inventory/models.yml; each entry left out is an error."""
+        builtin = builtin_catalog()
+        path = self.root / CUSTOM_MODELS
+        if not path.is_file():
+            return builtin
+        doc = self.doc(path)
+        if doc is None:
+            return builtin
+        found = parse_custom_models(doc.data, builtin)
+        for problem in found.problems:
+            if problem.index is None:
+                self.at(doc, Severity.ERROR, "models.invalid", f"models.yml {problem.message}")
+            else:
+                self.at(doc, Severity.ERROR, "models.invalid", problem.message, problem.index)
+        return Catalog((*builtin.entries, *found.entries))
 
     def load_roles(self) -> dict[str, dict[str, Any]]:
         # The built-in device types always exist; a roles/<role>.yml file adds variables.
@@ -482,7 +522,7 @@ class _Loader:
                 doc, Severity.ERROR, "devices.not_a_list", "devices.yml must be a list of devices"
             )
             return ()
-        catalog = load_catalog()
+        catalog = self.catalog
         devices: list[Device] = []
         seen: set[str] = set()
         for index, item in enumerate(doc.data):
@@ -596,7 +636,7 @@ class _Loader:
                 "customer",
             )
             return
-        catalog = load_catalog()
+        catalog = ws.catalog
         model_prompts = [n for n, p in play.prompts.items() if p.type == PromptType.MODEL]
 
         # Platforms the play's snippets must resolve for.

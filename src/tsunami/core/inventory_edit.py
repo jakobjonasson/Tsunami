@@ -1,4 +1,4 @@
-"""Edit inventory files from the GUI: customers, sites and devices.
+"""Edit inventory files from the GUI: customers, sites, devices and custom hardware models.
 
 Each change loads the file for round-trip editing (comments and layout are kept),
 applies the change, validates the result with the models the loader uses, and writes it
@@ -19,7 +19,15 @@ from typing import Any
 from pydantic import ValidationError
 from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-from tsunami.core.catalog import load_catalog
+from tsunami.core.catalog import (
+    CUSTOM_MODELS,
+    CatalogEntry,
+    CustomModel,
+    builtin_catalog,
+    load_catalog,
+    model_error,
+    parse_custom_models,
+)
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import require_slug
 from tsunami.core.models.inventory import (
@@ -70,6 +78,16 @@ CUSTOMER_KEYS = (
 )
 OPTIONAL_DEVICE_KEYS = frozenset(
     {"port", "model", "credential", "jump_host", "canary_priority", "vars"}
+)
+MODEL_KEYS = (
+    "id",
+    "label",
+    "platform",
+    "model_pattern",
+    "examples",
+    "console_baud",
+    "lifecycle",
+    "eos_year",
 )
 # Defaults left out of devices.yml, as in hand-written files.
 IMPLICIT_DEFAULTS = {"port": 22, "canary_priority": DEFAULT_CANARY_PRIORITY}
@@ -261,6 +279,104 @@ class InventoryEditor:
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(text, encoding="utf-8", newline="\n")
 
+    # -- custom hardware models (inventory/models.yml) --------------------------------------
+
+    def read_models(self) -> list[dict[str, Any]]:
+        """The custom models as written in models.yml, as plain dicts."""
+        path = self.root / CUSTOM_MODELS
+        if not path.is_file():
+            return []
+        return [_to_plain(item) for item in _load(path, CommentedSeq).data]
+
+    def add_model(self, fields: Mapping[str, Any]) -> CatalogEntry:
+        """Add a custom model. Its id must be new, and never a built-in one."""
+        model = self._checked_model(fields)
+        doc = self._models_doc()
+        if any(isinstance(i, Mapping) and i.get("id") == model.id for i in doc.data):
+            raise InventoryEditError(f"model {model.id!r} already exists")
+        if model.id in builtin_catalog().ids():
+            raise InventoryEditError(f"model {model.id!r} is a built-in model")
+        doc.data.append(_model_item(model))
+        self._write_models(doc)
+        return model.entry()
+
+    def update_model(self, model_id: str, fields: Mapping[str, Any]) -> CatalogEntry:
+        """Replace a custom model's fields (not its id). A new platform must still fit every
+        device that names the model."""
+        doc = self._models_doc()
+        index = _model_index(doc.data, model_id)
+        model = self._checked_model({**fields, "id": model_id})
+        clash = [
+            f"{c}/{d}"
+            for c, d, platform in self.model_users(model_id)
+            if platform != str(model.platform)
+        ]
+        if clash:
+            raise InventoryEditError(
+                f"{', '.join(clash)} use model {model_id!r} on another platform; change "
+                "those devices first"
+            )
+        doc.data[index] = _model_item(model)
+        self._write_models(doc)
+        return model.entry()
+
+    def delete_model(self, model_id: str) -> None:
+        """Remove a custom model that no device names."""
+        doc = self._models_doc()
+        index = _model_index(doc.data, model_id)
+        users = [f"{c}/{d}" for c, d, _ in self.model_users(model_id)]
+        if users:
+            raise InventoryEditError(
+                f"model {model_id!r} is used by {', '.join(users[:5])}"
+                + (f" and {len(users) - 5} more" if len(users) > 5 else "")
+                + "; clear it on those devices first"
+            )
+        del doc.data[index]
+        self._write_models(doc)
+
+    def model_users(self, model_id: str) -> list[tuple[str, str, str]]:
+        """(customer, device, platform) of every device whose model is model_id."""
+        found = []
+        for path in sorted((self.root / CUSTOMERS).glob("*/devices.yml")):
+            try:
+                items = _load(path, CommentedSeq).data
+            except InventoryEditError:
+                continue  # the loader reports a broken file
+            for item in items:
+                if isinstance(item, Mapping) and item.get("model") == model_id:
+                    found.append(
+                        (path.parent.name, str(item.get("name")), str(item.get("platform")))
+                    )
+        return found
+
+    def _checked_model(self, fields: Mapping[str, Any]) -> CustomModel:
+        unknown = set(fields) - set(MODEL_KEYS)
+        if unknown:
+            raise InventoryEditError(f"unknown model field(s): {', '.join(sorted(unknown))}")
+        plain = {k: v for k, v in _to_plain(dict(fields)).items() if v not in (None, "", [])}
+        try:
+            return CustomModel.model_validate(plain)
+        except ValidationError as exc:
+            raise InventoryEditError(f"model: {model_error(exc)}") from None
+
+    def _models_doc(self) -> RoundTripDoc:
+        path = self.root / CUSTOM_MODELS
+        if not path.is_file():
+            return _new_doc(path, _block_seq())
+        doc = _load(path, CommentedSeq)
+        if not doc.data:
+            doc.data = _block_seq()
+        return doc
+
+    def _write_models(self, doc: RoundTripDoc) -> None:
+        found = parse_custom_models(_to_plain(doc.data))
+        if found.problems:
+            problem = found.problems[0]
+            where = "" if problem.index is None else f"entry {problem.index + 1}: "
+            raise InventoryEditError(f"models.yml {where}{problem.message}")
+        doc.path.parent.mkdir(parents=True, exist_ok=True)
+        dump_roundtrip(doc)
+
     # -- devices ------------------------------------------------------------------------
 
     def add_device(self, customer: str, fields: Mapping[str, Any]) -> None:
@@ -351,10 +467,14 @@ class InventoryEditor:
         if unknown:
             raise InventoryEditError(f"unknown device field(s): {', '.join(sorted(unknown))}")
         devices = self._devices_doc(customer)
-        for name, fields in updates.items():
-            _set_device_fields(self._find_device(devices.data, name), fields)
-        for name in removals:
-            devices.data.remove(self._find_device(devices.data, name))
+        # Find every device before changing any: a rename must not be found again under
+        # its new name by a later change (a renamed to b while b is renamed to c).
+        edited = [(self._find_device(devices.data, n), f) for n, f in updates.items()]
+        removed = [self._find_device(devices.data, name) for name in removals]
+        for item, fields in edited:
+            _set_device_fields(item, fields)
+        for item in removed:
+            devices.data.remove(item)
         self._check_devices(customer, devices.data)
         dump_roundtrip(devices)
 
@@ -428,7 +548,7 @@ class InventoryEditor:
     def _check_devices(self, customer: str, items: list) -> None:
         self._validate(DevicesFile, items, "devices.yml")
         folder = self._customer_dir(customer)
-        catalog = load_catalog()
+        catalog = load_catalog(self.root)
         seen: set[str] = set()
         for item in items:
             device = Device.model_validate(_to_plain(item))
@@ -501,6 +621,30 @@ def _block_seq() -> CommentedSeq:
     seq = CommentedSeq()
     seq.fa.set_block_style()
     return seq
+
+
+def _model_index(items: list, model_id: str) -> int:
+    for index, item in enumerate(items):
+        if isinstance(item, Mapping) and item.get("id") == model_id:
+            return index
+    if model_id in builtin_catalog().ids():
+        raise InventoryEditError(f"model {model_id!r} is built in and cannot be changed")
+    raise InventoryEditError(f"unknown custom model {model_id!r}")
+
+
+def _model_item(model: CustomModel) -> CommentedMap:
+    """A model as written in models.yml: fields in MODEL_KEYS order, defaults left out."""
+    data = model.model_dump(mode="json", exclude_defaults=True)
+    data.update(id=model.id, label=model.label, platform=str(model.platform))
+    item = CommentedMap()
+    for key in MODEL_KEYS:
+        if key in data:
+            value = data[key]
+            if key == "examples":
+                value = CommentedSeq(value)
+                value.fa.set_flow_style()
+            item[key] = value
+    return item
 
 
 def _set_device_fields(item: CommentedMap, fields: Mapping[str, Any]) -> None:
