@@ -8,7 +8,7 @@ Claude can investigate the network and draft changes through a local MCP server,
 
 **Try it:** download the Windows installer from [Releases](https://github.com/jakobjonasson/Tsunami/releases/latest). It runs on Windows 10 and 11; builds are not code-signed yet, so SmartScreen asks once. Tsunami is free software under the [GNU GPL v3](LICENSE).
 
-**Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 2,800 unit and 250 GUI tests run in CI, plus a frozen-build check. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
+**Status:** Feature-complete for v1 and confirmed working on real devices for every platform except AOS-CX (table below). About 3,000 unit and 300 GUI tests run in CI, plus a frozen-build check. Restore from backup (0.7.0) is tested against simulated devices only so far. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
 
 ## Tested platforms
 | Platform | Tested on | Status |
@@ -26,29 +26,30 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 **Plays and runs**
 - Three play types: `initial` (day-0 staging over console or SSH, optionally adding the new device to the inventory), `push` (changes) and `baseline` (a customer's standard; compliance reports missing lines, and extra lines under the prefixes a step `owns`).
 - Four run modes: render (no connection), check (a diff against running config, nothing sent), compliance (baseline plays) and apply.
-- Apply runs a canary device first, then batches, with a failure threshold, pre- and post-checks, a config backup, rollback on failure or a revert timer, and `write memory` when the checks pass.
+- Apply runs a canary device first (the one with the highest `canary_priority`), then batches, with a failure threshold, pre- and post-checks, a config backup, rollback on failure or a revert timer, and `write memory` when the checks pass.
 - Typed prompts with dropdowns (site, role, hardware model, a saved login) and per-device answers.
 - Secrets reach templates only as `secret('name')` (or `secret('name', 'field')` for a secret with fields such as an SNMPv3 user), a prompt of type `secret` or `password`, or `login(name).password` for a saved login. All are placeholders that may sit only on password lines, and real values exist only in memory during apply. A secret the play uses that is not saved is reported at validate, render and request time.
-- History of every job with masked renders and redacted diffs and output; retry failed devices, apply after a check, or run again.
+- History of every job with masked renders and redacted diffs and output; retry failed devices, apply after a check, or run again. Show operations adds the rest: show commands, discovery, drift checks, host-key trust and connection tests.
+- Press and hold a masked value in the run preview or a backup to see it, after the Tsunami password again; each reveal is audited.
 
 **Inventory and onboarding**
-- Customers with sites, devices, device types (roles), a default login per customer and per site, logins on single devices, an optional jump host, and `push_logins` (accounts plays may create on devices).
+- An Inventory tree of customers, sites and devices (collapsed at start; the filter opens what matches). Customers have sites, devices, device types (roles), a default login per customer and per site, logins on single devices, an optional jump host, and `push_logins` (accounts plays may create on devices).
 - Import devices from CSV (Save example CSV gives every column), or edit them through the Inventory menus.
 - Discover a site over CDP and LLDP: start from seeds, add each device and follow its neighbors inside a scope. Check for unlearned neighbors lists neighbors missing from the inventory.
 - Trust host keys in bulk without logging in, the jump host's included. A changed key is shown with both fingerprints and replaced only after confirmation.
 - Device page: the model, version and serial the device reported, recent jobs, Test connection, Open SSH (MobaXterm when installed, else OpenSSH) and Backups.
 
 **Backups and drift**
-- Backups come from every apply, from discovery and from drift checks. The viewer shows one or compares two, always through the redactor.
+- Backups come from every apply, from discovery, from drift checks and from restores. The viewer shows one or compares two, always through the redactor, with Ctrl+F.
 - Back up and check for drift (a site or a customer): a first backup for new devices, and for the rest a redacted diff since the newest backup.
 - View full backup opens one in its own tab; Open in VS Code opens a redacted copy (or VS Code's diff of two), never the raw file.
 - Restore from backup, over SSH or a console, onto a replacement switch: factory-new (Tsunami answers its setup prompts) or with only a login set. Rejected lines are listed and the rest still sent; the config is saved, read back and compared with the backup.
 
-**Claude over MCP** (25 tools, listed in `TOOL_NAMES`)
+**Claude over MCP** (the tools are listed in `TOOL_NAMES`)
 - Read the workspace and history: `list_customers`, `list_devices`, `list_plays`, `list_snippets`, `read_play`, `read_snippet`, `resolved_vars`, `validate`, `render`, `list_jobs`, `get_job`.
 - Write drafts under `drafts/` (`write_draft`, `delete_draft`); only a person promotes one.
 - Read devices: `show` for allowlisted commands (matched by command prefix), `check` and `compliance`. `request_allowlist_addition` asks a person to allow another `show` command in Settings.
-- Change devices: `request_run`, approved in the GUI (lab customers may skip approval if the policy allows), and `cancel_job`.
+- Change devices: `request_run`, approved in the GUI (lab customers may skip approval if the policy allows), and `cancel_job`. No tool reads backups or restores one.
 - Add to the inventory when Settings allow it (off by default): `add_customer`, `add_site`, `add_role`, `add_devices` (with `create_sites` and `create_roles`). Edits and removals are only proposed: `propose_inventory_change` waits for approval, and `get_inventory_proposal` reports the outcome.
 - `mcp-policy.yml` sets whether MCP is on, whether lab changes need approval, blocked customers, the rate limit and the show allowlist. Edit it in Settings or in VS Code.
 - Claude never receives a credential or secret value, every result is redacted, and every call is audited.
@@ -59,7 +60,7 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 - **Engine (`core/`):** validates, renders templates (secrets as `secret('customer/name')` placeholders), diffs against running config, and pushes with canary, batches, backups and rollback. Every outbound string goes through one redactor.
 - **GUI (`tsunami.exe`):** the only place changes are approved and run. It holds the unlocked credential vault (the Tsunami password, set on first launch) and serves Claude's tool calls.
 - **MCP server (`tsunami-mcp.exe`):** a stdio relay. It holds no credentials: each tool call goes over a local named pipe to the GUI, which runs it only while unlocked (403 when locked, 503 when Tsunami is closed).
-- **Local data:** `%APPDATA%\Tsunami` (settings, MCP policy), `%LOCALAPPDATA%\Tsunami` (`history.db`, backups, logs, known_hosts, `vault.json`). Logins and secrets live in Windows Credential Manager, encrypted under the Tsunami password: one entry per value (`tsunami/<key>`), local-machine persistence only (see `core/secret_store.py` for why).
+- **Local data:** `%APPDATA%\Tsunami` (settings, MCP policy), `%LOCALAPPDATA%\Tsunami` (`history.db`, backups, redacted copies opened in VS Code under `backup-views`, logs, known_hosts, `vault.json`). Logins and secrets live in Windows Credential Manager, encrypted under the Tsunami password: one entry per value (`tsunami/<key>`), local-machine persistence only (see `core/secret_store.py` for why).
 
 ## Development setup
 
@@ -92,6 +93,7 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 | `core/discovery.py`, `hostkey_trust.py`, `inventory_import.py` | Onboarding: site discovery over CDP and LLDP, bulk host-key trust, CSV import |
 | `core/backups.py`, `drift.py`, `restore.py` | Config backups: saving, comparing (redacted), the drift check, and restoring a backup to a device |
 | `core/approvals.py`, `history.py`, `migrations/` | Approval flow (ready / no_changes), `history.db` |
+| `core/operations.py`, `reveal.py` | Operations recorded as jobs (show, discovery, restore...), press-to-reveal of masked values |
 | `core/inventory_edit.py`, `inventory_proposals.py`, `drafts.py`, `pathguard.py` | Inventory edits, inventory changes Claude proposes, draft promotion, MCP path checks |
 | `src/tsunami/gui/` | PySide6 GUI: `main_window.py` (VS Code-style shell), `lock.py` (password and auto-lock), `screens/` (one module per view) |
 | `src/tsunami/mcp_server/` | `tools.py` (the tools, listed in `TOOL_NAMES`), `enforcement.py` (policy, redaction, audit), `bridge.py` (the relay), `server.py` |
