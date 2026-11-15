@@ -12,6 +12,7 @@ import json
 import shutil
 from datetime import UTC, datetime, timedelta
 from pathlib import Path
+from typing import Any
 
 import pytest
 
@@ -294,11 +295,11 @@ def test_tier_one_refused_when_disabled(env):
     env.policy(customers_blocked=[])
     save_policy(McpPolicy(enabled=False), env.paths.policy_file)
     with pytest.raises(ToolRefused):
-        env.tools.show("acme", "sa-as01", "show version")
+        env.tools.show("acme", target="sa-as01", command="show version")
 
 
 def test_show_redacts_and_refuses_new_host_keys(env):
-    result = env.tools.show("acme", "sa-as01", "show running-config")
+    result = env.tools.show("acme", target="sa-as01", command="show running-config")
     output = result["untrusted_device_output"]
     assert "hostname sa-as01" in output
     assert TACACS not in output and LOGIN_PASSWORD not in output
@@ -326,7 +327,7 @@ def test_allowlist_request_is_queued_not_applied(env):
     assert env.paths.policy_file.read_text(encoding="utf-8") == before
     assert len(env.history.pending_allowlist_requests()) == 1
     with pytest.raises(ToolRefused):
-        env.tools.show("acme", "sa-as01", "show ip route")
+        env.tools.show("acme", target="sa-as01", command="show ip route")
 
 
 @pytest.mark.parametrize(
@@ -366,7 +367,7 @@ def test_approving_a_request_adds_the_command(env):
 @pytest.mark.parametrize("command", ["sh run", "conf t", "show run | include x | include y"])
 def test_show_refuses_commands_outside_the_allowlist(env, command):
     with pytest.raises(ToolRefused):
-        env.tools.show("acme", "sa-as01", command)
+        env.tools.show("acme", target="sa-as01", command=command)
     assert env.recorder.targets == []
 
 
@@ -488,6 +489,71 @@ def test_server_registers_tools_and_calls_them(env):
     assert "acme" in str(result)
 
 
+def _served(server, tool: str, **args: Any) -> tuple[bool, str]:
+    """(refused, text) of one call through the MCP server, schema validation included."""
+    try:
+        result = asyncio.run(server.call_tool(tool, args))
+    except Exception as exc:  # noqa: BLE001 - a client sees any failure as an error
+        return True, str(exc)
+    return bool(getattr(result, "is_error", False)), str(result)
+
+
+SPELLED = {
+    "show": ({"customer": "acme", "command": "show version"}, "Cisco IOS XE"),
+    "resolved_vars": ({"customer": "acme"}, "acme.example.local"),
+    "render": ({"path": BASELINE}, "render_hash"),
+}
+
+
+@pytest.mark.parametrize("tool", sorted(SPELLED))
+@pytest.mark.parametrize("name", ["target", "device"])
+def test_one_device_is_named_target_or_device(env, tool, name):
+    """A relay to the PC never passes a top-level `device`, so the parameter is target;
+    device stays accepted for clients connected directly."""
+    from tsunami.mcp_server.server import build_server
+
+    server = build_server(env.app)
+    base, expected = SPELLED[tool]
+    refused, text = _served(server, tool, **base, **{name: "sa-as01"})
+    assert not refused, text
+    assert expected in text
+    [entry] = [e for e in env.audit() if e["tool"] == tool]
+    assert json.loads(entry["args_redacted_json"])["target"] == "sa-as01"
+
+
+@pytest.mark.parametrize("tool", sorted(SPELLED))
+def test_target_and_device_naming_different_devices_is_refused(env, tool):
+    from tsunami.mcp_server.server import build_server
+
+    server = build_server(env.app)
+    base, _ = SPELLED[tool]
+    refused, text = _served(server, tool, **base, target="sa-as01", device="sa-as02")
+    assert refused and "name different devices; pass only target" in text
+    refused, text = _served(server, tool, **base, target="sa-as01", device="sa-as01")
+    assert not refused, text  # the same device under both names is fine
+
+
+@pytest.mark.parametrize("tool", ["show", "resolved_vars"])
+def test_show_and_resolved_vars_need_a_target(env, tool):
+    from tsunami.mcp_server.server import build_server
+
+    refused, text = _served(build_server(env.app), tool, **SPELLED[tool][0])
+    assert refused and "pass target: the device name" in text
+
+
+def test_render_without_a_target_says_how_many_devices_the_play_targets(env):
+    with pytest.raises(ToolRefused, match=r"^pass target: this play targets 2 devices$"):
+        env.tools.render(BASELINE)
+    (env.root / "plays/baseline/one.yml").write_text(
+        (env.root / BASELINE)
+        .read_text(encoding="utf-8")
+        .replace("roles: [access]", "devices: [sa-as02]"),
+        encoding="utf-8",
+    )
+    with pytest.raises(ToolRefused, match="targets one device, sa-as02"):
+        env.tools.render("plays/baseline/one.yml")
+
+
 def test_job_tools_respect_the_policy_before_looking_up_jobs(env):
     job_id = env.history.create_job(
         actor=Actor.MCP, play_path=PLAY, play_hash="x", customer="acme", mode="check"
@@ -531,11 +597,15 @@ def test_show_pipe_runs_locally_on_redacted_output(env):
     env.mock.device("sa-as01").exec_responses["show running-config"] = (
         f"hostname sa-as01\n{secret_line}\n"
     )
-    hit = env.tools.show("acme", "sa-as01", "show running-config | include ^snmp-server")
+    hit = env.tools.show(
+        "acme", target="sa-as01", command="show running-config | include ^snmp-server"
+    )
     assert hit["untrusted_device_output"] == "snmp-server community <redacted> RO\n"
     assert "command" not in hit
     # A guess at the secret's first characters finds nothing: the filter never sees it.
-    guess = env.tools.show("acme", "sa-as01", f"show running-config | include {TACACS[:3]}")
+    guess = env.tools.show(
+        "acme", target="sa-as01", command=f"show running-config | include {TACACS[:3]}"
+    )
     assert guess["untrusted_device_output"] == ""
     assert ("exec", "show running-config") in env.mock.device("sa-as01").sent
     assert not any("|" in text for _, text in env.mock.device("sa-as01").sent)
@@ -543,7 +613,7 @@ def test_show_pipe_runs_locally_on_redacted_output(env):
 
 def test_show_refuses_unsafe_pipe_patterns(env):
     with pytest.raises(ToolRefused, match="repeat a group"):
-        env.tools.show("acme", "sa-as01", "show running-config | include (a+)+$")
+        env.tools.show("acme", target="sa-as01", command="show running-config | include (a+)+$")
     assert env.recorder.targets == []
 
 
@@ -554,7 +624,7 @@ def test_show_pipe_pattern_may_use_alternation(env):
         "interface TenGigabitEthernet1/0/10\n description c\n"
     )
     command = r"show running-config | section interface TenGigabitEthernet.*/0/(1|2|10)$"
-    output = env.tools.show("acme", "sa-as01", command)["untrusted_device_output"]
+    output = env.tools.show("acme", target="sa-as01", command=command)["untrusted_device_output"]
     assert output == (
         "interface TenGigabitEthernet1/0/1\n description a\n"
         "interface TenGigabitEthernet1/0/10\n description c\n"
@@ -575,7 +645,9 @@ def test_guess_at_a_secret_is_answered_like_any_other_value(env):
 def test_other_customers_secrets_are_redacted_too(env):
     env.app.secrets.set_secret("lab", "radius", "Lab-Radius-4433")
     env.mock.device("sa-as01").exec_responses["show version"] = "uptime Lab-Radius-4433\n"
-    output = env.tools.show("acme", "sa-as01", "show version")["untrusted_device_output"]
+    output = env.tools.show("acme", target="sa-as01", command="show version")[
+        "untrusted_device_output"
+    ]
     assert "Lab-Radius-4433" not in output
 
 
@@ -586,10 +658,10 @@ def test_audit_rows_redact_secrets_the_caller_supplied(env):
 
 
 def test_policy_can_let_claude_make_first_contact(env):
-    env.tools.show("acme", "sa-as01", "show version")
+    env.tools.show("acme", target="sa-as01", command="show version")
     assert env.recorder.targets[-1].allow_new_host_key is False  # the default
     env.policy(trust_new_host_keys=True)
-    env.tools.show("acme", "sa-as01", "show version")
+    env.tools.show("acme", target="sa-as01", command="show version")
     env.tools.check(PLAY, prompts=PROMPTS)
     env.join()
     assert all(t.allow_new_host_key for t in env.recorder.targets[1:])
@@ -845,9 +917,9 @@ def test_claude_never_makes_first_contact_with_a_device_it_added(env):
     env.policy(inventory_edits=True, trust_new_host_keys=True)
     env.tools.add_devices("acme", [NEW_DEVICE])
     env.mock.add_device("sa-as09", running=["hostname sa-as09"])
-    env.tools.show("acme", "sa-as09", "show version")
+    env.tools.show("acme", target="sa-as09", command="show version")
     assert env.recorder.targets[-1].allow_new_host_key is False
-    env.tools.show("acme", "sa-as01", "show version")  # a device a person added
+    env.tools.show("acme", target="sa-as01", command="show version")  # a device a person added
     assert env.recorder.targets[-1].allow_new_host_key is True
     env.tools.check(PLAY, targets=["sa-as01", "sa-as09"], prompts=PROMPTS)
     env.join()
@@ -862,7 +934,7 @@ def test_a_person_changing_the_host_lifts_the_first_contact_rule(env):
     env.tools.add_devices("acme", [NEW_DEVICE])
     InventoryEditor(env.root).update_device("acme", "sa-as09", {"host": "192.0.2.123"})
     env.mock.add_device("sa-as09", running=["hostname sa-as09"])
-    env.tools.show("acme", "sa-as09", "show version")
+    env.tools.show("acme", target="sa-as09", command="show version")
     assert env.recorder.targets[-1].allow_new_host_key is True
 
 
@@ -1274,7 +1346,7 @@ def test_a_lab_run_says_no_person_approved_it(env):
 
 
 def test_show_is_recorded_in_history_with_redacted_output(env):
-    env.tools.show("acme", "sa-as01", "show running-config")
+    env.tools.show("acme", target="sa-as01", command="show running-config")
     [job] = [j for j in env.history.list_jobs() if j.mode == "show"]
     assert (job.actor, job.play_path, job.status) == (
         Actor.MCP,
@@ -1436,13 +1508,15 @@ def test_max_tier_turns_off_tools_above_it(env):
         env.tools.request_run(PLAY, ["sa-as01"], prompts=PROMPTS)
     with pytest.raises(ToolRefused, match="tier 2"):
         env.tools.propose_inventory_change("acme", [{"device": "sa-as01", "role": "core"}])
-    env.tools.show("acme", "sa-as01", "show version")  # read-only device access still works
+    env.tools.show(
+        "acme", target="sa-as01", command="show version"
+    )  # read-only device access still works
     started = env.tools.check(PLAY, prompts=PROMPTS)
     env.join()
     assert env.tools.get_job(started["job_id"])["status"] == "completed"
     env.policy(max_tier=0)
     with pytest.raises(ToolRefused, match="tier 1"):
-        env.tools.show("acme", "sa-as01", "show version")
+        env.tools.show("acme", target="sa-as01", command="show version")
     assert env.tools.list_customers()["customers"]
     assert {j.mode for j in env.history.list_jobs()} == {"check", "show"}  # no request
 

@@ -36,6 +36,8 @@ Rules:
   with secret('name', 'field') or through a prompt of type secret ({{ snmp.auth_key }}).
   A prompt of type password is typed by a person for one run; never pass a value for one.
   Validate and render report a secret the play uses that is not saved.
+- show, resolved_vars and render name one device with `target` (`device` is its old
+  name, still accepted); check, compliance and request_run take a list as `targets`.
 - If a show command is not allowlisted, call request_allowlist_addition (show commands
   only) and ask the user to approve it in Tsunami Settings. show_many runs one command on
   many devices as a job.
@@ -114,10 +116,13 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=read_only,
-        description="A device's resolved variables, each with the level and file it came from.",
+        description="A device's resolved variables, each with the level and file it came from. "
+        "target: the device name. device: the old name of target, still accepted.",
     )
-    def resolved_vars(customer: str, device: str) -> dict[str, Any]:
-        return tools.resolved_vars(customer, device)
+    def resolved_vars(
+        customer: str, target: str | None = None, device: str | None = None
+    ) -> dict[str, Any]:
+        return tools.resolved_vars(customer, target=target, device=device)
 
     @server.tool(
         annotations=read_only,
@@ -128,15 +133,17 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=read_only,
-        description="Render a play for one device with prompt values. No device is contacted. Secret values come back as <redacted>; secret_names lists the secrets the render uses. render_hash identifies this exact render: an approved change re-renders every device and fails it with render_changed if the play or its render differs from what was approved.",
+        description="Render a play for one device (target: the device name; needed when the play targets several) with prompt values. No device is contacted. Secret values come back as <redacted>; secret_names lists the secrets the render uses. render_hash identifies this exact render: an approved change re-renders every device and fails it with render_changed if the play or its render differs from what was approved."
+        " device: the old name of target, still accepted.",
     )
     def render(
         path: str,
-        device: str | None = None,
+        target: str | None = None,
         prompts: dict[str, Any] | None = None,
         customer: str | None = None,
+        device: str | None = None,
     ) -> dict[str, Any]:
-        return tools.render(path, device, prompts, customer)
+        return tools.render(path, target=target, prompts=prompts, customer=customer, device=device)
 
     @server.tool(
         annotations=writes,
@@ -229,10 +236,13 @@ def build_server(backend: Any) -> Any:
 
     @server.tool(
         annotations=read_only,
-        description="Run one allowlisted show command on a device. No abbreviations (use 'show running-config', not 'sh run'), at most one pipe (include/exclude/section/begin/count); its pattern is a regex that may use | alternation and plain groups, e.g. '| include ntp|logging'. Output is in untrusted_device_output.",
+        description="Run one allowlisted show command on a device (target: the device name). No abbreviations (use 'show running-config', not 'sh run'), at most one pipe (include/exclude/section/begin/count); its pattern is a regex that may use | alternation and plain groups, e.g. '| include ntp|logging'. Output is in untrusted_device_output."
+        " device: the old name of target, still accepted.",
     )
-    def show(customer: str, device: str, command: str) -> dict[str, Any]:
-        return tools.show(customer, device, command)
+    def show(
+        customer: str, command: str, target: str | None = None, device: str | None = None
+    ) -> dict[str, Any]:
+        return tools.show(customer, command, target=target, device=device)
 
     @server.tool(
         annotations=read_only,

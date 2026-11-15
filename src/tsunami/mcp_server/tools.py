@@ -70,6 +70,7 @@ from tsunami.core.policy import PolicyError, check_show_command, validate_allowl
 from tsunami.core.redact import redact_exception, supplied_values
 from tsunami.core.render.environment import TemplateError, compile_template, make_environment
 from tsunami.core.render.lookup import find_snippet
+from tsunami.core.render.renderer import UnknownPlatformError
 from tsunami.core.render.secret_refs import LOGIN_PREFIX, PROMPT_PREFIX
 from tsunami.core.runner import Runner, RunRequest, masked_prompts, play_hash
 from tsunami.core.services import play_entry, render_play
@@ -309,8 +310,11 @@ class Tools:
         args = {"name": name, "customer": customer, "platform": platform}
         return self.app.call("read_snippet", 0, args, run, customer=customer)
 
-    def resolved_vars(self, customer: str, device: str):
+    def resolved_vars(self, customer: str, target: str | None = None, device: str | None = None):
+        alias = device
+
         def run(policy):
+            device = _target_name(target, alias, required=True)
             ws = self.app.workspace()
             cust = self.app.visible_customer(policy, ws, customer)
             if cust.device(device) is None:
@@ -325,7 +329,7 @@ class Tools:
             }
             return {"values": resolved.values, "provenance": provenance}
 
-        args = {"customer": customer, "device": device}
+        args = {"customer": customer, "target": target or device}
         return self.app.call("resolved_vars", 0, args, run, customer=customer)
 
     def validate(self, path: str | None = None, content: str | None = None):
@@ -350,24 +354,34 @@ class Tools:
     def render(
         self,
         path: str,
-        device: str | None = None,
+        target: str | None = None,
         prompts: dict | None = None,
         customer: str | None = None,
+        device: str | None = None,
     ):
+        alias = device
+
         def run(policy):
+            device = _target_name(target, alias, required=False)
             ws = self.app.workspace()
             real = resolve_read(ws.root, path, allowed=PLAY_DIRS)
             rel = _rel(ws.root, real)
             self._check_play_customer(policy, ws, _read_text(real), customer)
-            answers = self._without_passwords(self._entry(ws, path, customer), prompts)
-            rendering = render_play(
-                ws,
-                rel,
-                device=device,
-                prompts=answers,
-                customer=customer,
-                secrets=self.app.secrets,
-            )
+            entry = self._entry(ws, path, customer)
+            answers = self._without_passwords(entry, prompts)
+            try:
+                rendering = render_play(
+                    ws,
+                    rel,
+                    device=device,
+                    prompts=answers,
+                    customer=customer,
+                    secrets=self.app.secrets,
+                )
+            except UnknownPlatformError:
+                if device is None:
+                    self._refuse_untargeted(policy, ws, entry)
+                raise
             return {
                 "path": rel,
                 "device": device,
@@ -380,12 +394,27 @@ class Tools:
 
         args = {
             "path": path,
-            "device": device,
+            "target": target or device,
             "prompts": self._audit_prompts(path, customer, prompts),
             "customer": customer,
         }
         bound, known = self._customer_of(path, customer=customer), self._drafts_for(path)
         return self.app.call("render", 0, args, run, customer=bound, known=known)
+
+    def _refuse_untargeted(self, policy, ws, entry) -> None:
+        """A render with no target whose platform comes only from a device: say how many
+        devices the play targets, rather than the renderer's 'platform is unknown'."""
+        play = entry.play
+        if play is None or play.type == PlayType.INITIAL or not play.targets:
+            return
+        cust = self.app.visible_customer(policy, ws, play.customer)
+        found = resolve_targets(
+            play.targets, cust.devices, sites=cust.sites.keys(), roles=ws.roles.keys()
+        ).devices
+        if len(found) > 1:
+            raise ToolRefused(f"pass target: this play targets {len(found)} devices")
+        if found:
+            raise ToolRefused(f"pass target: this play targets one device, {found[0].name}")
 
     def write_draft(self, path: str, content: str):
         def run(policy):
@@ -749,15 +778,24 @@ class Tools:
             "compliance", RunMode.COMPLIANCE, path, targets, prompts, customer
         )
 
-    def show(self, customer: str, device: str, command: str):
+    def show(
+        self,
+        customer: str,
+        command: str,
+        target: str | None = None,
+        device: str | None = None,
+    ):
+        alias = device
+
         def run(policy):
+            device = _target_name(target, alias, required=True)
             ws = self.app.workspace()
             cust = self.app.visible_customer(policy, ws, customer)
             dev = cust.device(device)
             if dev is None:
                 raise ToolRefused(f"unknown device {device!r}")
             normalized, parts = _show_parts(policy, dev, command)
-            target = self._show_target(policy, cust, dev, self._mcp_added(cust))
+            connect = self._show_target(policy, cust, dev, self._mcp_added(cust))
             # Recorded in History as an operation: the command and the fully redacted
             # output Claude was given (every stored secret masked, none exempt).
             record = OperationLog(
@@ -771,7 +809,7 @@ class Tools:
             full = self.app.full_redactor()
             transport = self.app.transport()
             try:
-                output = _run_show(transport, target, parts, full)
+                output = _run_show(transport, connect, parts, full)
             except Exception as exc:
                 record.device(dev.name, connect_status(exc), error=redact_exception(exc, full))
                 record.finish()
@@ -783,7 +821,7 @@ class Tools:
             # The command is not echoed back: Claude knows what it sent.
             return {"device": dev.name, "untrusted_device_output": output}
 
-        args = {"customer": customer, "device": device, "command": command}
+        args = {"customer": customer, "target": target or device, "command": command}
         return self.app.call("show", 1, args, run, customer=customer)
 
     def show_many(
@@ -1478,6 +1516,20 @@ class ToolProxy:
             return self._backend.call(name, {**dict(zip(params, args, strict=False)), **kwargs})
 
         return call
+
+
+def _target_name(target: str | None, device: str | None, *, required: bool) -> str | None:
+    """The device a show, resolved_vars or render call names. target is the parameter and
+    device its old name, still accepted: a client reaching Tsunami through a relay that
+    claims a top-level `device` argument for itself never receives it."""
+    if target is not None and device is not None and target != device:
+        raise ToolRefused(
+            f"target {target!r} and device {device!r} name different devices; pass only target"
+        )
+    name = target if target is not None else device
+    if required and not name:
+        raise ToolRefused("pass target: the device name")
+    return name
 
 
 def _jump_view(cust: Any, device: Any) -> dict[str, Any] | None:

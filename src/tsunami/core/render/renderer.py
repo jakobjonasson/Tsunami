@@ -78,6 +78,10 @@ class RenderError(TsunamiError):
         self.loc = loc
 
 
+class UnknownPlatformError(RenderError):
+    """No platform resolved: a render with no device whose play and prompts set none."""
+
+
 @dataclass(frozen=True)
 class RenderedStep:
     index: int
@@ -365,7 +369,9 @@ class Renderer:
         )
         platform_value = resolved.values.get("platform")
         if platform_value not in {str(p) for p in Platform}:
-            raise RenderError("the target platform is unknown", file=entry.path, loc=("type",))
+            raise UnknownPlatformError(
+                "the target platform is unknown", file=entry.path, loc=("type",)
+            )
         platform = Platform(platform_value)
         driver = self.driver(platform)
 
