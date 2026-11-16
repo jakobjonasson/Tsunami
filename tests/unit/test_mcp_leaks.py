@@ -1379,6 +1379,17 @@ ARG_CASES += [
         {"customer": "acme", "changes": [{"device": "sa-as01", "credential": "{S}"}]},
     ),
 ]
+# State tables (list_state_tables, state), appended likewise.
+_STATE_ARGS = {"customer": "acme", "target": "sa-as01", "table": "vlans"}
+ARG_CASES += [
+    ("list_state_tables", {"family": "{S}"}),
+    ("state", {**_STATE_ARGS, "customer": "{S}"}),
+    ("state", {**_STATE_ARGS, "target": "{S}"}),
+    ("state", {**_STATE_ARGS, "table": "{S}"}),
+    ("state", {**_STATE_ARGS, "where": {"{S}": "x"}}),
+    ("state", {**_STATE_ARGS, "where": {"name": "{S}"}}),
+    ("state", {**_STATE_ARGS, "where": "{S}"}),
+]
 CASE_IDS = [f"{tool}-{i}" for i, (tool, _) in enumerate(ARG_CASES)]
 ARG_SECRETS = (LOGIN_PW, ODD)
 
@@ -2030,3 +2041,171 @@ def test_inventory_tools_hide_blocked_customers(env):
     assert blocked.refused and visible.refused
     assert blocked.error_text.replace("beta", "acme") == visible.error_text
     assert not (env.root / "inventory/customers/beta/sites/site-x.yml").exists()
+
+
+# ---------------------------------------------------------------------------------------
+# state tables and the firmware folder
+# ---------------------------------------------------------------------------------------
+
+STATE_VLANS = f"""\
+VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                          active    Gi1/0/3
+10   Users                            active    Gi1/0/1, Gi1/0/2
+30   {TACACS}                active
+"""
+STATE_OSPF = f"""\
+Neighbor ID     Pri   State           Dead Time   Address         Interface
+10.255.0.4        0   FULL/  -        00:00:33    10.10.34.2      {RADIUS}
+10.255.0.2        0   FULL/  -        00:00:30    10.10.23.1      Ethernet0/1
+"""
+
+
+def _state_policy(env, **fields: Any) -> None:
+    from tsunami.core.models.policy import default_show_allowlist
+
+    allow = default_show_allowlist()
+    allow["ios"] = [*allow["ios"], "show ip ospf neighbor"]
+    env.set_policy(show_allowlist=allow, **fields)
+
+
+def _seed_state(env) -> None:
+    _state_policy(env)
+    state = env.mock.device("sa-as01")
+    state.exec_responses["show vlan brief"] = STATE_VLANS
+    state.exec_responses["show ip ospf neighbor"] = STATE_OSPF
+
+
+def _state(env, table: str, **args: Any) -> Outcome:
+    return env.call("state", customer="acme", target="sa-as01", table=table, **args)
+
+
+def _rows(outcome: Outcome) -> list[dict[str, Any]]:
+    assert not outcome.refused, outcome.error_text
+    return outcome.data["untrusted_device_output"]
+
+
+def test_state_text_columns_equal_to_a_secret_come_back_redacted(env):
+    _seed_state(env)
+    vlans = _state(env, "vlans")
+    ospf = _state(env, "ospf_neighbors")
+    for out in (vlans, ospf):
+        assert_clean(out)
+    assert {r["name"] for r in _rows(vlans)} == {"default", "Users", "<redacted>"}
+    assert {r["interface"] for r in _rows(ospf)} == {"<redacted>", "Ethernet0/1"}
+    # the rows of the secret-free cells are still there, so redaction is not blanking all
+    assert any(r["neighbor_id"] == "10.255.0.2" for r in _rows(ospf))
+
+
+def test_state_where_cannot_confirm_a_secret_value_or_prefix(env):
+    _seed_state(env)
+    secret = TACACS
+    guesses = [secret, secret[:5], f"/^{secret[:3]}/", f"/{secret[3:9]}/", [secret, "nope"]]
+    for guess in guesses:
+        out = _state(env, "vlans", where={"name": guess})
+        assert _rows(out) == []
+        assert_clean(out, exclude=(secret,))
+    # a right guess and a wrong one of the same shape cannot be told apart
+    right = _state(env, "vlans", where={"name": secret})
+    wrong = _state(env, "vlans", where={"name": twin(secret)})
+    assert shape(right, secret) == shape(wrong, twin(secret))
+    # the redaction marker itself is all a filter can see
+    marked = _state(env, "vlans", where={"name": "<redacted>"})
+    assert [r["id"] for r in _rows(marked)] == [30]
+    assert_clean(marked)
+
+
+def test_state_where_on_the_other_text_column_has_no_oracle(env):
+    _seed_state(env)
+    secret = RADIUS
+    right = _state(env, "ospf_neighbors", where={"interface": secret})
+    wrong = _state(env, "ospf_neighbors", where={"interface": twin(secret)})
+    assert _rows(right) == [] and _rows(wrong) == []
+    assert shape(right, secret) == shape(wrong, twin(secret))
+    assert_clean(right, exclude=(secret,))
+
+
+def test_state_refusals_hold_no_secret_and_no_oracle(env):
+    _seed_state(env)
+    for secret in (LOGIN_PW, TACACS, ODD):
+        for args in (
+            {"table": "vlans", "where": {"{S}": "x"}},
+            {"table": "{S}"},
+            {"table": "vlans", "where": {"name": {"{S}": 1}}},
+            {"table": "vlans", "where": "{S}"},
+        ):
+            right = _state(env, **_sub(args, secret))
+            wrong = _state(env, **_sub(args, twin(secret)))
+            assert right.refused and wrong.refused
+            assert_clean(right, exclude=(secret,))
+            assert shape(right, secret) == shape(wrong, twin(secret))
+
+
+def test_state_device_error_text_holds_no_secret(env):
+    _state_policy(env)
+    env.mock.device("sa-as01").exec_responses["show vlan brief"] = (
+        f"% Invalid input detected at '^' marker. {TACACS} {LOGIN_PW}"
+    )
+    out = _state(env, "vlans", where={"name": TACACS})
+    assert out.refused
+    assert_clean(out, exclude=(TACACS,))
+    [job] = [j for j in env.history.list_jobs() if j.mode == "show"]
+    [row] = env.history.devices(job.id)
+    assert not [v for v in ALL_VALUES if v in (row.error_redacted or "")]
+
+
+def test_state_is_recorded_in_history_without_secrets(env):
+    _seed_state(env)
+    _state(env, "vlans", where={"name": TACACS})
+    _state(env, "ospf_neighbors")
+    blob = json.dumps(
+        [
+            (d.output_redacted, d.error_redacted)
+            for job in env.history.list_jobs()
+            for d in env.history.devices(job.id)
+        ]
+    )
+    assert "10.255.0.2" in blob
+    assert not [v for v in ALL_VALUES if v in blob]
+
+
+def test_state_over_the_wire_holds_no_unsupplied_secret(env):
+    _seed_state(env)
+    base = {"customer": "acme", "target": "sa-as01"}
+    for args, supplied in (
+        ({**base, "table": "vlans"}, ()),
+        ({**base, "table": "ospf_neighbors"}, ()),
+        ({**base, "table": "vlans", "where": {"name": TACACS}}, (TACACS,)),
+    ):
+        result = _wire_call(env.server, "state", args)
+        blob = result.model_dump_json() + json.dumps(result.structured_content)
+        assert not [v for v in ALL_VALUES if v in blob and v not in supplied], blob[:500]
+
+
+def test_list_state_tables_and_list_firmware_leak_nothing(env):
+    folder = env.paths.firmware_dir
+    folder.mkdir(parents=True)
+    (folder / "image.bin").write_bytes(b"image")
+    (folder / f"{TACACS}.bin").write_bytes(b"named like a secret")
+    tables = env.call("list_state_tables")
+    ios = env.call("list_state_tables", family="ios")
+    files = env.call("list_firmware")
+    for out in (tables, ios, files):
+        assert not out.refused, out.error_text
+        assert_clean(out)
+    assert "image.bin" in files.text()
+
+
+def test_state_tools_hide_blocked_customers_and_tiers(env):
+    _seed_state(env)
+    env.set_policy(customers_blocked=["acme"])
+    blocked = _state(env, "vlans")
+    unknown = env.call("state", customer="zzz", target="sa-as01", table="vlans")
+    assert blocked.refused and unknown.refused
+    assert blocked.error_text.replace("acme", "zzz") == unknown.error_text
+    assert not _hides_acme(blocked)
+    env.set_policy(max_tier=0)
+    assert _state(env, "vlans").refused
+    assert not env.call("list_state_tables").refused
+    assert not env.call("list_firmware").refused
+    assert ("exec", "show vlan brief") not in env.mock.device("sa-as01").sent

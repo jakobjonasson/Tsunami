@@ -32,6 +32,7 @@ from typing import Any
 from ruamel.yaml import YAML
 
 from tsunami.core.catalog import CatalogEntry
+from tsunami.core.firmware.library import firmware_dir, list_images
 from tsunami.core.inventory_edit import InventoryEditor
 from tsunami.core.inventory_import import ERROR as IMPORT_ERROR
 from tsunami.core.inventory_import import FIELDS as IMPORT_FIELDS
@@ -75,6 +76,16 @@ from tsunami.core.render.secret_refs import LOGIN_PREFIX, PROMPT_PREFIX
 from tsunami.core.runner import Runner, RunRequest, masked_prompts, play_hash
 from tsunami.core.services import play_entry, render_play
 from tsunami.core.showfilter import FilterError, apply_filter, compile_pattern, split_command
+from tsunami.core.state import (
+    TABLES,
+    StateError,
+    StateTable,
+    command_for,
+    is_regex,
+    parse_table,
+    select,
+)
+from tsunami.core.state import table as state_table
 from tsunami.core.targets import resolve_targets
 from tsunami.core.transports.base import (
     ConnectTarget,
@@ -119,6 +130,9 @@ TOOL_NAMES = frozenset(
         "show_many",
         "list_models",
         "add_model",
+        "list_state_tables",
+        "state",
+        "list_firmware",
     }
 )
 MAX_REASON = 500
@@ -150,6 +164,11 @@ FINISHED_JOBS = frozenset(
     }
 )
 SHOW_WORKERS = 4  # show_many: devices asked at once
+# state: what a `where` may hold, and how many rows come back at most.
+MAX_WHERE_COLUMNS = 8
+MAX_MATCHER_ITEMS = 20
+MAX_MATCHER_TEXT = 200
+MAX_STATE_ROWS = 1000
 
 
 class Tools:
@@ -616,6 +635,65 @@ class Tools:
         }
         return self.app.call("add_devices", 0, args, run, customer=customer)
 
+    def list_state_tables(self, family: str | None = None):
+        """Every state table with its columns and the show command per platform family
+        that fills it (null where the family cannot read it)."""
+
+        def run(policy):
+            families = [str(f) for f in PlatformFamily]
+            if family is not None and family not in families:
+                raise ToolRefused(
+                    f"unknown family {family!r}; the families are {', '.join(families)}"
+                )
+            tables = []
+            for spec in TABLES.values():
+                commands = {f: _state_command(f, spec.name) for f in families}
+                if family is not None and commands[family] is None:
+                    continue
+                tables.append(
+                    {
+                        "name": spec.name,
+                        "title": spec.title,
+                        "key": list(spec.key),
+                        "columns": [
+                            {"name": c.name, "kind": c.kind, "help": c.help} for c in spec.columns
+                        ],
+                        "compared": list(spec.compared),
+                        "commands": commands,
+                    }
+                )
+            return {"tables": tables}
+
+        return self.app.call("list_state_tables", 0, {"family": family}, run)
+
+    def list_firmware(self):
+        """The files in the firmware folder with their hashes. That folder only."""
+
+        def run(policy):
+            folder = firmware_dir(self.app.paths, self.app.settings())
+            try:
+                found = list_images(folder)
+            except OSError as exc:
+                raise ToolRefused(
+                    f"cannot read the firmware folder ({type(exc).__name__})"
+                ) from None
+            return {
+                "folder": str(folder),
+                "folder_exists": folder.is_dir(),
+                "files": [
+                    {
+                        "name": f.name,
+                        "size": f.size,
+                        "md5": f.hashes["md5"],
+                        "sha256": f.hashes["sha256"],
+                        "sha512": f.hashes["sha512"],
+                    }
+                    for f in found
+                ],
+            }
+
+        return self.app.call("list_firmware", 0, {}, run)
+
     def list_models(self, platform: str | None = None):
         """Hardware models a device's model field can name: built-in and the workspace's
         custom ones."""
@@ -823,6 +901,78 @@ class Tools:
 
         args = {"customer": customer, "target": target or device, "command": command}
         return self.app.call("show", 1, args, run, customer=customer)
+
+    def state(self, customer: str, target: str, table: str, where: dict[str, Any] | None = None):
+        """One state table's rows from one device. The table's show command goes through
+        the show allowlist and the connection is show's; every text cell is redacted
+        before `where` filters the rows, so a filter cannot confirm a secret."""
+
+        def run(policy):
+            ws = self.app.workspace()
+            cust = self.app.visible_customer(policy, ws, customer)
+            dev = cust.device(target) if isinstance(target, str) else None
+            if dev is None:
+                raise ToolRefused(f"unknown device {target!r}")
+            family = PLATFORM_FAMILY[dev.platform]
+            try:
+                if not isinstance(table, str):
+                    raise StateError(
+                        "unknown state table: pass a table name from list_state_tables"
+                    )
+                spec = state_table(table)
+                command = command_for(family, table)
+            except StateError as exc:
+                raise ToolRefused(str(exc)) from None
+            try:
+                normalized = check_show_command(policy, family, command)
+            except PolicyError:
+                raise ToolRefused(
+                    f"{dev.name}: the {spec.name} table reads `{command}` on {family}, which "
+                    f"is not on the show allowlist; call request_allowlist_addition for "
+                    f"`{command}` ({family}) and ask the user to approve it"
+                ) from None
+            base = split_command(normalized).base
+            matchers = _state_where(spec, where)
+            connect = self._show_target(policy, cust, dev, self._mcp_added(cust))
+            record = OperationLog(
+                self.app.history,
+                mode=SHOW_MODE,
+                customer=customer,
+                actor=Actor.MCP,
+                devices=[dev.name],
+                summary={"command": normalized},
+            )
+            full = self.app.full_redactor()
+            transport = self.app.transport()
+            try:
+                rows = _read_state(transport, connect, family, spec, base, full)
+            except Exception as exc:
+                error = redact_exception(exc, full)
+                record.device(dev.name, connect_status(exc), error=error)
+                record.finish()
+                if isinstance(exc, StateError):
+                    raise ToolRefused(full.text(str(exc))) from None
+                raise
+            finally:
+                _close(transport)
+            # `where` runs on the redacted cells, as a show pipe runs on redacted output.
+            chosen = select(spec, rows, matchers)
+            shown = chosen[:MAX_STATE_ROWS]
+            text = json.dumps(shown, ensure_ascii=False)
+            record.device(dev.name, DeviceStatus.SUCCESS, output=f"{normalized}\n{text}")
+            record.finish()
+            result: dict[str, Any] = {
+                "device": dev.name,
+                "table": spec.name,
+                "row_count": len(shown),
+                "untrusted_device_output": shown,
+            }
+            if len(chosen) > len(shown):
+                result["truncated"] = f"{len(chosen)} rows matched; the first {len(shown)} shown"
+            return result
+
+        args = {"customer": customer, "target": target, "table": table, "where": where}
+        return self.app.call("state", 1, args, run, customer=customer)
 
     def show_many(
         self,
@@ -1573,6 +1723,77 @@ def _show_parts(policy: Any, dev: Any, command: str) -> tuple[str, Any]:
     except (PolicyError, FilterError) as exc:
         raise ToolRefused(f"{dev.name}: {exc}") from None
     return normalized, parts
+
+
+def _state_command(family: str, name: str) -> str | None:
+    try:
+        return command_for(family, name)
+    except StateError:
+        return None
+
+
+def _read_state(
+    transport: Any, target: ConnectTarget, family: Any, spec: StateTable, base: str, full: Any
+) -> list[dict[str, Any]]:
+    """The table's rows, redacted. The output is redacted whole before it is parsed (a
+    secret that spans cells, or a line the pattern layer masks), and every text cell once
+    more after, so no cell holds a stored secret whichever way the parser split it."""
+    session = transport.open(target)
+    try:
+        output = session.send_exec(base).output
+    finally:
+        session.close()
+    rows = parse_table(family, spec.name, full.text(output))
+    return [{k: full.text(v) if isinstance(v, str) else v for k, v in row.items()} for row in rows]
+
+
+def _state_where(spec: StateTable, where: Any) -> dict[str, Any]:
+    """A `where` Claude supplied, checked before anything connects: known columns, and
+    matchers of the shapes a play's check takes, with regular expressions held to the
+    show pipe's bounds so matching time stays small."""
+    if where is None:
+        return {}
+    if not isinstance(where, dict):
+        raise ToolRefused("where is a mapping of column to matcher, e.g. {state: full}")
+    if len(where) > MAX_WHERE_COLUMNS:
+        raise ToolRefused(f"where may name at most {MAX_WHERE_COLUMNS} columns")
+    checked: dict[str, Any] = {}
+    for column, matcher in where.items():
+        if not isinstance(column, str) or spec.column(column) is None:
+            raise ToolRefused(
+                f"where: {spec.name} has no column {str(column)!r}; "
+                f"its columns are {', '.join(spec.column_names)}"
+            )
+        if isinstance(matcher, list):
+            if not matcher or len(matcher) > MAX_MATCHER_ITEMS:
+                raise ToolRefused(f"where {column}: a list holds 1 to {MAX_MATCHER_ITEMS} matchers")
+            checked[column] = [_state_matcher(m, column) for m in matcher]
+        else:
+            checked[column] = _state_matcher(matcher, column)
+    return checked
+
+
+def _state_matcher(matcher: Any, column: str) -> Any:
+    shapes = f"where {column}: a matcher is text, a number, a list or {{min, max}}"
+    if isinstance(matcher, bool) or matcher is None:
+        raise ToolRefused(shapes)
+    if isinstance(matcher, int):
+        return matcher
+    if isinstance(matcher, str):
+        if len(matcher) > MAX_MATCHER_TEXT:
+            raise ToolRefused(f"where {column}: a matcher is at most {MAX_MATCHER_TEXT} characters")
+        if is_regex(matcher):
+            try:
+                compile_pattern(matcher[1:-1])
+            except FilterError as exc:
+                raise ToolRefused(f"where {column}: {exc}") from None
+        return matcher
+    if isinstance(matcher, dict):
+        whole = all(isinstance(v, int) and not isinstance(v, bool) for v in matcher.values())
+        if not matcher or not set(matcher) <= {"min", "max"} or not whole:
+            raise ToolRefused(f"where {column}: a range is {{min: n, max: n}} with whole numbers")
+        return matcher
+    raise ToolRefused(shapes)
 
 
 def _run_show(transport: Any, target: ConnectTarget, parts: Any, full: Any) -> str:
