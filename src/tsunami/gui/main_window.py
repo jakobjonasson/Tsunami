@@ -36,7 +36,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QStackedWidget,
     QSystemTrayIcon,
-    QTabWidget,
     QToolButton,
     QTreeWidget,
     QTreeWidgetItem,
@@ -54,6 +53,7 @@ from tsunami.gui.palette import PaletteItem, PalettePopup
 from tsunami.gui.runner_thread import RunnerThread
 from tsunami.gui.shell import ActivityItem
 from tsunami.gui.widgets.masked_text import MaskedTextView
+from tsunami.gui.widgets.tabs import TabWidget
 
 log = logging.getLogger(__name__)
 CREDENTIAL_CHECK_MS = 120_000  # how often the watchdog lists Credential Manager
@@ -273,7 +273,7 @@ class MainWindow(QMainWindow):
         if not top_added:
             bar.addStretch(1)
 
-        self.editor = QTabWidget(objectName="Editor")
+        self.editor = TabWidget(objectName="Editor")
         self.editor.setTabsClosable(False)  # each tab gets a Codicon close button
         self.editor.setMovable(True)
         self.editor.setDocumentMode(True)
@@ -282,7 +282,7 @@ class MainWindow(QMainWindow):
         self.editor.tabBar().customContextMenuRequested.connect(self._show_tab_menu)
         self.welcome = WelcomePage(self)
 
-        self.panel = QTabWidget(objectName="Panel")
+        self.panel = TabWidget(objectName="Panel")
         self.panel.setDocumentMode(True)
         self.problems = ProblemsPanel(self)
         self.output = OutputPanel(self.ctx.paths.logs_dir / "app.log")

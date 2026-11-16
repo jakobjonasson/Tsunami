@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QProgressBar,
     QPushButton,
     QRadioButton,
-    QSpinBox,
     QStackedWidget,
     QVBoxLayout,
     QWidget,
@@ -59,7 +58,7 @@ from tsunami.core.restore import (
     plan_restore,
 )
 from tsunami.core.secret_store import LoginCredential
-from tsunami.gui import theme
+from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
 from tsunami.gui.shell import Shell
@@ -184,7 +183,7 @@ class RestoreDialog(QDialog):
         ssh_form.setContentsMargins(0, 0, 0, 0)
         self.host_edit = QLineEdit(str(self.dev.host))
         self.host_edit.textChanged.connect(lambda _t: self._update())
-        self.port_spin = QSpinBox()
+        self.port_spin = wheel.SpinBox()
         self.port_spin.setRange(1, 65535)
         self.port_spin.setValue(int(self.dev.port))
         ssh_form.addRow("Address", self.host_edit)

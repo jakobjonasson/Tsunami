@@ -29,7 +29,6 @@ from PySide6.QtWidgets import (
     QMessageBox,
     QPushButton,
     QScrollArea,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -57,6 +56,7 @@ from tsunami.gui.shell import Shell
 from tsunami.gui.widgets.port_picker import PortPicker
 from tsunami.gui.widgets.prompt_widgets import PromptField, make_prompt_widget
 from tsunami.gui.widgets.reveal_text import PreviewRevealer, RevealTextView
+from tsunami.gui.widgets.tabs import TabWidget
 
 MODE_LABELS = {
     RunMode.CHECK: "Check (diff only, no changes)",
@@ -450,7 +450,7 @@ class RunWizard(QWidget):
         self.error_label.setVisible(False)
         self.error_label.setTextInteractionFlags(Qt.TextInteractionFlag.TextSelectableByMouse)
         layout.addWidget(self.error_label)
-        self.preview_tabs = QTabWidget()
+        self.preview_tabs = TabWidget()
         self.preview_tabs.setMinimumHeight(260)
         self.preview_tabs.setVisible(False)
         layout.addWidget(self.preview_tabs)

@@ -22,7 +22,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -33,6 +32,7 @@ from tsunami.gui import theme, wheel
 from tsunami.gui.context import AppContext
 from tsunami.gui.icons import icon
 from tsunami.gui.shell import ActivityItem, Shell
+from tsunami.gui.widgets.tabs import TabWidget
 
 ALL = "All"
 HISTORY_TAB_KEY = "history"
@@ -207,7 +207,7 @@ class HistoryTab(QWidget):
 
         layout = QVBoxLayout(self)
         layout.setContentsMargins(0, 4, 0, 0)
-        self.tabs = QTabWidget()
+        self.tabs = TabWidget()
         self.tabs.setDocumentMode(True)
         layout.addWidget(self.tabs)
 

@@ -21,7 +21,6 @@ from PySide6.QtWidgets import (
     QPushButton,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QTextEdit,
     QVBoxLayout,
     QWidget,
@@ -35,6 +34,7 @@ from tsunami.gui import theme
 from tsunami.gui.context import AppContext
 from tsunami.gui.shell import ActivityItem, Shell
 from tsunami.gui.widgets.masked_text import MaskedTextView
+from tsunami.gui.widgets.tabs import TabWidget
 
 NOTE = "Claude requested this change. Review the diff for each device before approving."
 
@@ -129,9 +129,9 @@ class ApprovalCard(QWidget):
             self.prompts.setItem(row, 1, QTableWidgetItem(str(value)))
         root.addWidget(self.prompts)
 
-        self.device_tabs = QTabWidget()
+        self.device_tabs = TabWidget()
         for record in devices:
-            page = QTabWidget()
+            page = TabWidget()
             page.addTab(MaskedTextView(record.render_masked or ""), "Render")
             page.addTab(DiffText(record.diff_redacted or ""), "Diff")
             self.device_tabs.addTab(page, record.device)

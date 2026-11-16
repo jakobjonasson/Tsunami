@@ -148,6 +148,12 @@ def current() -> Palette:
     return DARK if app is not None and app.property("tsunami_palette") == "dark" else LIGHT
 
 
+# Border and side padding of an input field, in px. The stylesheet uses them, and so does
+# wheel.SpinBox, which has to inset its own text.
+FIELD_BORDER = 1
+FIELD_PADDING_X = 6
+
+
 def stylesheet(p: Palette) -> str:
     return f"""
 QMainWindow, QDialog {{ background: {p.sidebar}; }}
@@ -194,7 +200,12 @@ QHeaderView::section {{ background: {p.sidebar}; color: {p.muted}; border: none;
                         border-bottom: 1px solid {p.border}; padding: 4px 6px; }}
 
 QLineEdit, QSpinBox, QComboBox, QPlainTextEdit[editable="true"] {{
-    background: {p.input}; border: 1px solid {p.border}; border-radius: 4px; padding: 4px 6px; }}
+    background: {p.input}; border: {FIELD_BORDER}px solid {p.border}; border-radius: 4px;
+    padding: 4px {FIELD_PADDING_X}px; }}
+/* A styled spin box asks for 3px more height than a line edit with the same padding, and
+   its text sits lower. Less padding, more of it below, puts box and text level with the
+   other fields. Its side padding does nothing: wheel.SpinBox insets the text instead. */
+QSpinBox {{ padding: 2px {FIELD_PADDING_X}px 3px {FIELD_PADDING_X}px; }}
 QLineEdit:focus, QSpinBox:focus, QComboBox:focus {{ border: 1px solid {p.accent}; }}
 /* A styled spin box loses Fusion's arrows (they draw as empty boxes); numbers are typed,
    and the arrow keys still step them (the wheel scrolls the page: gui/wheel.py). */

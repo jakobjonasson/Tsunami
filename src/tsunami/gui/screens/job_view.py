@@ -37,7 +37,6 @@ from PySide6.QtWidgets import (
     QSplitter,
     QTableWidget,
     QTableWidgetItem,
-    QTabWidget,
     QVBoxLayout,
     QWidget,
 )
@@ -70,6 +69,7 @@ from tsunami.gui.icons import icon
 from tsunami.gui.shell import Shell
 from tsunami.gui.widgets.diff_view import DiffView
 from tsunami.gui.widgets.masked_text import MaskedTextView
+from tsunami.gui.widgets.tabs import TabWidget
 
 _ICONS = {
     DeviceStatus.PENDING: "circle-outline",
@@ -276,7 +276,7 @@ class JobView(QWidget):
         left.setStretchFactor(0, 2)
         left.setStretchFactor(1, 3)
 
-        self.detail_tabs = QTabWidget()
+        self.detail_tabs = TabWidget()
         self.render_view = MaskedTextView()
         self.output_view = MaskedTextView()
         self.diff_view = DiffView()
