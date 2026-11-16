@@ -15,8 +15,8 @@ from pathlib import Path
 from typing import Any
 
 from pydantic import ValidationError
-from PySide6.QtCore import Qt, QTimer, Signal
-from PySide6.QtGui import QGuiApplication
+from PySide6.QtCore import Qt, QTimer, QUrl, Signal
+from PySide6.QtGui import QDesktopServices, QGuiApplication
 from PySide6.QtWidgets import (
     QCheckBox,
     QFileDialog,
@@ -37,6 +37,7 @@ from PySide6.QtWidgets import (
 )
 
 from tsunami.core import registration
+from tsunami.core.firmware.library import firmware_dir
 from tsunami.core.issues import TsunamiError
 from tsunami.core.models.common import PlatformFamily
 from tsunami.core.models.policy import McpPolicy
@@ -65,6 +66,7 @@ GENERAL_KEYS = (
     "backup_retention",
     "ssh_legacy_algorithms",
     "auto_lock_minutes",
+    "firmware_dir",
 )
 ERROR_KEYS = ("extra_sink_patterns", "benign_messages")
 SETTINGS_KEYS = (*GENERAL_KEYS, *ERROR_KEYS)
@@ -87,6 +89,16 @@ def validation_message(exc: ValidationError) -> str:
         where = ".".join(str(p) for p in err["loc"])
         parts.append(f"{where}: {err['msg'].removeprefix('Value error, ')}")
     return "; ".join(parts)
+
+
+def choose_folder(parent: QWidget, title: str, start: str) -> str:
+    """A folder picked in the system dialog, or "" on cancel. Tests replace this."""
+    return QFileDialog.getExistingDirectory(parent, title, start)
+
+
+def open_folder(path: Path) -> None:
+    """Open a folder in Explorer. Tests replace this."""
+    QDesktopServices.openUrl(QUrl.fromLocalFile(str(path)))
 
 
 def find_mcp_exe() -> Path | None:
@@ -387,6 +399,7 @@ class SettingsTab(QWidget):
             "backup_retention": self.retention_spin.value(),
             "ssh_legacy_algorithms": self.legacy_ssh_check.isChecked(),
             "auto_lock_minutes": self.auto_lock_spin.value(),
+            "firmware_dir": self.firmware_edit.text().strip() or None,
             "extra_sink_patterns": self.sink_lines.values(),
             "benign_messages": self.benign_lines.values(),
         }
@@ -416,6 +429,7 @@ class SettingsTab(QWidget):
             self.retention_spin.setValue(s.backup_retention)
             self.legacy_ssh_check.setChecked(s.ssh_legacy_algorithms)
             self.auto_lock_spin.setValue(s.auto_lock_minutes)
+            self.firmware_edit.setText(s.firmware_dir or "")
             self.sink_lines.set_values(s.extra_sink_patterns)
             self.benign_lines.set_values(s.benign_messages)
         finally:
@@ -632,6 +646,13 @@ class SettingsTab(QWidget):
                     self.ctx.open_workspace(workspace)
                 else:
                     self.shell.notify(f"Workspace folder not found: {workspace}", "warning")
+            chosen = new_settings.firmware_dir
+            if "firmware_dir" in settings_keys and chosen and not Path(chosen).is_dir():
+                self.shell.notify(
+                    f"Firmware folder not found: {chosen}. Upgrade plays that upload an "
+                    "image will stop before connecting until it exists.",
+                    "warning",
+                )
         if new_policy is not None:
             try:
                 save_policy(new_policy, self.ctx.paths.policy_file)
@@ -726,6 +747,23 @@ class SettingsTab(QWidget):
         lock_row.addWidget(self.password_button)
         lock_row.addStretch(1)
         form.addRow("Auto-lock", lock_row)
+        firmware_row = QHBoxLayout()
+        self.firmware_edit = QLineEdit()
+        self.firmware_edit.setPlaceholderText(str(self.ctx.paths.firmware_dir))
+        self.firmware_edit.setToolTip(
+            "Where upgrade plays find their image files. A play names a file only by its "
+            "name, and the file must match the play's hash. Empty means the default folder "
+            "shown here. Not the workspace: images are large, and the workspace is a git repo."
+        )
+        self.firmware_edit.textChanged.connect(self._on_edit)
+        firmware_browse = QPushButton("Browse…")
+        firmware_browse.clicked.connect(lambda _=False: self._browse_firmware())
+        self.firmware_open = QPushButton("Open folder")
+        self.firmware_open.clicked.connect(lambda _=False: self.open_firmware_folder())
+        firmware_row.addWidget(self.firmware_edit, 1)
+        firmware_row.addWidget(firmware_browse)
+        firmware_row.addWidget(self.firmware_open)
+        form.addRow("Firmware folder", firmware_row)
         layout.addLayout(form)
 
     def _change_password(self) -> None:
@@ -734,11 +772,38 @@ class SettingsTab(QWidget):
             self.shell.notify("Tsunami password changed.")
 
     def _browse_workspace(self) -> None:
-        chosen = QFileDialog.getExistingDirectory(
-            self, "Choose workspace folder", self.workspace_edit.text()
-        )
+        chosen = choose_folder(self, "Choose workspace folder", self.workspace_edit.text())
         if chosen:
             self.workspace_edit.setText(chosen)
+
+    def firmware_folder(self) -> Path:
+        """The firmware folder as the field says now, saved or not."""
+        text = self.firmware_edit.text().strip()
+        return firmware_dir(self.ctx.paths, AppSettings(firmware_dir=text or None))
+
+    def _browse_firmware(self) -> None:
+        start = self.firmware_folder()
+        chosen = choose_folder(
+            self, "Choose firmware folder", str(start if start.is_dir() else Path.home())
+        )
+        if chosen:
+            self.firmware_edit.setText(chosen)
+
+    def open_firmware_folder(self) -> bool:
+        """Open the folder in Explorer, to drop images in. The default folder is created
+        on first use; a folder chosen in Settings that is missing is reported instead."""
+        folder = self.firmware_folder()
+        if not folder.is_dir():
+            if folder != self.ctx.paths.firmware_dir:
+                self.shell.notify(f"Firmware folder not found: {folder}", "warning")
+                return False
+            try:
+                folder.mkdir(parents=True, exist_ok=True)
+            except OSError as exc:
+                self.shell.notify(f"Cannot create the firmware folder: {exc}", "error")
+                return False
+        open_folder(folder)
+        return True
 
     # -- Advanced: secrets and errors --------------------------------------------------------------
 

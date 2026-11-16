@@ -58,6 +58,12 @@ from tsunami.gui.widgets.prompt_widgets import PromptField, make_prompt_widget
 from tsunami.gui.widgets.reveal_text import PreviewRevealer, RevealTextView
 from tsunami.gui.widgets.tabs import TabWidget
 
+# Added to the confirmation when a run may reach a `firmware: activate` step (Play.reloads).
+RELOAD_WARNING = (
+    "This play's activate step reloads each device into the new image, one at a time. "
+    "A device is down until it is back, which can take several minutes."
+)
+
 MODE_LABELS = {
     RunMode.CHECK: "Check (diff only, no changes)",
     RunMode.APPLY: "Apply (change the devices)",
@@ -823,11 +829,16 @@ class RunWizard(QWidget):
         request = self.build_request()
         if request.mode == RunMode.APPLY:
             count = 1 if self.initial else len(self.selected_devices())
+            text = (
+                f"Apply '{self.play.name}' to {count} device{'s' if count != 1 else ''}? "
+                "This changes the device configuration."
+            )
+            if self.play.reloads(request.tags):
+                text += f"\n\n{RELOAD_WARNING}"
             answer = QMessageBox.question(
                 self,
                 "Apply changes",
-                f"Apply '{self.play.name}' to {count} device{'s' if count != 1 else ''}? "
-                "This changes the device configuration.",
+                text,
                 QMessageBox.StandardButton.Yes | QMessageBox.StandardButton.No,
                 QMessageBox.StandardButton.No,
             )

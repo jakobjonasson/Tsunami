@@ -29,6 +29,7 @@ from tsunami.core.models.jobs import DeviceStatus, JobStatus
 from tsunami.core.models.play import (
     Firmware,
     FirmwareImage,
+    Play,
     PlayType,
     RollbackMode,
     RunMode,
@@ -640,3 +641,60 @@ def test_driver_for_says_when_a_driver_is_missing(monkeypatch):
     for family in PlatformFamily:
         with pytest.raises(FirmwareError, match=f"not available for {family} yet"):
             firmware.driver_for(family)
+
+
+def test_aruba_has_no_firmware_driver_yet():
+    """State checks and upgrades are Cisco-only for now (design.md, Revision notes 0.8.0)."""
+    for family in (PlatformFamily.AOS_CX, PlatformFamily.AOS_S):
+        with pytest.raises(FirmwareError, match=f"not available for {family} yet"):
+            firmware.driver_for(family)
+    assert firmware.driver_for(PlatformFamily.IOS) is not None
+
+
+def _play(**changes) -> Play:
+    data = {
+        "name": "x",
+        "type": "upgrade",
+        "customer": "acme",
+        "firmware": {
+            "images": [
+                {"file": FILE, "version": "17.09.05", "sha256": SHA256, "platforms": ["ios-xe"]}
+            ]
+        },
+        "steps": [
+            {"firmware": "stage", "tags": ["stage"]},
+            {"firmware": "activate", "allow_destructive": True, "tags": ["activate"]},
+        ],
+    }
+    data.update(changes)
+    return Play.model_validate(data)
+
+
+def test_reloads_says_whether_a_tag_filter_reaches_activate():
+    play = _play()
+    assert play.reloads(None)
+    assert play.reloads(["activate"])
+    assert play.reloads(["stage", "activate"])
+    assert not play.reloads(["stage"])
+    assert not play.reloads(["other"])
+    always = _play(
+        steps=[
+            {"firmware": "stage", "tags": ["stage"]},
+            {"firmware": "activate", "allow_destructive": True, "tags": ["always"]},
+        ]
+    )
+    assert always.reloads(["stage"])
+    stage_only = _play(steps=[{"firmware": "stage"}])
+    assert not stage_only.reloads(None)
+
+
+def test_a_vrf_on_ios_fails_validation_instead_of_being_ignored(ws_root):
+    pull = PLAY.replace(
+        "firmware:\n", "firmware:\n  transfer: tftp\n  server: tftp://192.0.2.10\n"
+    ).replace(f"sha256: {SHA256}", f"sha256: {SHA256}\n      md5: {'0' * 31}a")
+    assert "play.firmware_vrf" not in issue_codes(ws_root, write_upgrade(ws_root, pull))
+    with_vrf = pull.replace("  transfer: tftp\n", "  transfer: tftp\n  vrf: Mgmt-intf\n")
+    path = write_upgrade(ws_root, with_vrf, "vrf")
+    issues = load_workspace(ws_root).issues_for(Path(path))
+    found = [i.message for i in issues if i.code == "play.firmware_vrf"]
+    assert found and "ip tftp source-interface" in found[0]

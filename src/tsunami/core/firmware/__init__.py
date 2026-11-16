@@ -21,6 +21,7 @@ from tsunami.core.models.play import TransferMethod
 
 __all__ = [
     "TRANSFERS",
+    "TAKES_VRF",
     "DEVICE_HASH",
     "DeviceGone",
     "FirmwareDriver",
@@ -45,6 +46,9 @@ TRANSFERS: dict[PlatformFamily, frozenset[TransferMethod]] = {
     # AOS-S takes an SCP upload (`ip ssh filetransfer`, which turns its TFTP client off).
     PlatformFamily.AOS_S: frozenset({TransferMethod.SCP, TransferMethod.TFTP}),
 }
+# Families whose copy command takes the play's `vrf`. IOS fetches through the interface
+# its configuration names, so a vrf there would be ignored; validation refuses it.
+TAKES_VRF: frozenset[PlatformFamily] = frozenset({PlatformFamily.AOS_CX})
 DEVICE_HASH: dict[PlatformFamily, str | None] = {
     PlatformFamily.IOS: "md5",  # verify /md5
     PlatformFamily.AOS_CX: None,  # the switch checks the image's signature itself

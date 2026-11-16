@@ -766,7 +766,7 @@ class _Loader:
 
     def check_firmware(self, play: Play, doc: YamlDoc, devices: list[Device], catalog) -> None:
         """An upgrade play has an image for every target, reachable the way the play says."""
-        from tsunami.core.firmware import TRANSFERS
+        from tsunami.core.firmware import TAKES_VRF, TRANSFERS
         from tsunami.core.firmware import available as firmware_available
 
         firmware = play.firmware
@@ -820,6 +820,18 @@ class _Loader:
                 + "; ".join(f"{f} (use {ways[f]})" for f in cannot),
                 "firmware",
                 "transfer",
+            )
+        no_vrf = [f for f in families if f not in TAKES_VRF]
+        if firmware.vrf and no_vrf:
+            self.at(
+                doc,
+                Severity.ERROR,
+                "play.firmware_vrf",
+                f"vrf is not used on {', '.join(map(str, no_vrf))}: the device fetches through "
+                "the interface its configuration names (IOS: `ip tftp source-interface`, "
+                "`ip http client source-interface`); remove vrf",
+                "firmware",
+                "vrf",
             )
 
     def initial_platforms(self, play: Play, doc: YamlDoc) -> list[Platform]:

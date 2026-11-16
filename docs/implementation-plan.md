@@ -2,7 +2,7 @@
 
 This file goes with [design.md](design.md), which is the spec. The spec says *what* to build. This file says *how* it gets built and *who* builds each part: Opus, Sonnet or Haiku. If the two disagree, the spec wins until someone updates it.
 
-**Status:** Phases 0–6 are built, and CI produces the installer. Confirmed working on real devices for every platform: AOS-S (2530, 2930F), AOS-CX (CX6000), IOS (2960-X, 3560-CX), IOS-XE (C1100 series, Catalyst 9500, 9300, 9200, 3850, 9800 WLC) and IOS on Linux in CML. Not yet done: the AOS-CX edge cases still marked *verify* (3.11), code signing, and hands-on checks (5.5, 6.3, 6.5). See Open items, and After the plan for work added since.
+**Status:** Phases 0–6 are built, and CI produces the installer. Confirmed working on real devices for every platform: AOS-S (2530, 2930F), AOS-CX (CX6000), IOS (2960-X, 3560-CX), IOS-XE (C1100 series, Catalyst 9500, 9300, 9200, 3850, 9800 WLC) and IOS on Linux in CML. Not yet done: the AOS-CX edge cases still marked *verify* (3.11), code signing, hands-on checks (5.5, 6.3, 6.5), and a first firmware upgrade on real hardware (0.8.0 is tested against scripted devices only). See Open items, and After the plan for work added since.
 
 ---
 
@@ -29,12 +29,13 @@ What is left, roughly in priority order. Check the user's wishes before starting
    - how AOS-CX's revert-now path interacts with a running auto-checkpoint timer
    - whether `cfg-restore` leaves flash-stored credentials alone
    Work package 3.11 (Aruba lab) covers these items.
-2. **Code signing.** `packaging/sign.ps1` is ready; it needs a certificate (an internal CA if the tool stays in-house, else an OV certificate with cloud signing) and EDR allowlisting.
-3. **Versioning.** `__version__` in `src/tsunami/__init__.py` is the only place it is set; the installer is named from it. Bump the minor version for a build with new features and the patch version for a fix-only build, in the commit that ships it. 0.2.0 was the first bump.
-4. **MCP Inspector pass** (5.5) and a Claude Desktop check after each MCP change. The Store build of Claude Desktop keeps its config under `%LOCALAPPDATA%\Packages\Claude_*`; `core/registration.py` handles both locations.
-5. **Ideas raised but not built:** import of known host keys from MobaXterm; reloading the workspace automatically when files change; generating `no` commands to remove compliance extras; listing "inventory only" devices (APs, controllers on unsupported platforms).
-6. **Catalog verification** (1.9): lifecycle, end-of-sale years, example SKUs and model patterns in `core/data/hardware.yml` are unverified against vendor sources.
-7. **Accepted residuals** (design.md, Redaction): a secret also stored in plain text in workspace variables can be confirmed by a whole-value guess; a secret the device wraps over two lines is not exact-redacted. Both are strict xfails in `tests/unit/test_mcp_leaks.py`.
+2. **Firmware upgrades and state checks on hardware (0.8.0).** Nothing in `core/firmware/` has upgraded a real device. Before production use, on a bench IOS-XE device: a stage over scp, tftp and http, an activate in install mode and in bundle mode, a stack, and every IOS item `docs/research/firmware.md` marks UNVERIFIED (stack member file system names, the reload prompts, `show boot` against `show bootvar`). A stage needs no reload, so it can be tried on a CML node with a small dummy file. State tables: read each one from the CML test bed and a real switch and compare with what the device shows. Aruba (state parsers, AOS-CX and AOS-S drivers) is parked on `aruba-state-firmware-wip` until it can be checked on a switch.
+3. **Code signing.** `packaging/sign.ps1` is ready; it needs a certificate (an internal CA if the tool stays in-house, else an OV certificate with cloud signing) and EDR allowlisting.
+4. **Versioning.** `__version__` in `src/tsunami/__init__.py` is the only place it is set; the installer is named from it. Bump the minor version for a build with new features and the patch version for a fix-only build, in the commit that ships it. 0.2.0 was the first bump.
+5. **MCP Inspector pass** (5.5) and a Claude Desktop check after each MCP change. The Store build of Claude Desktop keeps its config under `%LOCALAPPDATA%\Packages\Claude_*`; `core/registration.py` handles both locations.
+6. **Ideas raised but not built:** import of known host keys from MobaXterm; reloading the workspace automatically when files change; generating `no` commands to remove compliance extras; listing "inventory only" devices (APs, controllers on unsupported platforms).
+7. **Catalog verification** (1.9): lifecycle, end-of-sale years, example SKUs and model patterns in `core/data/hardware.yml` are unverified against vendor sources.
+8. **Accepted residuals** (design.md, Redaction): a secret also stored in plain text in workspace variables can be confirmed by a whole-value guess; a secret the device wraps over two lines is not exact-redacted. Both are strict xfails in `tests/unit/test_mcp_leaks.py`.
 
 ## After the plan
 
@@ -55,6 +56,7 @@ Built after Phase 6 at the user's request, each with tests and a design.md revis
 - 0.6.1: `canary_priority` per device; Ctrl+F in the backups viewer (`gui/widgets/find_bar.py`); press-to-reveal in the run preview and backups viewer, after the Tsunami password, audited in `reveals` (`core/reveal.py`, `gui/widgets/reveal_text.py`, migration 007); MCP show, discovery, neighbor checks, Trust host keys and Test connection recorded as jobs (`core/operations.py`), in History with Show operations, and a Reveals tab. Reveal positions are not testable offscreen (no fonts): check a reveal by hand on Windows.
 - 0.7.0: customers and sites start collapsed in the Inventory tree; View full backup and Open in VS Code (a redacted copy); Restore from backup over SSH or a console (`core/restore.py`, `gui/screens/restore.py`), tested against simulated devices only so far.
 - 0.7.1: MCP `compliance` takes `targets` and `prompts`; `check` and `compliance` return device names; the `add_site`/`add_role` vars rule matches the linter's (`workspace.secret_literal_keys`); `get_job` filters, detail levels and `wait_seconds`; new tools `get_policy`, `show_many`, `list_models` and `add_model`; policy `max_tier` (Settings, Highest tool tier); `cancel_job` stops running lab runs, checks and `show_many` jobs; `propose_inventory_change` covers every device field; custom hardware models in `inventory/models.yml` (`core/catalog.py`, Inventory, Hardware models…). Still to do: try `show_many`, a waiting `get_job` and a jump host proposal against the CML test bed through Claude Desktop.
+- 0.8.0: state checks (`core/state/`: tables, parsers per family, `where`/`expect`/`count`/`compare`), read before any change and compared after; upgrade plays (`core/firmware/`: the driver interface, the firmware folder, drivers per family; `firmware: stage` and `firmware: activate` steps; reconnect after a reload); `Session.send_interactive` and `SshTransport.upload`; MCP `list_state_tables`, `state` and `list_firmware`; the firmware folder in Settings; a new icon. The engine parts, the IOS state parsers for port channels, VLANs, routes and spanning tree, and the IOS firmware driver were written by the lead; the other IOS parsers and the MCP tools by Sonnet agents from a written interface and a test harness (`tests/unit/firmware_fakes.py`), then reviewed; the Settings field and the reload warning by the lead. Aruba parsers and an AOS-CX driver were drafted too and set aside (`aruba-state-firmware-wip`). Still to do: Open items, 2.
 
 ---
 
@@ -111,6 +113,8 @@ tsunami/
 │  │  │  ├─ console.py       cisco_ios_serial, day-0 dialogs
 │  │  │  └─ mock.py          fake transport for scale tests
 │  │  ├─ rollback.py, pipeline.py, runner.py, events.py
+│  ├─ state/              state tables: tables.py, evaluate.py, parsers/ (IOS)
+│  ├─ firmware/           upgrade plays: base.py (driver interface), library.py, ios.py
 │  │  ├─ history.py, migrations/              SQLite (WAL), forward-only migrations
 │  │  ├─ policy.py, pathguard.py, approvals.py
 │  │  ├─ drafts.py, registration.py, logsetup.py

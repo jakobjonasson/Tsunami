@@ -28,10 +28,12 @@ from PySide6.QtWidgets import (
 
 from tsunami.core import approvals, inventory_proposals
 from tsunami.core.issues import TsunamiError
-from tsunami.core.models.jobs import JobStatus
+from tsunami.core.models.jobs import JobRecord, JobStatus
 from tsunami.core.models.proposals import ProposalStatus
+from tsunami.core.services import play_entry
 from tsunami.gui import theme
 from tsunami.gui.context import AppContext
+from tsunami.gui.screens.run_wizard import RELOAD_WARNING
 from tsunami.gui.shell import ActivityItem, Shell
 from tsunami.gui.widgets.masked_text import MaskedTextView
 from tsunami.gui.widgets.tabs import TabWidget
@@ -51,6 +53,17 @@ def _play_name(path: str) -> str:
 
 def _text(value: object) -> str:
     return str(getattr(value, "value", value))
+
+
+def _reloads(ctx: AppContext, job: JobRecord) -> bool:
+    """Whether the requested run may reach a `firmware: activate` step. A play that no
+    longer loads is assumed to: approving it fails anyway, and the warning costs nothing."""
+    try:
+        entry = play_entry(ctx.workspace, job.play_path, job.customer)
+    except TsunamiError:
+        return True
+    assert entry.play is not None  # play_entry refuses a play that failed validation
+    return entry.play.reloads(job.tags or None)
 
 
 def _confirm(parent: QWidget | None, title: str, text: str) -> bool:
@@ -102,6 +115,14 @@ class ApprovalCard(QWidget):
         note.setObjectName("Muted")
         note.setWordWrap(True)
         root.addWidget(note)
+        self.reloads = _reloads(ctx, job)
+        self.reload_label = QLabel(RELOAD_WARNING)
+        self.reload_label.setObjectName("Banner")
+        self.reload_label.setProperty("level", "warning")
+        self.reload_label.setTextFormat(Qt.TextFormat.PlainText)
+        self.reload_label.setWordWrap(True)
+        self.reload_label.setVisible(self.reloads)
+        root.addWidget(self.reload_label)
 
         details = QFrame()
         details.setObjectName("Card")
@@ -166,7 +187,8 @@ class ApprovalCard(QWidget):
             self,
             "Approve change",
             f"Apply {_play_name(job.play_path)} to {count} device(s) of customer "
-            f"{job.customer}?\n\nThe change will be pushed to the devices now.",
+            f"{job.customer}?\n\nThe change will be pushed to the devices now."
+            + (f"\n\n{RELOAD_WARNING}" if self.reloads else ""),
         ):
             return
         try:

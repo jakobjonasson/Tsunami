@@ -10,6 +10,7 @@ config) are checked by the workspace loader.
 from __future__ import annotations
 
 import re
+from collections.abc import Collection
 from dataclasses import dataclass
 from enum import StrEnum
 from typing import Annotated, Any, Literal
@@ -509,6 +510,17 @@ class Play(StrictModel):
     execution: Execution = Execution()
     checks: Checks = Checks()
     on_success: OnSuccess = OnSuccess()
+
+    def reloads(self, tags: Collection[str] | None = None) -> bool:
+        """Whether an apply with this tag filter (None: no filter) may run a
+        `firmware: activate` step, which reloads the device. `when` is not evaluated,
+        so this errs towards yes; the GUI uses it to say so before a run is confirmed."""
+        chosen = None if tags is None else set(tags)
+        return any(
+            step.firmware is FirmwareAction.ACTIVATE
+            and (chosen is None or "always" in step.tags or bool(set(step.tags) & chosen))
+            for step in self.steps
+        )
 
     def settings(self, workspace_batch_size: int | None = None) -> EffectiveSettings:
         """Execution settings after applying per-type defaults (design.md, Defaults by type)."""

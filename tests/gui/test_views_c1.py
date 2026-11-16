@@ -22,7 +22,7 @@ def answer_yes(monkeypatch):
     monkeypatch.setattr(QMessageBox, "question", lambda *a, **k: QMessageBox.StandardButton.Yes)
 
 
-def pending(ctx, play=PUSH, prompts=None):
+def pending(ctx, play=PUSH, prompts=None, tags=None):
     prompts = {"vlan_id": "30", "vlan_name": "Cameras"} if prompts is None else prompts
     entry = play_entry(ctx.workspace, play)
     job_id = ctx.history.create_job(
@@ -33,6 +33,7 @@ def pending(ctx, play=PUSH, prompts=None):
         mode="apply",
         status=JobStatus.AWAITING_APPROVAL,
         prompts=prompts,
+        tags=tags,
     )
     ctx.history.add_devices(job_id, ["sa-as01", "sa-as02"])
     renderer = Renderer(ctx.workspace)

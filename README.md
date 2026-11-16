@@ -8,7 +8,7 @@ Claude can investigate the network and draft changes through a local MCP server,
 
 **Try it:** download the Windows installer from [Releases](https://github.com/jakobjonasson/Tsunami/releases/latest). It runs on Windows 10 and 11; builds are not code-signed yet, so SmartScreen asks once. Tsunami is free software under the [GNU GPL v3](LICENSE).
 
-**Status:** Feature-complete for v1 and confirmed working on real devices for every platform (table below). About 3,000 unit and 300 GUI tests run in CI, plus a frozen-build check. Restore from backup (0.7.0) is tested against simulated devices only so far. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
+**Status:** Feature-complete for v1 and confirmed working on real devices for every platform (table below). About 3,000 unit and 300 GUI tests run in CI, plus a frozen-build check. Restore from backup (0.7.0) and firmware upgrades (0.8.0) are tested against simulated devices only so far. Open items are listed under "Open items" in [docs/implementation-plan.md](docs/implementation-plan.md), and the spec is [docs/design.md](docs/design.md).
 
 ## Tested platforms
 | Platform | Tested on | Status |
@@ -24,9 +24,11 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 ## What it does
 
 **Plays and runs**
-- Three play types: `initial` (day-0 staging over console or SSH, optionally adding the new device to the inventory), `push` (changes) and `baseline` (a customer's standard; compliance reports missing lines, and extra lines under the prefixes a step `owns`).
+- Four play types: `initial` (day-0 staging over console or SSH, optionally adding the new device to the inventory), `push` (changes), `baseline` (a customer's standard; compliance reports missing lines, and extra lines under the prefixes a step `owns`) and `upgrade` (firmware).
 - Four run modes: render (no connection), check (a diff against running config, nothing sent), compliance (baseline plays) and apply.
 - Apply runs a canary device first (the one with the highest `canary_priority`), then batches, with a failure threshold, pre- and post-checks, a config backup, rollback on failure or a revert timer, and `write memory` when the checks pass.
+- State checks: a pre-check or post-check can assert on operational state as rows instead of matching text, and compare it with the state before the change: the same OSPF or BGP neighbors, a port channel still up with all its members, as many routes as before. Fourteen tables (interfaces, port channels and their members, OSPF, BGP and EIGRP neighbors, CDP and LLDP, stack members, VLANs, routes, HSRP, VRRP, spanning tree). Cisco IOS and IOS-XE for now; Aruba reads no table yet.
+- Firmware upgrades (Cisco IOS and IOS-XE): an `upgrade` play copies an image to each device (uploaded over SCP from a firmware folder, or fetched by the device over TFTP or HTTP), verifies it, sets it to boot, reloads, waits for the device and confirms the version. Images are pinned by hash, staging and activating are separate steps (stage the fleet by day, reload in the window), and the reload runs one device at a time behind the canary and the post-checks. Written from Cisco documentation; not yet run on hardware.
 - Typed prompts with dropdowns (site, role, hardware model, a saved login) and per-device answers.
 - Secrets reach templates only as `secret('name')` (or `secret('name', 'field')` for a secret with fields such as an SNMPv3 user), a prompt of type `secret` or `password`, or `login(name).password` for a saved login. All are placeholders that may sit only on password lines, and real values exist only in memory during apply. A secret the play uses that is not saved is reported at validate, render and request time.
 - History of every job with masked renders and redacted diffs and output; retry failed devices, apply after a check, or run again. Show operations adds the rest: show commands, discovery, drift checks, host-key trust and connection tests.
@@ -47,8 +49,8 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 
 **Claude over MCP** (the tools are listed in `TOOL_NAMES`)
 - Read the workspace and history: `list_customers`, `list_devices`, `list_plays`, `list_snippets`, `read_play`, `read_snippet`, `resolved_vars`, `validate`, `render`, `list_models`, `list_jobs`, `get_job` (filtered to some devices, a summary or diff only, and able to wait for the job to change instead of polling), and `get_policy` (what Claude may do now, and its allowlist requests).
-- Write drafts under `drafts/` (`write_draft`, `delete_draft`); only a person promotes one.
-- Read devices: `show` for allowlisted commands (matched by command prefix), `show_many` (one command on many devices, as a job), `check` and `compliance` (both with `targets`, so a big fleet can be split). `request_allowlist_addition` asks a person to allow another `show` command in Settings.
+- Write drafts under `drafts/` (`write_draft`, `delete_draft`); only a person promotes one. `list_firmware` lists the image files and hashes an upgrade play can name.
+- Read devices: `show` for allowlisted commands (matched by command prefix), `show_many` (one command on many devices, as a job), `state` (one state table as rows, when its show command is allowlisted; `list_state_tables` lists them), `check` and `compliance` (both with `targets`, so a big fleet can be split). `request_allowlist_addition` asks a person to allow another `show` command in Settings.
 - Change devices: `request_run`, approved in the GUI (lab customers may skip approval if the policy allows), and `cancel_job` (a request before approval, or a lab run, check or sweep while it runs). No tool reads backups or restores one.
 - Add to the inventory when Settings allow it (off by default): `add_customer`, `add_site`, `add_role`, `add_devices` (with `create_sites` and `create_roles`) and `add_model` (a custom hardware model). Changes to any device field and removals are only proposed: `propose_inventory_change` waits for approval, and `get_inventory_proposal` reports the outcome.
 - `mcp-policy.yml` sets whether MCP is on, the highest tool tier (read-only stops all change requests), whether lab changes need approval, blocked customers, the rate limit and the show allowlist. Edit it in Settings or in VS Code.
@@ -56,11 +58,11 @@ Older Cisco and HP switches that offer only SHA-1 SSH algorithms are reached thr
 
 ## How it works
 
-- **Workspace:** a folder of YAML and Jinja files the user edits in VS Code: `inventory/` (customers, sites, devices; device types are roles), `plays/` (initial, push, baseline), `snippets/`, and `drafts/` (Claude's writing area). The GUI edits inventory through context menus too.
+- **Workspace:** a folder of YAML and Jinja files the user edits in VS Code: `inventory/` (customers, sites, devices; device types are roles), `plays/` (initial, push, baseline, upgrade), `snippets/`, and `drafts/` (Claude's writing area). The GUI edits inventory through context menus too.
 - **Engine (`core/`):** validates, renders templates (secrets as `secret('customer/name')` placeholders), diffs against running config, and pushes with canary, batches, backups and rollback. Every outbound string goes through one redactor.
 - **GUI (`tsunami.exe`):** the only place changes are approved and run. It holds the unlocked credential vault (the Tsunami password, set on first launch) and serves Claude's tool calls.
 - **MCP server (`tsunami-mcp.exe`):** a stdio relay. It holds no credentials: each tool call goes over a local named pipe to the GUI, which runs it only while unlocked (403 when locked, 503 when Tsunami is closed).
-- **Local data:** `%APPDATA%\Tsunami` (settings, MCP policy), `%LOCALAPPDATA%\Tsunami` (`history.db`, backups, redacted copies opened in VS Code under `backup-views`, logs, known_hosts, `vault.json`). Logins and secrets live in Windows Credential Manager, encrypted under the Tsunami password: one entry per value (`tsunami/<key>`), local-machine persistence only (see `core/secret_store.py` for why).
+- **Local data:** `%APPDATA%\Tsunami` (settings, MCP policy), `%LOCALAPPDATA%\Tsunami` (`history.db`, backups, redacted copies opened in VS Code under `backup-views`, firmware images under `firmware`, logs, known_hosts, `vault.json`). Logins and secrets live in Windows Credential Manager, encrypted under the Tsunami password: one entry per value (`tsunami/<key>`), local-machine persistence only (see `core/secret_store.py` for why).
 
 ## Development setup
 
@@ -88,7 +90,9 @@ Integration tests need a CML lab (`TSUNAMI_CML=1`) or a COM port (`TSUNAMI_SERIA
 | `core/workspace.py`, `resolver.py`, `targets.py` | Loading and validating a workspace, variable merge with provenance, target selection |
 | `core/render/`, `redact.py`, `platforms/` | Sandboxed rendering, `secret()` sentinels, the redactor, per-platform drivers (rules, facts, rollback) |
 | `core/runner.py`, `pipeline.py`, `rollback.py` | Job orchestration (canary, batches, leases, heartbeats) and the per-device pipeline |
-| `core/transports/` | SSH (Netmiko, jump hosts, host-key pinning, `legacy_ssh.py` SHA-1 fallback), console, mock |
+| `core/transports/` | SSH (Netmiko, jump hosts, host-key pinning, `legacy_ssh.py` SHA-1 fallback, SCP upload), console, mock |
+| `core/state/` | State checks: the tables (`tables.py`), the evaluation of a check (`evaluate.py`), and the parsers (IOS; Aruba not yet) |
+| `core/firmware/` | Upgrade plays: the driver interface (`base.py`), the firmware folder (`library.py`), and the IOS driver (Aruba not yet) |
 | `core/vault.py`, `secret_store.py`, `logins.py` | The Tsunami password, the encrypted Credential Manager store, and which logins a customer's plays may push |
 | `core/discovery.py`, `hostkey_trust.py`, `inventory_import.py` | Onboarding: site discovery over CDP and LLDP, bulk host-key trust, CSV import |
 | `core/backups.py`, `drift.py`, `restore.py` | Config backups: saving, comparing (redacted), the drift check, and restoring a backup to a device |

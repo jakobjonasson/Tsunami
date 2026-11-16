@@ -710,27 +710,29 @@ A table has key columns, which identify a row across two readings, and compared 
 - Text that people configure on devices (descriptions, VLAN names, neighbor names) can be in a row. Descriptions are left out of the tables; everything a check logs passes the redactor.
 - Not every family reads every table yet. A play fails validation when a check names a table that one of its targets' families cannot read, so a check never silently does nothing.
 
-The command behind each table:
+State checks read Cisco IOS and IOS-XE only for now. AOS-CX and AOS-S read no table, so a play whose check would run on one fails validation (`play.state_unsupported`). Parsers for both were drafted from documentation and are kept, unshipped, on the branch `aruba-state-firmware-wip`.
 
-|   |   |   |   |
-|---|---|---|---|
-|Table|IOS / IOS-XE|AOS-CX|AOS-S|
-|`interfaces`|`show interfaces description`|not yet|not yet|
-|`port_channels`|`show etherchannel summary`|not yet|not yet|
-|`port_channel_members`|`show etherchannel summary`|not yet|not yet|
-|`ospf_neighbors`|`show ip ospf neighbor`|not yet|not yet|
-|`bgp_neighbors`|not yet|not yet|not yet|
-|`eigrp_neighbors`|not yet|not yet|not yet|
-|`cdp_neighbors`|not yet|not yet|not yet|
-|`lldp_neighbors`|not yet|not yet|not yet|
-|`stack`|not yet|not yet|not yet|
-|`vlans`|`show vlan brief`|not yet|not yet|
-|`routes`|`show ip route summary`|not yet|not yet|
-|`hsrp`|not yet|not yet|not yet|
-|`vrrp`|not yet|not yet|not yet|
-|`spanning_tree`|`show spanning-tree summary`|not yet|not yet|
+The command behind each table (IOS and IOS-XE):
 
-The IOS parsers for `interfaces`, `port_channels`, `ospf_neighbors`, `vlans`, `routes` and `spanning_tree` are tested against output captured from IOS-XE 16.9 and 17.18 and IOS 15.9, and from the test data of the ntc-templates and genieparser projects. Formats and their variations are collected in `docs/research/state-tables.md`.
+|   |   |
+|---|---|
+|Table|Command|
+|`interfaces`|`show interfaces description`|
+|`port_channels`|`show etherchannel summary`|
+|`port_channel_members`|`show etherchannel summary`|
+|`ospf_neighbors`|`show ip ospf neighbor`|
+|`bgp_neighbors`|`show ip bgp summary`|
+|`eigrp_neighbors`|`show ip eigrp neighbors`|
+|`cdp_neighbors`|`show cdp neighbors detail`|
+|`lldp_neighbors`|`show lldp neighbors detail`|
+|`stack`|`show switch`|
+|`vlans`|`show vlan brief`|
+|`routes`|`show ip route summary`|
+|`hsrp`|`show standby brief`|
+|`vrrp`|`show vrrp brief`|
+|`spanning_tree`|`show spanning-tree summary`|
+
+Every IOS parser is tested against output captured from IOS 15.9 and IOS-XE 16.9 and 17.18 (CML and a C1100 router), or from the test data of the ntc-templates and genieparser projects. Formats and their variations are collected in `docs/research/state-tables.md`. Limits: `routes` and `bgp_neighbors` read the global table and IPv4 unicast only; `spanning_tree` counts ports per VLAN or instance, not per port.
 
 ### How they run
 
@@ -786,7 +788,7 @@ checks:
 
 - `transfer`: `scp` (Tsunami uploads the file from its firmware folder; the default), `tftp` or `http` (the device fetches it from `server`).
 - `server`: tftp and http only: `tftp://host[/folder]` or `http(s)://host[:port][/folder]`. The image's file name is appended. No username, password or query: a play is not secret, and it is in git.
-- `vrf`: the VRF the device reaches the server through, on platforms whose copy command takes one (AOS-CX: `vrf mgmt`).
+- `vrf`: the VRF the device reaches the server through, on platforms whose copy command takes one. IOS does not: it fetches through the interface its configuration names (`ip tftp source-interface`, `ip http client source-interface`), so a play with `vrf` that targets IOS fails validation (`play.firmware_vrf`) rather than have the field ignored.
 - `images`: one or more. Each has `file` (a bare file name), `version` (what the device reports once it runs the image), at least one of `sha256`, `sha512` and `md5`, `platforms`, and optionally `models` (hardware catalog ids). A device gets the first image listed for its platform whose `models` is empty or names the device's model, so an image for particular models goes above the general one.
 - `reload_timeout`: seconds to wait for a device to come back, 300 to 7200, default 1800. The first boot of a newer IOS-XE can upgrade the boot loader, which adds minutes; the default allows for it.
 
@@ -808,23 +810,25 @@ Images are hundreds of megabytes, so they live in machine data (`%LOCALAPPDATA%\
 For each firmware step the driver first reads the device's state. A device already running the image's version is left alone: the step logs that and does nothing, so a run can be repeated safely.
 
 - **stage** is safe to repeat. An image already on the device and verified is not copied again. A copy that fails verification is removed where the platform allows, and the device fails. Free space is checked first where the platform has a file system.
-- **activate** refuses unless the image is on the device and verifies at that moment, so the device is never told to boot a file that is missing or damaged. It saves the configuration before the reload, so the questions a reload asks about unsaved changes decide nothing. After the reload it waits for the device (below) and confirms the running version; a device that came back on another version fails, with the version named.
+- **activate** refuses unless the image is on the device and verifies at that moment, so the device is never told to boot a file that is missing or damaged. It saves the configuration before the reload, so the questions a reload asks about unsaved changes decide nothing. When a run can reach an activate step, the run wizard's Apply confirmation and the approval card say that the devices will reload (`Play.reloads`; it does not evaluate `when`, so it errs towards saying so). After the reload it waits for the device (below) and confirms the running version; a device that came back on another version fails, with the version named.
 
 ### Platforms
 
-|   |   |   |   |
-|---|---|---|---|
-| |IOS / IOS-XE|AOS-CX|AOS-S|
-|Transfers|scp, tftp, http|tftp|scp, tftp|
-|Upload needs|`ip scp server enable` and exec authorization that lands at privilege 15|(no upload: 6000 to 6300 have no documented way to take one)|`ip ssh filetransfer`, which turns the switch's TFTP client off|
-|Where the image goes|the file system the running image is on (`flash:`, `bootflash:`)|the bank not running (primary or secondary)|the bank not running|
-|Verified by|`verify /md5` against the file's md5|the switch's own signature check, then the bank's version read back (`show images`)|the switch's own check, then the bank's version read back (`show flash`), polled while the switch writes flash|
-|Activate|install mode: `install add file ... activate commit prompt-level none`. Bundle mode: `boot system` to the new file with the running image kept as the second entry, the boot variable read back, then `reload`|`boot system <bank>`|`boot system flash <bank>`|
-|Stacks|install mode copies to every member itself; bundle mode copies the file to each member's flash and verifies it there. After the reload every member must be back and ready|VSF: the conductor syncs the image; after the reload every member must be back|the commander installs on the members; the whole stack reboots|
+Upgrades run on Cisco IOS and IOS-XE only for now. AOS-CX and AOS-S have no driver, so an upgrade play that targets one fails validation (`play.firmware_unsupported`). What they need is in `docs/research/firmware.md`; an AOS-CX driver drafted from it is kept, unshipped, on the branch `aruba-state-firmware-wip`.
 
-- On Aruba the running image stays in the other bank as the way back. On IOS in bundle mode the running image stays as the second boot entry. Nothing deletes an old image.
-- Tsunami does not turn on `ip scp server enable` or `ip ssh filetransfer` itself: a stage step on a device without it fails with the line to add, which can be a config step in the same play. Changing device configuration that the play does not show was rejected.
-- What the Aruba and IOS classic drivers know comes from vendor documentation (`docs/research/firmware.md`), not yet from hardware; the facts marked UNVERIFIED there are the first things to check on a bench switch. Drivers fail with the device's output quoted when they read something they do not understand, instead of guessing.
+|   |   |
+|---|---|
+| |IOS / IOS-XE|
+|Transfers|scp, tftp, http|
+|Upload needs|`ip scp server enable` and exec authorization that lands at privilege 15|
+|Where the image goes|the file system the running image is on (`flash:`, `bootflash:`)|
+|Verified by|`verify /md5` against the file's md5|
+|Activate|install mode: `install add file ... activate commit prompt-level none`. Bundle mode: `boot system` to the new file with the running image kept as the second entry, the boot variable read back, then `reload`|
+|Stacks|install mode copies to every member itself; bundle mode copies the file to each member's flash and verifies it there. After the reload every member must be back and ready|
+
+- In bundle mode the running image stays as the second boot entry, as the way back. Nothing deletes an old image.
+- Tsunami does not turn on `ip scp server enable` itself: a stage step on a device without it fails with the line to add, which can be a config step in the same play. Changing device configuration that the play does not show was rejected.
+- What the driver knows about stack members' file systems, the reload prompts and `show boot` against `show bootvar` comes from Cisco documentation (`docs/research/firmware.md`, marked UNVERIFIED), not yet from hardware; those are the first things to check on a bench device. The driver fails with the device's output quoted when it reads something it does not understand, instead of guessing.
 
 ### Transfer
 
@@ -1271,7 +1275,7 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |Plays|Plays grouped by type (initial, push, baseline, upgrade) and customer, with validation status, a read-only YAML view, and a Run button.|
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
-|Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
+|Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification. A request that can reach a `firmware: activate` step carries a banner saying the devices will reload.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete. Promote checks whether the live file exists when it is pressed, refuses a draft rewritten since its tab showed it (Claude can rewrite a draft at any time), retries a live file another program holds open for a moment, and reports any failure with its reason.|
 |History|Jobs filtered by customer, play, actor, and status, with Show operations for show commands, discovery, drift checks, Trust host keys and connection tests (Local data and audit: Operations in history). Opens any past job view. Per-customer compliance history. Reveals: every press-to-reveal.|
 |Credentials|Names only. Device logins on one side; on the other, Secrets (per customer): values plays push that are not logins (SNMP, TACACS+ and RADIUS keys, pre-shared keys), each a single value or named fields (see Secrets with fields). Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
@@ -1572,7 +1576,7 @@ The biggest technical risks are day-0 console behavior and diff accuracy. The bi
 |No virtual AOS-S image|Rollback and day-0 untested until hardware is on the bench|Physical AOS-S switch for integration tests.|
 |Firmware drivers written from documentation|A prompt or output differs on a real device and a stage or activate fails|Drivers verify before they change what a device boots, and fail with the output quoted instead of guessing. Bench-test each family before production use; canary and `max_fail_percent` 0 stop a fleet run at the first failure.|
 |A device does not return from a reload|The device is down until someone reaches its console|Nothing prevents this. The image is verified first, the previous image is kept as the way back, the device ends `interrupted` with the alarm, and the run stops.|
-|State table parsers miss a layout|A check fails on good state, or a row is not seen|Each parser is tested against captured output; a failure names the rows, and the job log shows row counts, so a wrong reading is visible. Aruba parsers rest on reconstructed documentation until captured on a switch.|
+|State table parsers miss a layout|A check fails on good state, or a row is not seen|Each parser is tested against captured output; a failure names the rows, and the job log shows row counts, so a wrong reading is visible. State checks read IOS only until Aruba parsers are checked against a switch.|
 
 ### Deferred
 
@@ -1872,3 +1876,23 @@ Changes since the original draft, with reasons:
   - GUI tests destroy their widgets when they finish. pytest-qt closes a test's widgets and calls `deleteLater()`, but its `processEvents()` never runs a deferred delete, so every window lived to the end of the run: over 17,000 widgets after two test files. The theme the GUI fixture applies restyles every live widget, so a test's setup grew from half a second to several, and that was about 70% of the suite's run time. An autouse fixture in `tests/gui/conftest.py` now deletes what a test left and sends the deferred deletes. The suite went from about 530 s to about 220 s on the development machine. Applying the theme once per run was rejected: it hides the cost and leaves the windows alive, which has also ended a run with a non-zero exit code after every test passed.
   - The backups GUI tests move the clock that names backups instead of waiting 1.1 s for the next second.
   - The frozen build runs beside the tests instead of after them, so a run takes as long as the slower job. A failing test no longer stops the installer from being built: the run is red, and an installer is taken only from a green run. Running the tests in parallel (pytest-xdist) was rejected for now: the build job would then set the run time, and parallel workers put the timing assertions, the named pipe and the real-vault tests at risk for about a minute's gain.
+- 0.8.0, state checks, firmware upgrades and a new icon:
+  - State checks (State checks; `core/state/`): a check can read a state table and assert on its rows with `where`, `expect`, `count` and, in a post-check, `compare` against the rows read before the change. Checks could only match a regex against a command's text, which cannot say "the same neighbors as before". `expect` on a check is therefore a regex (exec checks) or a mapping of column to value (state checks).
+  - The tables' parsers are hand-written per platform family, with one set of column names and value words for every family. The spec said to revisit TextFSM and ntc-templates when more commands needed parsing; they were rejected. ntc-templates is installed with Netmiko, but its field names differ by platform and were renamed wholesale in a past release, so every table would need a mapping layer per platform anyway, pinned to a template version, and the frozen build would have to carry the template files.
+  - Every table a post-check reads is read before any change, not only the tables of checks that compare. A device that does not have the command then stops unchanged (`skipped_precheck`) instead of failing its post-check and rolling back a good change. Check mode reads them too.
+  - A device that says a feature is off (`% BGP not active`) gives an empty table; only a rejected command is a table that cannot be read. Treating every `%` line as an error was rejected: "no BGP neighbors" is a state a check may want to assert.
+  - `compare` has three modes, `count`, `no_loss` and `same`. `no_loss` also fails when a row from before changed in a compared column: a neighbor that is still listed but stuck in `exstart` is lost for the purpose of the check. Comparing whole rows was rejected, since timers and counters differ between any two reads; each table names the columns that count.
+  - The rows of a reading are not stored; the job log names what was found and which rows failed. A table in `history.db` and a before/after view in the job view are deferred.
+  - Upgrade plays (Firmware upgrades; `core/firmware/`): a fourth play type with a `firmware` section and the steps `firmware: stage` and `firmware: activate`. A separate operation with its own dialog, as restore is, was rejected: an upgrade of a fleet needs targets, batches, the canary, max-fail, pre-checks and post-checks, history and the approval of MCP requests, all of which a play already has.
+  - Staging and activating are steps, chosen with the existing tag filter (`stage`, `activate`). A new run-time option was rejected: tags already reach the run wizard, MCP `request_run`, the job record and re-runs.
+  - An image is named by a bare file name and pinned by a hash that is part of the render, so an approval covers one image and no other. The file lives in a firmware folder in machine data, not the workspace: images are hundreds of megabytes and the workspace is a git repo.
+  - Transfers: `scp` (Tsunami uploads over a second SSH connection, made only to a host key already on file), `tftp` and `http` (the device fetches). Serving the image from Tsunami over HTTP was rejected: the PC would need an inbound firewall rule, and devices rarely have a route to an engineer's laptop. Enabling the device's SCP server from the stage step was rejected: it is a configuration change the play would not show; the step fails with the line to add. `vrf` on an IOS target is refused (`play.firmware_vrf`): IOS fetches through the interface its configuration names, and a field that is silently ignored would send the copy out the wrong way.
+  - `firmware: activate` needs `allow_destructive: true`, as an exec `reload` does, and an upgrade play needs `rollback: none`: nothing Tsunami has can undo a reload into another image. Its defaults are one device at a time and stop at the first failure.
+  - A device that does not return from its reload, or a cancel while waiting for it, ends `interrupted`, which raises the half-configured alarm. `failed` was rejected for it: a failed device is normally one that is still up.
+  - `Session.send_interactive` runs a command that asks several questions and may end the session (a reload); `SshTransport.upload` copies a file over SCP. The existing `send_exec` answers one prompt and treats a dropped session as an error.
+  - Stacks reload as a whole. Member-by-member upgrades (ISSU, VSF ISSU) are deferred: the common access stacks (Catalyst 9200 and 9300, 2930F VSF) do not have them, and the platforms that do need a ring topology or two supervisors.
+  - Cisco only: state checks and upgrades run on IOS and IOS-XE. AOS-CX and AOS-S state parsers and an AOS-CX firmware driver were drafted from vendor documentation and set aside on the branch `aruba-state-firmware-wip`: their column spacing was reconstructed, no switch was at hand to check them, and they had open gaps (AOS-S OSPF has no interface column, AOS-S `show lacp` omits static trunks, BGP peers across address families collapse to one row). Shipping them would have offered checks whose readings nobody had seen. Validation refuses an Aruba target instead (`play.state_unsupported`, `play.firmware_unsupported`), and the tables, the driver interface and `TRANSFERS` stay family-neutral so the drafts can come back.
+  - MCP: `list_state_tables`, `state` and `list_firmware`. `state` runs only a table whose show command is on the show allowlist, so a table is not a second way to read a device. It redacts the output before parsing and every cell again after, so `where` filters redacted cells and cannot confirm a secret, and holds `where` regexes to the show pipe's bounds. The default allowlist is unchanged; a table whose command is not on it is refused with the command to request. An upgrade play is drafted and requested like any play.
+  - A hash written without quotes that is all digits is refused with a message, because YAML reads it as a number and the digits it drops cannot be put back.
+  - Settings, General has the firmware folder, with Browse and Open folder (Open creates the default folder on first use; a missing folder chosen in Settings is reported, not created). The run wizard and the approval card warn that devices will reload when the run can reach an activate step. The Plays view groups upgrade plays; Init workspace creates `plays/upgrade` and `drafts/plays/upgrade`.
+  - A new application icon: four flat bands of water with wavy edges (`packaging/make_icon.py`). The gradient of the old one blurred at 16 px.
