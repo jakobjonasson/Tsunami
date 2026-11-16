@@ -38,7 +38,12 @@ from tsunami.gui.icons import icon
 from tsunami.gui.shell import ActivityItem, Shell
 
 _PATH_ROLE = Qt.ItemDataRole.UserRole
-_GROUPS = (("initial", "Initial"), ("push", "Push"), ("baseline", "Baseline"))
+_GROUPS = (
+    ("initial", "Initial"),
+    ("push", "Push"),
+    ("baseline", "Baseline"),
+    ("upgrade", "Upgrade"),
+)
 
 
 def run_dialog(dialog: QDialog) -> bool:

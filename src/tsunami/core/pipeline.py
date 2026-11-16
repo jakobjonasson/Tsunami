@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import logging
 import threading
+import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
@@ -24,16 +25,27 @@ from tsunami.core.diff import diff_config
 from tsunami.core.errordetect import find_error
 from tsunami.core.events import DeviceLog, DeviceStatusChanged, Event
 from tsunami.core.facts import Facts, facts_commands, parse_facts
+from tsunami.core.firmware import (
+    DeviceGone,
+    FirmwareError,
+    FirmwareJob,
+    ImageState,
+    driver_for,
+    same_version,
+)
+from tsunami.core.firmware.library import firmware_dir, resolve_image
 from tsunami.core.models.common import PLATFORM_FAMILY, Platform
 from tsunami.core.models.inventory import Device
 from tsunami.core.models.jobs import DeviceStatus
 from tsunami.core.models.play import (
     ConnectionMethod,
     EffectiveSettings,
+    FirmwareAction,
     Play,
     PromptType,
     RollbackMode,
     RunMode,
+    TransferMethod,
 )
 from tsunami.core.models.settings import AppSettings
 from tsunami.core.paths import AppPaths
@@ -42,6 +54,7 @@ from tsunami.core.render.renderer import Renderer, RenderError, Rendering
 from tsunami.core.render.secret_refs import MASK
 from tsunami.core.rollback import Prepared, RollbackError, strategy_for
 from tsunami.core.secret_store import LoginCredential
+from tsunami.core.state import Row, StateError, read_table
 from tsunami.core.transports.base import (
     ConnectCancelled,
     ConnectError,
@@ -51,9 +64,15 @@ from tsunami.core.transports.base import (
     Session,
     Transport,
     UnreachableError,
+    UploadError,
 )
 
 log = logging.getLogger(__name__)
+
+# After a reload is sent: how long before the first attempt to reconnect (the device is
+# still shutting down and would answer), and how long between attempts.
+RELOAD_SETTLE_SECONDS = 60.0
+RECONNECT_EVERY_SECONDS = 20.0
 
 
 @dataclass
@@ -115,6 +134,12 @@ class DevicePipeline:
         self.changed = False  # any config or exec step was sent
         self.running_size: int | None = None  # bytes of running config, for the snapshot
         self.output: list[str] = []  # this device's job log, redacted; kept in history
+        self.target: ConnectTarget | None = None  # how this device was reached
+        self.backup_path: str | None = None
+        # State tables as read before any change, for post-checks that compare.
+        self.state_before: dict[str, list[Row]] = {}
+        self.firmware_job: FirmwareJob | None = None
+        self._rendering: Rendering | None = None  # the final render, while steps run
 
     # -- events and history ------------------------------------------------------
 
@@ -159,11 +184,13 @@ class DevicePipeline:
                 return self.check(rendering, facts)
             return self.apply(rendering, facts)
         except _Stop as stop:
+            extra = {"backup_path": self.backup_path} if self.backup_path else {}
             self.status(
                 stop.status,
                 stop.detail,
                 finished_at=_now(),
                 error_redacted=ctx.redactor.text(stop.detail) or None,
+                **extra,
             )
             return stop.status
         except Exception as exc:  # anything unexpected fails this device, never the run
@@ -205,6 +232,7 @@ class DevicePipeline:
         note = ctx.credential_notes.get(self.label)
         if note:
             self.log(f"login: {note}; connecting without one")
+        self.target = target
         try:
             self.session = ctx.transport.open(target)
         except ConnectCancelled as exc:
@@ -306,9 +334,13 @@ class DevicePipeline:
         result = diff_config(
             rendering.masked_lines(), running, family, owns=owns, redactor=ctx.redactor
         )
-        diff_text = "\n".join(
-            [*(f"+ {m}" for m in result.missing), *(f"- {e}" for e in result.extra)]
-        )
+        added = [f"+ {m}" for m in result.missing]
+        if ctx.mode == RunMode.CHECK:
+            # What an apply would stop on, found before anyone approves it: a state table
+            # this device cannot give, an image that does not fit.
+            self.read_state(rendering, family, ("pre", "post"), DeviceStatus.FAILED)
+            added += [f"+ {line}" for line in self.firmware_plan(rendering, facts)]
+        diff_text = "\n".join([*added, *(f"- {e}" for e in result.extra)])
         if ctx.mode == RunMode.COMPLIANCE:
             ctx.history.add_compliance_result(
                 job_id=ctx.job_id,
@@ -346,11 +378,19 @@ class DevicePipeline:
                 host=self.device.host if self.device else "",
                 port=self.device.port if self.device else 22,
                 connect_timeout=settings.connect_timeout,
+                family=family,
             )
             if not result.ok:
                 raise _Stop(DeviceStatus.SKIPPED_PRECHECK, f"{result.name}: {result.detail}")
+            if check.state:
+                self.log(f"pre-check {result.name}: ok ({result.output})")
+        # Every table a post-check reads is read now, before anything changes: for the
+        # comparison, and so a table this device cannot give stops it here, unchanged.
+        self.state_before = self.read_state(
+            rendering, family, ("post",), DeviceStatus.SKIPPED_PRECHECK
+        )
 
-        backup_path = self.backup() if settings.backup else None
+        backup_path = self.backup_path = self.backup() if settings.backup else None
         if self.running_size is None:
             self.running_size = len(session.running_config().encode("utf-8"))
         strategy = strategy_for(family, ctx.job_id)
@@ -368,7 +408,10 @@ class DevicePipeline:
                 f"rollback preparation failed: {redact_exception(exc, ctx.redactor)}",
             ) from None
 
+        self._rendering = rendering
         failure = self.send_steps(rendering, family)
+        session = self.session  # a firmware step's reload replaces it
+        assert session is not None
         if failure is None:
             failure = self.post_checks(rendering)
         if failure is None:
@@ -406,6 +449,13 @@ class DevicePipeline:
             if step.skipped:
                 self.log(f"step {step.index + 1} skipped ({step.skipped})")
                 continue
+            if step.kind == "firmware":
+                error = self.firmware_step(step)
+                session = self.session  # a new one after a reload
+                assert session is not None
+                if error:
+                    return f"step {step.index + 1}: {error}"
+                continue
             if step.kind == "exec":
                 result = session.send_exec(
                     step.lines[0],
@@ -442,11 +492,189 @@ class DevicePipeline:
                 host=self.device.host if self.device else "",
                 port=self.device.port if self.device else 22,
                 connect_timeout=ctx.settings.connect_timeout,
+                family=PLATFORM_FAMILY[rendering.platform],
+                before=self.state_before,
             )
-            self.log(f"post-check {result.name}: {'ok' if result.ok else result.detail}")
+            passed = f"ok ({result.output})" if check.state else "ok"
+            self.log(f"post-check {result.name}: {passed if result.ok else result.detail}")
             if not result.ok:
                 return f"post-check failed: {result.name}: {result.detail}"
         return None
+
+    # -- state checks ------------------------------------------------------------------
+
+    def read_state(
+        self, rendering: Rendering, family, phases: tuple[str, ...], on_error: DeviceStatus
+    ) -> dict[str, list[Row]]:
+        """Read every state table the checks of these phases use, once each. A table the
+        device cannot give ends the device with on_error."""
+        assert self.session is not None
+        names = [c.state for c in rendering.checks if c.state and c.phase in phases]
+        tables: dict[str, list[Row]] = {}
+        for name in dict.fromkeys(names):
+            try:
+                tables[name] = read_table(self.session, family, name)
+            except StateError as exc:
+                raise _Stop(on_error, f"state check cannot run: {exc}") from None
+            count = len(tables[name])
+            self.log(f"state {name}: {count} row{'' if count == 1 else 's'} before the change")
+        return tables
+
+    # -- firmware ----------------------------------------------------------------------
+
+    def firmware(self, rendering: Rendering) -> FirmwareJob:
+        """This device's firmware job: its image, and how to upload and to reconnect."""
+        if self.firmware_job is not None:
+            return self.firmware_job
+        ctx = self.ctx
+        firmware = ctx.play.firmware
+        assert firmware is not None and self.session is not None
+        model = self.device.model if self.device else None
+        chosen = firmware.image_for(rendering.platform, model)
+        if chosen is None:
+            raise FirmwareError(f"no firmware image is listed for {rendering.platform}")
+        folder = firmware_dir(ctx.paths, ctx.app_settings)
+        image = resolve_image(folder, chosen, need_file=firmware.transfer == TransferMethod.SCP)
+        upload = None
+        if hasattr(ctx.transport, "upload") and self.target is not None:
+            target = self.target
+
+            def upload(local, remote, progress=None) -> None:
+                try:
+                    ctx.transport.upload(
+                        target, local, remote, progress=progress, cancel=ctx.cancel
+                    )
+                except (UploadError, ConnectError) as exc:
+                    raise FirmwareError(f"upload failed: {exc}") from None
+
+        self.firmware_job = FirmwareJob(
+            platform=rendering.platform,
+            session=self.session,
+            image=image,
+            transfer=firmware.transfer,
+            server=firmware.server,
+            vrf=firmware.vrf,
+            log=self.log,
+            upload=upload,
+            reconnect=self.reconnect,
+            cancel=ctx.cancel,
+            command_timeout=ctx.settings.command_timeout,
+            reload_timeout=firmware.reload_timeout,
+            sleep=self.wait,
+        )
+        return self.firmware_job
+
+    def wait(self, seconds: float) -> None:
+        """Sleep, but wake at once when the job is cancelled."""
+        self.ctx.cancel.wait(seconds)
+
+    def reconnect(self) -> Session:
+        """After a reload: close the dead session, wait for the device, open a new one.
+        The new session replaces the pipeline's and the firmware job's."""
+        ctx = self.ctx
+        firmware = ctx.play.firmware
+        limit = float(firmware.reload_timeout if firmware else 1800)
+        assert self.target is not None
+        if self.session is not None:
+            try:
+                self.session.close()
+            except Exception:  # noqa: BLE001 - the device hung up on it
+                log.debug("closing the session to %s after its reload failed", self.label)
+            self.session = None
+        self.log(f"waiting for {self.label} to come back (up to {limit / 60:.0f} minutes)")
+        started = _monotonic()
+        self.wait(min(RELOAD_SETTLE_SECONDS, limit))
+        last = ""
+        while _monotonic() - started < limit:
+            if ctx.cancel.is_set():
+                raise DeviceGone(
+                    "cancelled while waiting for the device to come back: the reload was "
+                    "already sent, so check the device by hand"
+                )
+            try:
+                session = ctx.transport.open(self.target)
+            except HostKeyMismatchError as exc:
+                raise DeviceGone(f"the device came back with a different host key: {exc}") from None
+            except ConnectError as exc:
+                last = str(exc)
+                self.wait(RECONNECT_EVERY_SECONDS)
+                continue
+            self.session = session
+            if self.firmware_job is not None:
+                self.firmware_job.session = session
+            self.log(f"{self.label} is back after {(_monotonic() - started) / 60:.1f} minutes")
+            return session
+        raise DeviceGone(
+            f"the device did not come back within {limit / 60:.0f} minutes"
+            + (f" (last attempt: {last})" if last else "")
+        )
+
+    def firmware_step(self, step) -> str | None:
+        """Run one firmware step; return why it failed, or None. A device that does not
+        come back from its reload ends as interrupted, which raises the alarm a
+        half-configured device does: it needs a person."""
+        action = step.lines[0].split(" ", 1)[0]
+        try:
+            assert self._rendering is not None
+            job = self.firmware(self._rendering)
+            driver = driver_for(PLATFORM_FAMILY[job.platform])
+            state = driver.inspect(job)
+            self.log(f"firmware: {state.detail}")
+            if same_version(state.version, job.image.version):
+                self.log(f"firmware {action}: already runs {job.image.version}; nothing to do")
+                return None
+            if action == FirmwareAction.STAGE:
+                self._enough_space(job, state)
+                driver.stage(job)
+                self.changed = True
+                self.log(f"firmware stage: {job.image.file} is on the device and verified")
+            else:
+                self.changed = True
+                driver.activate(job)
+                self.log(f"firmware activate: the device runs {job.image.version}")
+        except DeviceGone as exc:
+            raise _Stop(DeviceStatus.INTERRUPTED, f"firmware {action}: {exc}") from None
+        except FirmwareError as exc:
+            return f"firmware {action}: {exc}"
+        return None
+
+    @staticmethod
+    def _enough_space(job: FirmwareJob, state: ImageState) -> None:
+        size, free = job.image.size, state.free_bytes
+        if state.staged or size is None or free is None or free > size:
+            return
+        raise FirmwareError(
+            f"not enough free space for {job.image.file}: it is {size:,} bytes and the "
+            f"device has {free:,} free; remove old images first"
+        )
+
+    def firmware_plan(self, rendering: Rendering, facts: Facts | None) -> list[str]:
+        """Check mode: what the firmware steps would do to this device, as lines for the
+        diff. Fails the device now for what an apply would fail on."""
+        steps = [s for s in rendering.steps if s.kind == "firmware" and not s.skipped]
+        if not steps:
+            return []
+        try:
+            job = self.firmware(rendering)
+            state = driver_for(PLATFORM_FAMILY[job.platform]).inspect(job)
+            self.log(f"firmware: {state.detail}")
+            if same_version(state.version, job.image.version):
+                return []
+            actions = [s.lines[0].split(" ", 1)[0] for s in steps]
+            if FirmwareAction.STAGE in actions:
+                self._enough_space(job, state)
+            elif not state.staged:
+                raise FirmwareError(
+                    f"{job.image.file} is not on the device: run the stage step first"
+                )
+        except FirmwareError as exc:
+            raise _Stop(DeviceStatus.FAILED, f"firmware: {exc}") from None
+        where = "already on the device" if state.staged else "not on the device yet"
+        running = state.version or (facts.version if facts else None) or "unknown"
+        return [
+            f"firmware {action}: {running} -> {job.image.version} with {job.image.file} ({where})"
+            for action in actions
+        ]
 
     def roll_back(self, strategy, failure: str, backup_path: str | None) -> DeviceStatus:
         ctx, session = self.ctx, self.session
@@ -548,3 +776,7 @@ _OUTPUT_KEEP = 200_000  # characters of a device's log kept in history
 
 def _now() -> datetime:
     return datetime.now(UTC)
+
+
+def _monotonic() -> float:
+    return time.monotonic()

@@ -12,7 +12,7 @@ from tsunami.core.models.common import Platform, PlatformFamily
 from tsunami.core.models.workspace import SCHEMA_VERSION
 from tsunami.core.schema_export import write_schemas, write_vscode_settings
 
-_PLAY_KINDS = ("initial", "push", "baseline")
+_PLAY_KINDS = ("initial", "push", "baseline", "upgrade")
 
 
 def _dirs() -> list[str]:

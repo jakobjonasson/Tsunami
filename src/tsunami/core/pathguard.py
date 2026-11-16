@@ -22,7 +22,7 @@ MAX_DRAFT_BYTES = 256 * 1024
 
 _CONTROL_RE = re.compile(r"[\x00-\x1f\x7f-\x9f  ]")
 _SLUG_RE = re.compile(SLUG_PATTERN)
-_PLAY_TYPES = ("initial", "push", "baseline")
+_PLAY_TYPES = ("initial", "push", "baseline", "upgrade")
 
 
 class PathError(TsunamiError):
@@ -61,7 +61,7 @@ def resolve_read(root: Path, relative: str, *, allowed: Sequence[str] = READABLE
 def resolve_draft_write(root: Path, relative: str) -> Path:
     """The real path a draft may be written to, or PathError.
 
-    drafts/plays/<initial|push|baseline>/<slug>.yml
+    drafts/plays/<initial|push|baseline|upgrade>/<slug>.yml
     drafts/snippets/common/<family>/<slug>.j2
     drafts/snippets/platform/<platform>/<slug>.j2
     drafts/snippets/customers/<customer>/<family>/<slug>.j2

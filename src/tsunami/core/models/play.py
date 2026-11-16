@@ -192,9 +192,17 @@ def _hex(length: int) -> Any:
     return check
 
 
-Md5 = Annotated[str, AfterValidator(_hex(32))]
-Sha256 = Annotated[str, AfterValidator(_hex(64))]
-Sha512 = Annotated[str, AfterValidator(_hex(128))]
+def _hash_text(value: Any) -> Any:
+    # YAML reads an unquoted hash made of digits (or digits and one `e`) as a number, and
+    # the digits it dropped cannot be put back.
+    if isinstance(value, int | float) and not isinstance(value, bool):
+        raise ValueError("put the hash in quotes: without them YAML reads it as a number")
+    return value
+
+
+Md5 = Annotated[str, BeforeValidator(_hash_text), AfterValidator(_hex(32))]
+Sha256 = Annotated[str, BeforeValidator(_hash_text), AfterValidator(_hex(64))]
+Sha512 = Annotated[str, BeforeValidator(_hash_text), AfterValidator(_hex(128))]
 
 
 class FirmwareImage(StrictModel):
@@ -250,6 +258,11 @@ class Firmware(StrictModel):
     transfer: TransferMethod = TransferMethod.SCP
     server: Annotated[str | None, AfterValidator(_server_url)] = Field(
         None, description="tftp and http: where devices fetch the image from."
+    )
+    vrf: str | None = Field(
+        None,
+        pattern=r"^[A-Za-z0-9][A-Za-z0-9_-]*$",
+        description="The VRF devices reach the server through, e.g. mgmt (AOS-CX).",
     )
     images: list[FirmwareImage] = Field(min_length=1)
     reload_timeout: int = Field(
@@ -379,7 +392,7 @@ class Check(StrictModel):
     )
     expect_not: Regex | None = None
     reachable: bool | None = None
-    state: Slug | None = Field(
+    state: str | None = Field(
         None, description="A state table, e.g. ospf_neighbors (design.md, State checks)."
     )
     where: StateMatchers | None = Field(None, description="state: which rows; all by default.")

@@ -74,6 +74,30 @@ class Transport(Protocol):
         ...
 
 
+class UploadError(TsunamiError):
+    """A file could not be copied to the device. Messages are free of secrets."""
+
+
+class Uploader(Protocol):
+    """A transport that can copy a file to a device (the SSH transport, over SCP). Not
+    every transport can: the pipeline asks with hasattr(transport, "upload")."""
+
+    def upload(
+        self,
+        target: ConnectTarget,
+        local: Any,  # pathlib.Path
+        remote: str,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: Any = None,
+    ) -> None:
+        """Copy local to the device as remote (`flash:/name.bin`, `/os/secondary`) on a
+        connection of its own, after the same host key check as open(). progress gets
+        (bytes sent, total). Raises a ConnectError subclass when the device cannot be
+        reached or logged in to, UploadError when the copy fails or is cancelled."""
+        ...
+
+
 @dataclass(frozen=True)
 class ConfigResult:
     output: str  # raw device output; redact before storing or showing
@@ -89,6 +113,8 @@ class ConfigResult:
 class ExecResult:
     command: str
     output: str  # raw device output; redact before storing or showing
+    # send_interactive only: the session ended while the command ran (a reload).
+    disconnected: bool = False
 
 
 @dataclass(frozen=True)
@@ -133,6 +159,22 @@ class Session(Protocol):
         read_timeout: float | None = None,
     ) -> ExecResult:
         """Run one exec-mode command, answering a confirmation prompt if given."""
+        ...
+
+    def send_interactive(
+        self,
+        command: str,
+        answers: Sequence[tuple[str, str]] = (),
+        *,
+        read_timeout: float | None = None,
+        may_disconnect: bool = False,
+    ) -> ExecResult:
+        """Run one exec-mode command that may ask several questions. Each (pattern,
+        answer) pair answers a question whenever new output matches the pattern (a regex,
+        searched without case); an empty answer is just Enter. Returns when the device
+        prompt is back. With may_disconnect, a session that ends while the command runs
+        (a reload) is a result with disconnected=True instead of an error; otherwise it
+        raises. A command still running at read_timeout raises TimeoutError."""
         ...
 
     def paste_config(

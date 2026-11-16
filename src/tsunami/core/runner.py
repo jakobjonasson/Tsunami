@@ -268,6 +268,8 @@ class Runner:
                 problems.append(f"{target.label}: {exc}")
         if problems:
             raise TsunamiError("render failed:\n  " + "\n  ".join(problems[:20]))
+        if play.type == PlayType.UPGRADE and request.mode != RunMode.RENDER:
+            self._firmware_preflight(play, targets)
         settings = play.settings()
         if (
             (request.mode == RunMode.APPLY or request.approval_check)
@@ -280,6 +282,47 @@ class Runner:
                 "give one a priority above 0, or turn canary off for this play"
             )
         return targets
+
+    def _firmware_preflight(self, play: Any, targets: list[_Target]) -> None:
+        """Before any device is contacted: every image an upload needs is in the firmware
+        folder and is the file the play names, and a device that verifies with a hash
+        has that hash to compare with."""
+        from tsunami.core.firmware import DEVICE_HASH, FirmwareError
+        from tsunami.core.firmware.library import firmware_dir, resolve_image
+        from tsunami.core.models.common import PLATFORM_FAMILY
+        from tsunami.core.models.play import TransferMethod
+
+        firmware = play.firmware
+        if firmware is None:
+            return
+        folder = firmware_dir(self.paths, self.app_settings)
+        upload = firmware.transfer == TransferMethod.SCP
+        problems: dict[str, None] = {}
+        resolved: dict[str, Any] = {}
+        for target in targets:
+            device = target.device
+            if device is None:
+                continue
+            image = firmware.image_for(device.platform, device.model)
+            if image is None:
+                problems[f"no image is listed for {device.name}"] = None
+                continue
+            if image.file not in resolved:
+                try:
+                    resolved[image.file] = resolve_image(folder, image, need_file=upload)
+                except FirmwareError as exc:
+                    resolved[image.file] = None
+                    problems[str(exc)] = None
+            found = resolved[image.file]
+            wanted = DEVICE_HASH[PLATFORM_FAMILY[device.platform]]
+            if found is not None and wanted and not found.hash(wanted):
+                problems[
+                    f"{image.file}: {device.platform} verifies an image by its {wanted}, and "
+                    f"the play gives none; add {wanted} to the image, or put the file in "
+                    f"the firmware folder ({folder}) so Tsunami can work it out"
+                ] = None
+        if problems:
+            raise TsunamiError("firmware:\n  " + "\n  ".join(problems))
 
     def _context(self, job_id: str, entry: Any, targets: list[_Target], request: RunRequest):
         play = entry.play

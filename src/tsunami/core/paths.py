@@ -54,6 +54,12 @@ class AppPaths:
         return self.machine / "backup-views"
 
     @property
+    def firmware_dir(self) -> Path:
+        """Image files for upgrade plays, unless Settings names another folder
+        (core/firmware/library.py)."""
+        return self.machine / "firmware"
+
+    @property
     def logs_dir(self) -> Path:
         return self.machine / "logs"
 

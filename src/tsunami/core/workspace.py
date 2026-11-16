@@ -732,10 +732,85 @@ class _Loader:
                         name,
                     )
 
+        self.check_state_tables(play, doc, families)
+        if play.type == PlayType.UPGRADE and play.firmware is not None:
+            self.check_firmware(play, doc, result.devices, catalog)
+
         family: PlatformFamily | None = families[0] if len(families) == 1 else None
         self.check_prompt_defaults(play, doc, cust, ws, family, catalog.ids())
         if play.type == PlayType.INITIAL and play.on_success.add_to_inventory:
             self.check_add_to_inventory(play, doc, cust, ws, bool(model_prompts))
+
+    def check_state_tables(self, play: Play, doc: YamlDoc, families: list[PlatformFamily]) -> None:
+        """Every state table a check reads must exist on every target's platform family:
+        a check that cannot run would otherwise fail a good change after the fact."""
+        from tsunami.core.state import supported_tables
+
+        for phase in ("pre", "post"):
+            for i, check in enumerate(getattr(play.checks, phase)):
+                if check.state is None:
+                    continue
+                lacking = [f for f in families if check.state not in supported_tables(f)]
+                if lacking:
+                    self.at(
+                        doc,
+                        Severity.ERROR,
+                        "play.state_unsupported",
+                        f"state table {check.state!r} is not available on "
+                        f"{', '.join(map(str, lacking))}",
+                        "checks",
+                        phase,
+                        i,
+                        "state",
+                    )
+
+    def check_firmware(self, play: Play, doc: YamlDoc, devices: list[Device], catalog) -> None:
+        """An upgrade play has an image for every target, reachable the way the play says."""
+        from tsunami.core.firmware import TRANSFERS
+
+        firmware = play.firmware
+        assert firmware is not None
+        known = set(catalog.ids())
+        for i, image in enumerate(firmware.images):
+            for model in image.models:
+                if model not in known:
+                    self.at(
+                        doc,
+                        Severity.ERROR,
+                        "play.firmware_model",
+                        f"unknown hardware model {model!r}",
+                        "firmware",
+                        "images",
+                        i,
+                        "models",
+                    )
+        without = [d.name for d in devices if firmware.image_for(d.platform, d.model) is None]
+        if without:
+            shown = ", ".join(without[:8]) + (
+                f" and {len(without) - 8} more" if without[8:] else ""
+            )
+            self.at(
+                doc,
+                Severity.ERROR,
+                "play.firmware_no_image",
+                f"no image is listed for {shown} (an image matches a device by platform, "
+                "and by hardware model when it names models)",
+                "firmware",
+                "images",
+            )
+        families = sorted({PLATFORM_FAMILY[d.platform] for d in devices})
+        cannot = [f for f in families if firmware.transfer not in TRANSFERS[f]]
+        if cannot:
+            ways = {f: ", ".join(sorted(map(str, TRANSFERS[f]))) for f in cannot}
+            self.at(
+                doc,
+                Severity.ERROR,
+                "play.firmware_transfer",
+                f"transfer: {firmware.transfer} is not available on "
+                + "; ".join(f"{f} (use {ways[f]})" for f in cannot),
+                "firmware",
+                "transfer",
+            )
 
     def initial_platforms(self, play: Play, doc: YamlDoc) -> list[Platform]:
         value = play.vars.get("platform")

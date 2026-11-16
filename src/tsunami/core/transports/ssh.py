@@ -32,12 +32,16 @@ from tsunami.core.transports.base import (
     ConnectTarget,
     HostKeyMismatchError,
     UnreachableError,
+    UploadError,
 )
 from tsunami.core.transports.hostkeys import HostKeyStore, probe_host_key
 from tsunami.core.transports.legacy_ssh import transport_class, uses_sha1
 from tsunami.core.transports.netmiko_session import NetmikoSession, connection_class
 
 MAX_JUMP_CHANNELS = 10
+# How long an upload waits for the device to acknowledge a block. The last one comes only
+# when the device has taken the whole file, and AOS-S writes flash before it answers.
+UPLOAD_ACK_SECONDS = 300.0
 log = logging.getLogger(__name__)
 
 
@@ -158,8 +162,12 @@ class SshTransport:
         probe: Callable[..., paramiko.PKey] = probe_host_key,
         jump_factory: Callable[[ConnectTarget, HostKeyStore], Any] | None = None,
         legacy: bool = True,
+        ssh_client: Callable[[], Any] = paramiko.SSHClient,
+        scp_client: Callable[..., Any] | None = None,
     ) -> None:
         self.paths = paths
+        self._ssh_client = ssh_client
+        self._scp_client = scp_client
         self.benign = benign or {}
         self.max_jump_channels = max_jump_channels
         self.legacy = legacy  # offer SHA-1 algorithms last (legacy_ssh.py)
@@ -213,6 +221,109 @@ class SshTransport:
             session.close()
             raise
         return session
+
+    def upload(
+        self,
+        target: ConnectTarget,
+        local: Path,
+        remote: str,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: Any = None,
+    ) -> None:
+        """Copy a file to the device over SCP, on a connection of its own (IOS takes one
+        session per connection, and Netmiko's holds it). The login goes only to a host
+        whose key is already on file and still matches: an upload never records a new
+        key, since the session that asked for it has checked this host already."""
+        if target.method != ConnectionMethod.SSH or not target.host:
+            raise ConnectError("an upload needs method ssh and a host")
+        credential = target.credential
+        if credential is None or not credential.password:
+            raise AuthenticationError(f"{target.device}: an upload needs a login with a password")
+        store = HostKeyStore(self.paths.known_hosts_file(target.customer))
+        jump = self._jump(target, store) if target.jump else None
+        if jump is not None:
+            jump.acquire()
+        client = None
+        try:
+            if jump is not None:
+                opener = lambda: jump.channel(target.host, target.port)  # noqa: E731
+            else:
+                opener = lambda: socket.create_connection(  # noqa: E731
+                    (target.host, target.port), target.connect_timeout
+                )
+            key = self._probe(
+                opener,
+                timeout=target.connect_timeout,
+                key_types=store.known_types(target.host, target.port) or None,
+                legacy=self.legacy,
+            )
+            store.check(target.host, target.port, key, allow_new=False)
+            client = self._ssh_client()
+            store.load_into(client.get_host_keys())  # read-only; never written back
+            client.set_missing_host_key_policy(paramiko.RejectPolicy())
+            try:
+                client.connect(
+                    target.host,
+                    port=target.port,
+                    username=credential.username,
+                    password=credential.password,
+                    timeout=target.connect_timeout,
+                    allow_agent=False,
+                    look_for_keys=False,
+                    sock=opener() if jump is not None else None,
+                    transport_factory=transport_class(self.legacy),
+                )
+            except paramiko.BadHostKeyException:
+                raise HostKeyMismatchError(f"{target.device}: host key changed") from None
+            except paramiko.AuthenticationException:
+                raise AuthenticationError(f"{target.device}: login failed") from None
+            except (paramiko.SSHException, OSError) as exc:
+                raise UnreachableError(f"{target.device}: {type(exc).__name__}") from None
+            self._scp_put(client, target.device, local, remote, progress, cancel)
+        finally:
+            if client is not None:
+                client.close()
+            if jump is not None:
+                jump.release()
+
+    def _scp_put(
+        self,
+        client: Any,
+        device: str,
+        local: Path,
+        remote: str,
+        progress: Callable[[int, int], None] | None,
+        cancel: Any,
+    ) -> None:
+        import scp
+
+        class _Cancelled(Exception):
+            pass
+
+        def report(_name: Any, total: int, sent: int) -> None:
+            if cancel is not None and cancel.is_set():
+                raise _Cancelled
+            if progress is not None:
+                progress(sent, total)
+
+        factory = self._scp_client or scp.SCPClient
+        try:
+            channel = factory(
+                client.get_transport(), socket_timeout=UPLOAD_ACK_SECONDS, progress=report
+            )
+            try:
+                channel.put(str(local), remote)
+            finally:
+                channel.close()
+        except _Cancelled:
+            raise UploadError(f"{device}: the upload was cancelled part way") from None
+        except scp.SCPException as exc:
+            # The device's own words (no space, not allowed, SCP not enabled).
+            text = " ".join(str(exc).split())[:300]
+            raise UploadError(f"{device}: the device refused the copy: {text}") from None
+        except (paramiko.SSHException, OSError, EOFError) as exc:
+            raise UploadError(f"{device}: the upload stopped ({type(exc).__name__})") from None
 
     def close(self) -> None:
         with self._lock:

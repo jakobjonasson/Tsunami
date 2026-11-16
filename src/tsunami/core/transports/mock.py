@@ -37,6 +37,7 @@ from tsunami.core.transports.base import (
     ExecResult,
     PasteResult,
     UnreachableError,
+    UploadError,
 )
 
 _INVALID = "% Invalid input detected at '^' marker."
@@ -71,6 +72,13 @@ class MockDeviceState:
     fail_connect_times: int = 0  # the next N connects fail
     # IOS SSH host keys: `crypto key generate rsa` creates them (not a config line).
     ssh_keys: bool = False
+    # send_interactive: a command matching one of these regexes ends the session (a
+    # reload). The answers each interactive command was given are kept beside it.
+    disconnect_on: list[str] = field(default_factory=list)
+    interactive: list[tuple[str, tuple[tuple[str, str], ...]]] = field(default_factory=list)
+    # Files copied to the device with MockTransport.upload: remote path -> size in bytes.
+    uploads: dict[str, int] = field(default_factory=dict)
+    upload_error: str | None = None  # the next uploads fail with this message
     lock: threading.RLock = field(default_factory=threading.RLock, repr=False, compare=False)
 
 
@@ -210,6 +218,25 @@ class MockSession:
         st = self._enter(send=True)
         with st.lock:
             st.sent.append(("exec", command))
+            return ExecResult(command=command, output=self._exec(st, command.strip()))
+
+    def send_interactive(
+        self,
+        command: str,
+        answers: Sequence[tuple[str, str]] = (),
+        *,
+        read_timeout: float | None = None,
+        may_disconnect: bool = False,
+    ) -> ExecResult:
+        st = self._enter(send=True)
+        with st.lock:
+            st.sent.append(("exec", command))
+            st.interactive.append((command, tuple(answers)))
+            if any(re.search(pattern, command) for pattern in st.disconnect_on):
+                self.close()
+                if not may_disconnect:
+                    raise MockError("connection lost")
+                return ExecResult(command=command, output="", disconnected=True)
             return ExecResult(command=command, output=self._exec(st, command.strip()))
 
     def _exec(self, st: MockDeviceState, cmd: str) -> str:
@@ -356,6 +383,27 @@ class MockTransport:
             raise UnreachableError(str(exc)) from None
         except MockError as exc:
             raise ConnectError(str(exc)) from None
+
+    def upload(
+        self,
+        target: ConnectTarget,
+        local: Any,
+        remote: str,
+        *,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: Any = None,
+    ) -> None:
+        """The Uploader interface: the file's size lands in the device's `uploads`."""
+        state = self.device(target.device)
+        size = local.stat().st_size
+        with state.lock:
+            if state.upload_error is not None:
+                raise UploadError(f"{target.device}: {state.upload_error}")
+            if cancel is not None and cancel.is_set():
+                raise UploadError(f"{target.device}: the upload was cancelled part way")
+            state.uploads[remote] = size
+        if progress is not None:
+            progress(size, size)
 
     def _release(self) -> None:
         with self._lock:

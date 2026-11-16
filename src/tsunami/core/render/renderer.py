@@ -19,6 +19,7 @@ from __future__ import annotations
 import copy
 import hashlib
 import json
+import re
 from collections.abc import Collection, Iterator, Mapping
 from dataclasses import dataclass, field, replace
 from pathlib import Path
@@ -53,6 +54,7 @@ from tsunami.core.render.environment import (
 from tsunami.core.render.lookup import find_snippet
 from tsunami.core.render.secret_refs import SecretCollector, SecretRefError
 from tsunami.core.secret_store import FIELD_NAME_RE, SINGLE_FIELD, missing_secret_message
+from tsunami.core.state.evaluate import StateAssertion, is_regex
 from tsunami.core.targets import resolve_targets
 
 PLACEHOLDER_FACTS = {
@@ -85,10 +87,12 @@ class UnknownPlatformError(RenderError):
 @dataclass(frozen=True)
 class RenderedStep:
     index: int
-    kind: str  # snippet | config | exec
+    kind: str  # snippet | config | exec | firmware
     label: str
     source: Path | None  # the snippet file, or None for inline steps
-    lines: tuple[str, ...]  # sentinel form for config steps; one command for exec
+    # Sentinel form for config steps; one command for exec; for firmware, one line
+    # naming the action, the image and its hashes (what an approval is pinned to).
+    lines: tuple[str, ...]
     skipped: str | None = None  # "when" or "tags"
     expect_prompt: str | None = None
     answer: str | None = None
@@ -107,6 +111,27 @@ class RenderedCheck:
     reachable: bool
     retries: int
     delay: float
+    # A state check (core/state): the table, and the rendered where/expect matchers.
+    state: str | None = None
+    where: tuple[tuple[str, Any], ...] = ()
+    state_expect: tuple[tuple[str, Any], ...] = ()
+    count: tuple[int | None, int | None] | None = None
+    compare: str | None = None
+
+    def assertion(self) -> StateAssertion:
+        assert self.state is not None
+        return StateAssertion(
+            self.state, dict(self.where), dict(self.state_expect), self.count, self.compare
+        )
+
+    def hashed(self) -> list[Any]:
+        """What the render hash covers. A check without state hashes as it always did,
+        so a request approved before state checks existed still matches."""
+        plain = [self.phase, self.exec, self.expect, self.expect_not, self.reachable]
+        if self.state is None:
+            return plain
+        state = [self.state, list(self.where), list(self.state_expect), self.count, self.compare]
+        return [*plain, state]
 
 
 @dataclass(frozen=True)
@@ -132,7 +157,7 @@ class Rendering:
         return [
             line
             for step in self.masked_steps()
-            if step.kind != "exec" and step.skipped is None
+            if step.kind in CONFIG_KINDS and step.skipped is None
             for line in step.lines
         ]
 
@@ -144,7 +169,7 @@ class Rendering:
                 out.append(f"{header} (skipped: {step.skipped})")
                 continue
             out.append(header)
-            out.extend(f"exec: {line}" if step.kind == "exec" else line for line in step.lines)
+            out.extend(_shown(step.kind, line) for line in step.lines)
         return "\n".join(out) + "\n"
 
     def masked_text_spans(self) -> tuple[str, list[tuple[int, int, str]]]:
@@ -168,14 +193,14 @@ class Rendering:
                 continue
             add(header)
             for line in step.lines:
-                add(f"exec: {line}" if step.kind == "exec" else line)
+                add(_shown(step.kind, line))
         return "\n".join(parts) + "\n", spans
 
     def render_hash(self) -> str:
         """sha256 of the masked render: approvals compare it at execution time."""
         payload = {
             "steps": [[s.kind, s.skipped, list(s.lines)] for s in self.masked_steps()],
-            "checks": [[c.phase, c.exec, c.expect, c.expect_not, c.reachable] for c in self.checks],
+            "checks": [c.hashed() for c in self.checks],
         }
         return hashlib.sha256(json.dumps(payload, sort_keys=True).encode()).hexdigest()
 
@@ -186,6 +211,14 @@ class Rendering:
             raise TsunamiError(f"missing secrets: {', '.join(missing)}")
         real = self._secrets.materialize
         return [replace(s, lines=tuple(real(line, values) for line in s.lines)) for s in self.steps]
+
+
+CONFIG_KINDS = ("snippet", "config")  # steps whose lines are configuration
+
+
+def _shown(kind: str, line: str) -> str:
+    """A step's line as the masked render shows it: non-config lines carry their kind."""
+    return line if kind in CONFIG_KINDS else f"{kind}: {line}"
 
 
 class _Login:
@@ -418,7 +451,9 @@ class Renderer:
         validation: bool,
     ) -> RenderedStep:
         step = play.steps[i]
-        label = step.name or step.snippet or (step.exec if step.exec else f"config ({i + 1})")
+        label = step.name or step.snippet or step.exec
+        if label is None:
+            label = f"firmware {step.firmware}" if step.firmware else f"config ({i + 1})"
         base = {"index": i, "kind": step.kind, "label": label, "owns": tuple(step.owns)}
         if tags is not None and "always" not in step.tags and not set(step.tags) & set(tags):
             return RenderedStep(**base, source=None, lines=(), skipped="tags")
@@ -454,6 +489,10 @@ class Renderer:
             self._sinks(lines, collector, driver, file=entry.path, loc=("steps", i))
             return RenderedStep(**base, source=None, lines=tuple(lines))
 
+        if step.firmware is not None:
+            line = self._firmware_line(entry, play, i, context, platform)
+            return RenderedStep(**base, source=None, lines=(line,))
+
         assert step.exec is not None
         command = self._inline(entry, step.exec, ("steps", i, "exec"), context).strip()
         answer = (
@@ -476,6 +515,39 @@ class Renderer:
             read_timeout=step.read_timeout,
         )
 
+    def _firmware_line(
+        self, entry: Any, play: Play, i: int, context: dict[str, Any], platform: Platform
+    ) -> str:
+        """One line that says what a firmware step does to this device. It carries the
+        image's name, version and hashes, so the render hash pins an approved request to
+        that image."""
+        step = play.steps[i]
+        firmware = play.firmware
+        loc = ("steps", i, "firmware")
+        if firmware is None:
+            raise RenderError("the play has no firmware section", file=entry.path, loc=loc)
+        model = self._device_model(play, context)
+        image = firmware.image_for(platform, model)
+        if image is None:
+            raise RenderError(
+                f"no firmware image is listed for {platform}"
+                + (f" model {model}" if model else ""),
+                file=entry.path,
+                loc=loc,
+            )
+        hashes = " ".join(f"{name}:{value}" for name, value in sorted(image.hashes.items()))
+        via = str(firmware.transfer)
+        if firmware.server:
+            via += f" from {firmware.server}"
+        return f"{step.firmware} {image.file} version {image.version} {hashes} via {via}"
+
+    def _device_model(self, play: Play, context: dict[str, Any]) -> str | None:
+        """The hardware model id of the device being rendered, from the inventory."""
+        customer = self.workspace.customers.get(play.customer)
+        name = context.get("inventory_name")
+        device = customer.device(name) if customer is not None and name else None
+        return device.model if device is not None else None
+
     def _when(
         self, entry: Any, i: int, expression: str, context: dict[str, Any], validation: bool
     ) -> bool:
@@ -494,16 +566,33 @@ class Renderer:
     ) -> Iterator[RenderedCheck]:
         for phase in ("pre", "post"):
             for i, check in enumerate(getattr(play.checks, phase)):
-                rendered = {}
-                for field_name in ("exec", "expect", "expect_not"):
-                    raw = getattr(check, field_name)
-                    loc = ("checks", phase, i, field_name)
-                    value = self._inline(entry, raw, loc, context).strip() if raw else None
+                rendered: dict[str, Any] = {}
+
+                def text(raw: str, loc: tuple, entry: Any = entry) -> str:
+                    value = self._inline(entry, raw, loc, context).strip()
                     if value and collector.contains(value):
                         raise RenderError(
                             "secret() is not allowed in checks", file=entry.path, loc=loc
                         )
-                    rendered[field_name] = value
+                    return value
+
+                for field_name in ("exec", "expect", "expect_not"):
+                    raw = getattr(check, field_name)
+                    loc = ("checks", phase, i, field_name)
+                    rendered[field_name] = text(raw, loc) if isinstance(raw, str) and raw else None
+                if check.state is not None:
+                    for field_name, target in (("where", "where"), ("expect", "state_expect")):
+                        section = getattr(check, field_name) or {}
+                        loc = ("checks", phase, i, field_name)
+                        rendered[target] = tuple(
+                            (column, self._matcher(matcher, (*loc, column), text, entry))
+                            for column, matcher in section.items()
+                        )
+                    rendered.update(
+                        state=check.state,
+                        count=check.count_range,
+                        compare=str(check.compare) if check.compare else None,
+                    )
                 yield RenderedCheck(
                     phase=phase,
                     index=i,
@@ -513,6 +602,30 @@ class Renderer:
                     delay=check.delay,
                     **rendered,
                 )
+
+    @staticmethod
+    def _matcher(matcher: Any, loc: tuple, text: Any, entry: Any) -> Any:
+        """A state matcher with its strings rendered. A regex that only became one after
+        rendering (`/{{ uplink }}/`) is checked here."""
+
+        def one(item: Any) -> Any:
+            if not isinstance(item, str):
+                return item
+            value = text(item, loc)
+            if is_regex(value):
+                try:
+                    re.compile(value[1:-1])
+                except re.error as exc:
+                    raise RenderError(
+                        f"invalid regular expression: {exc.msg}", file=entry.path, loc=loc
+                    ) from None
+            return value
+
+        if isinstance(matcher, list):
+            return tuple(one(item) for item in matcher)
+        if isinstance(matcher, dict):
+            return tuple(sorted(matcher.items()))
+        return one(matcher)
 
     # -- helpers -------------------------------------------------------------------
 
@@ -580,6 +693,8 @@ class Renderer:
                 continue
             loc = ("steps", step.index)
             allowed = play.steps[step.index].allow_destructive
+            if step.kind == "firmware":
+                continue  # activate's consent is a play rule (play_findings)
             for line in step.lines:
                 if step.kind == "exec":
                     guarded = driver.guarded_exec_command(line)

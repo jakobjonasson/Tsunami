@@ -11,6 +11,7 @@ See design.md, Execution engine: Transports, Error detection; Platform drivers.
 from __future__ import annotations
 
 import re
+import time
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -20,6 +21,8 @@ from tsunami.core.transports.base import ConfigChunk, ConfigResult, ExecResult, 
 
 _FAILED_RE = re.compile(r"at command: (?P<cmd>.*), matched error: ", re.S)
 _MATCHED_RE = re.compile(r", matched error: (?P<msg>.*)$", re.S)
+_READ_PAUSE = 0.2  # seconds between reads of a silent channel (send_interactive)
+_ALIVE_AFTER = 5.0  # seconds of silence before asking whether the session is still there
 
 
 def _error_line(output: str, match: re.Match[str]) -> str:
@@ -94,6 +97,78 @@ class NetmikoSession:
                 strip_command=False,
             )
         return ExecResult(command, output)
+
+    def send_interactive(
+        self,
+        command: str,
+        answers: Sequence[tuple[str, str]] = (),
+        *,
+        read_timeout: float | None = None,
+        may_disconnect: bool = False,
+    ) -> ExecResult:
+        """Write the command and read until the prompt is back, answering questions as
+        they appear. Netmiko's send_command waits for one pattern; a reload asks two or
+        three questions and then never prints a prompt, so this reads the channel itself.
+        Each question is looked for only in output newer than the last answer, so one
+        question is never answered twice."""
+        timeout = read_timeout or self.timeout
+        prompt = re.compile(self._prompt_pattern())
+        rules = [(re.compile(pattern, re.IGNORECASE), answer) for pattern, answer in answers]
+        output, mark = "", 0
+        deadline = time.monotonic() + timeout
+        quiet_since = time.monotonic()
+
+        def gone() -> ExecResult:
+            return ExecResult(command, output, disconnected=True)
+
+        try:
+            self.conn.write_channel(command + "\n")
+        except Exception:
+            if may_disconnect:
+                return gone()
+            raise
+        while time.monotonic() < deadline:
+            try:
+                chunk = self.conn.read_channel()
+            except Exception:
+                if may_disconnect:
+                    return gone()
+                raise
+            if not chunk:
+                # Ask whether the session is still there only after a quiet spell: the
+                # check writes to the channel.
+                if may_disconnect and time.monotonic() - quiet_since > _ALIVE_AFTER:
+                    if not self._alive():
+                        return gone()
+                    quiet_since = time.monotonic()
+                time.sleep(_READ_PAUSE)
+                continue
+            quiet_since = time.monotonic()
+            output += chunk
+            fresh = output[mark:]
+            for rx, answer in rules:
+                if rx.search(fresh):
+                    try:
+                        self.conn.write_channel(answer + "\n")
+                    except Exception:
+                        if may_disconnect:
+                            return gone()
+                        raise
+                    mark = len(output)
+                    break
+            else:
+                if prompt.search(fresh):
+                    return ExecResult(command, output)
+        raise TimeoutError(f"`{command}` was still running after {timeout:.0f} s")
+
+    def _alive(self) -> bool:
+        channel = getattr(self.conn, "remote_conn", None)
+        if getattr(channel, "closed", False):
+            return False
+        try:
+            return bool(self.conn.is_alive())
+        except Exception:  # noqa: BLE001 - a session that cannot answer is gone
+            return False
 
     def paste_config(
         self,

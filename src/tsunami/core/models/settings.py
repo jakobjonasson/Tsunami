@@ -56,6 +56,8 @@ class AppSettings(StrictModel):
     theme: Literal["system", "light", "dark"] = "system"
     # Offer SHA-1 SSH algorithms after every modern one, for devices with nothing newer.
     ssh_legacy_algorithms: bool = True
+    # Where firmware images are looked for; unset means %LOCALAPPDATA%\Tsunami\firmware.
+    firmware_dir: str | None = None
     # Lock Tsunami after this many minutes without input; 0 never locks.
     auto_lock_minutes: int = Field(15, ge=0, le=480)
 
