@@ -12,18 +12,27 @@ from __future__ import annotations
 import re
 from dataclasses import dataclass
 from enum import StrEnum
-from typing import Annotated, Any
+from typing import Annotated, Any, Literal
+from urllib.parse import urlsplit
 
 from pydantic import AfterValidator, BeforeValidator, Field, field_validator, model_validator
 
 from tsunami.core.issues import Finding, Severity
-from tsunami.core.models.common import BUILTIN_VARS, SingleLine, Slug, StrictModel, VarName
+from tsunami.core.models.common import (
+    BUILTIN_VARS,
+    Platform,
+    SingleLine,
+    Slug,
+    StrictModel,
+    VarName,
+)
 
 
 class PlayType(StrEnum):
     INITIAL = "initial"
     PUSH = "push"
     BASELINE = "baseline"
+    UPGRADE = "upgrade"  # firmware: stage an image, activate it, verify (see Firmware)
 
 
 class ConnectionMethod(StrEnum):
@@ -159,10 +168,127 @@ class Prompt(StrictModel):
         return self
 
 
+class FirmwareAction(StrEnum):
+    STAGE = "stage"  # copy the image to the device and verify it; nothing reboots
+    ACTIVATE = "activate"  # boot the staged image: reloads the device
+
+
+class TransferMethod(StrEnum):
+    SCP = "scp"  # Tsunami uploads the file from its firmware folder
+    TFTP = "tftp"  # the device fetches it from `server`
+    HTTP = "http"  # the device fetches it from `server` (http or https)
+
+
+_IMAGE_FILE_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9._+-]*$")
+
+
+def _hex(length: int) -> Any:
+    def check(value: str) -> str:
+        text = value.strip().lower()
+        if len(text) != length or any(c not in "0123456789abcdef" for c in text):
+            raise ValueError(f"must be {length} hexadecimal characters")
+        return text
+
+    return check
+
+
+Md5 = Annotated[str, AfterValidator(_hex(32))]
+Sha256 = Annotated[str, AfterValidator(_hex(64))]
+Sha512 = Annotated[str, AfterValidator(_hex(128))]
+
+
+class FirmwareImage(StrictModel):
+    file: str = Field(description="The image's file name in the firmware folder; no path.")
+    version: SingleLine = Field(
+        min_length=1, description="The version the device reports once it runs this image."
+    )
+    md5: Md5 | None = None
+    sha256: Sha256 | None = None
+    sha512: Sha512 | None = None
+    platforms: list[Platform] = Field(min_length=1)
+    models: list[Slug] = Field([], description="Hardware model ids; empty means any model.")
+
+    @model_validator(mode="after")
+    def _checks(self) -> FirmwareImage:
+        if not _IMAGE_FILE_RE.match(self.file) or ".." in self.file:
+            raise ValueError("file is a plain file name: letters, digits, dot, dash, underscore")
+        if not (self.md5 or self.sha256 or self.sha512):
+            raise ValueError(
+                "an image needs a hash (sha256, sha512 or md5), so the file cannot be "
+                "swapped for another after the play is reviewed"
+            )
+        return self
+
+    @property
+    def hashes(self) -> dict[str, str]:
+        found = (("md5", self.md5), ("sha256", self.sha256), ("sha512", self.sha512))
+        return {name: value for name, value in found if value}
+
+
+def _server_url(value: str | None) -> str | None:
+    if value is None:
+        return None
+    try:
+        parts = urlsplit(value)
+        port = parts.port
+    except ValueError:
+        raise ValueError("server is not a valid URL") from None
+    if parts.scheme not in ("tftp", "http", "https") or not parts.hostname:
+        raise ValueError("server is tftp://host[/folder] or http(s)://host[:port][/folder]")
+    if parts.username or parts.password:
+        raise ValueError("server must not hold a username or password: plays are not secret")
+    if parts.query or parts.fragment or any(c.isspace() for c in value):
+        raise ValueError("server is a plain URL: no spaces, query or fragment")
+    if parts.scheme == "tftp" and port is not None:
+        raise ValueError("a tftp server takes no port")
+    return value.rstrip("/")
+
+
+class Firmware(StrictModel):
+    """What an upgrade play installs and how the image reaches the device."""
+
+    transfer: TransferMethod = TransferMethod.SCP
+    server: Annotated[str | None, AfterValidator(_server_url)] = Field(
+        None, description="tftp and http: where devices fetch the image from."
+    )
+    images: list[FirmwareImage] = Field(min_length=1)
+    reload_timeout: int = Field(
+        1800, ge=300, le=7200, description="Seconds to wait for a device to return."
+    )
+
+    @model_validator(mode="after")
+    def _transfer_and_server(self) -> Firmware:
+        if self.transfer == TransferMethod.SCP:
+            if self.server is not None:
+                raise ValueError("server is for tftp and http; scp uploads from this PC")
+            return self
+        if self.server is None:
+            raise ValueError(f"transfer: {self.transfer} needs server")
+        scheme = urlsplit(self.server).scheme
+        allowed = ("tftp",) if self.transfer == TransferMethod.TFTP else ("http", "https")
+        if scheme not in allowed:
+            raise ValueError(f"transfer: {self.transfer} needs a {' or '.join(allowed)} server")
+        return self
+
+    def image_for(self, platform: Platform | str, model: str | None) -> FirmwareImage | None:
+        """The first image listed for this platform and model."""
+        for image in self.images:
+            if str(platform) not in {str(p) for p in image.platforms}:
+                continue
+            if not image.models or (model is not None and model in image.models):
+                return image
+        return None
+
+
 class Step(StrictModel):
     snippet: Slug | None = Field(None, description="Snippet name without .j2.")
     config: list[SingleLine] | None = Field(None, description="Config-mode lines; Jinja allowed.")
     exec: SingleLine | None = Field(None, description="One exec-mode command.")
+    firmware: FirmwareAction | None = Field(
+        None,
+        description="Upgrade plays: stage (copy and verify the image) or activate "
+        "(set it to boot, reload, verify the version).",
+    )
     expect_prompt: Regex | None = None
     answer: SingleLine | None = None
     read_timeout: float | None = Field(None, gt=0)
@@ -174,9 +300,10 @@ class Step(StrictModel):
 
     @model_validator(mode="after")
     def _one_action(self) -> Step:
-        actions = [a for a in ("snippet", "config", "exec") if getattr(self, a) is not None]
+        names = ("snippet", "config", "exec", "firmware")
+        actions = [a for a in names if getattr(self, a) is not None]
         if len(actions) != 1:
-            raise ValueError("a step needs exactly one of snippet, config or exec")
+            raise ValueError("a step needs exactly one of snippet, config, exec or firmware")
         if self.config is not None and not self.config:
             raise ValueError("config needs at least one line")
         exec_only = (self.expect_prompt, self.answer, self.read_timeout)
@@ -184,7 +311,7 @@ class Step(StrictModel):
             raise ValueError("expect_prompt, answer and read_timeout are only valid on exec steps")
         if (self.expect_prompt is None) != (self.answer is None):
             raise ValueError("expect_prompt and answer go together")
-        if self.owns and self.exec is not None:
+        if self.owns and (self.exec is not None or self.firmware is not None):
             raise ValueError("owns is only valid on snippet and config steps")
         if self.when is not None and _TEMPLATE_DELIMITER_RE.search(self.when):
             raise ValueError("when is an expression without {{ }} or {% %}")
@@ -192,20 +319,93 @@ class Step(StrictModel):
 
     @property
     def kind(self) -> str:
+        if self.firmware is not None:
+            return "firmware"
         return "snippet" if self.snippet is not None else "config" if self.config else "exec"
+
+
+# A value a state check compares a cell with: a word or number, /a regex/, a list of
+# those (any of), or {min, max} for a number (core/state/evaluate.py).
+StateScalar = str | int
+StateMatcher = StateScalar | list[StateScalar] | dict[Literal["min", "max"], int]
+
+
+def _as_list(matcher: Any) -> list[Any]:
+    return list(matcher) if isinstance(matcher, list) else [matcher]
+
+
+def _state_matchers(value: dict[str, Any] | None) -> dict[str, Any] | None:
+    for name, matcher in (value or {}).items():
+        if isinstance(matcher, dict) and not matcher:
+            raise ValueError(f"{name}: a range needs min, max or both")
+        for item in _as_list(matcher):
+            if isinstance(item, bool):
+                raise ValueError(f"{name}: a state value is text; put true or false in quotes")
+            regex = isinstance(item, str) and len(item) >= 2 and item[0] == item[-1] == "/"
+            if regex and not _TEMPLATE_DELIMITER_RE.search(item):
+                _regex(item[1:-1])
+    return value
+
+
+StateMatchers = Annotated[dict[VarName, StateMatcher], AfterValidator(_state_matchers)]
+
+
+class CountRange(StrictModel):
+    min: int | None = Field(None, ge=0)
+    max: int | None = Field(None, ge=0)
+
+    @model_validator(mode="after")
+    def _bounds(self) -> CountRange:
+        if self.min is None and self.max is None:
+            raise ValueError("count needs a number, or min, max or both")
+        if self.min is not None and self.max is not None and self.min > self.max:
+            raise ValueError("min is greater than max")
+        return self
+
+
+class StateCompare(StrEnum):
+    COUNT = "count"  # as many rows as before the change
+    NO_LOSS = "no_loss"  # every row from before is still there, unchanged; new rows are fine
+    SAME = "same"  # no_loss, and no new rows
 
 
 class Check(StrictModel):
     name: str | None = None
     exec: SingleLine | None = None
-    expect: Regex | None = None
+    expect: Regex | StateMatchers | None = Field(
+        None,
+        description="exec checks: a regex the output must match. state checks: column "
+        "values every selected row must have.",
+    )
     expect_not: Regex | None = None
     reachable: bool | None = None
+    state: Slug | None = Field(
+        None, description="A state table, e.g. ospf_neighbors (design.md, State checks)."
+    )
+    where: StateMatchers | None = Field(None, description="state: which rows; all by default.")
+    count: Annotated[int, Field(ge=0)] | CountRange | None = Field(
+        None, description="state: how many rows are selected: a number, or min and max."
+    )
+    compare: StateCompare | None = Field(
+        None, description="state, post-checks only: against the rows before the change."
+    )
     retries: int = Field(0, ge=0)
     delay: float = Field(5, ge=0)
 
     @model_validator(mode="after")
     def _one_form(self) -> Check:
+        forms = [n for n in ("exec", "reachable", "state") if getattr(self, n) is not None]
+        if len(forms) > 1:
+            raise ValueError(
+                f"a check is one of exec, reachable or state, not {' and '.join(forms)}"
+            )
+        state_only = (self.where, self.count, self.compare)
+        if self.state is None and any(v is not None for v in state_only):
+            raise ValueError("where, count and compare are only valid on state checks")
+        if self.state is not None:
+            return self._state_form()
+        if isinstance(self.expect, dict):
+            raise ValueError("expect is a regex here; a mapping is for state checks")
         if self.reachable is not None:
             if self.reachable is not True:
                 raise ValueError("reachable can only be true")
@@ -213,10 +413,44 @@ class Check(StrictModel):
                 raise ValueError("a reachable check has no exec, expect or expect_not")
             return self
         if self.exec is None:
-            raise ValueError("a check needs exec (with expect or expect_not) or reachable: true")
+            raise ValueError(
+                "a check needs exec (with expect or expect_not), reachable: true, or state"
+            )
         if (self.expect is None) == (self.expect_not is None):
             raise ValueError("an exec check needs exactly one of expect or expect_not")
         return self
+
+    def _state_form(self) -> Check:
+        from tsunami.core.state.tables import TABLES
+
+        spec = TABLES.get(self.state or "")
+        if spec is None:
+            known = ", ".join(sorted(TABLES))
+            raise ValueError(f"unknown state table {self.state!r}; the tables are {known}")
+        if self.expect_not is not None:
+            raise ValueError("expect_not is for exec checks; a state check uses expect")
+        if self.expect is not None and not isinstance(self.expect, dict):
+            raise ValueError(
+                "in a state check, expect is a mapping of column to value, e.g. {state: full}"
+            )
+        if not self.expect and self.count is None and self.compare is None:
+            raise ValueError("a state check needs expect, count or compare")
+        for section in ("where", "expect"):
+            for column in getattr(self, section) or {}:
+                if spec.column(column) is None:
+                    raise ValueError(
+                        f"{section}: {self.state} has no column {column!r}; "
+                        f"its columns are {', '.join(spec.column_names)}"
+                    )
+        return self
+
+    @property
+    def count_range(self) -> tuple[int | None, int | None] | None:
+        if self.count is None:
+            return None
+        if isinstance(self.count, int):
+            return (self.count, self.count)
+        return (self.count.min, self.count.max)
 
 
 class Checks(StrictModel):
@@ -258,6 +492,7 @@ class Play(StrictModel):
     prompts: dict[VarName, Prompt] = {}
     vars: dict[VarName, Any] = {}
     steps: list[Step] = Field(min_length=1)
+    firmware: Firmware | None = Field(None, description="Upgrade plays only.")
     execution: Execution = Execution()
     checks: Checks = Checks()
     on_success: OnSuccess = OnSuccess()
@@ -276,7 +511,7 @@ class Play(StrictModel):
         serial = method == ConnectionMethod.SERIAL
         if ex.batch_size is not None:
             batch_size = ex.batch_size
-        elif self.type == PlayType.INITIAL or serial:
+        elif self.type in (PlayType.INITIAL, PlayType.UPGRADE) or serial:
             batch_size = 1
         else:
             batch_size = workspace_batch_size or defaults["batch_size"]
@@ -338,6 +573,14 @@ _TYPE_DEFAULTS: dict[PlayType, dict[str, Any]] = {
     },
     PlayType.PUSH: _PUSH_DEFAULTS,
     PlayType.BASELINE: _PUSH_DEFAULTS,
+    # One device at a time and stop at the first failure: a reload takes the device out
+    # of service, and nothing can roll a firmware upgrade back.
+    PlayType.UPGRADE: {
+        **_PUSH_DEFAULTS,
+        "rollback": RollbackMode.NONE,
+        "batch_size": 1,
+        "max_fail_percent": 0,
+    },
 }
 
 
@@ -445,8 +688,71 @@ def play_findings(play: Play) -> list[Finding]:
             error("secret_in_exec", "secret() is not allowed in exec steps", "steps", i, "exec")
     for phase in ("pre", "post"):
         for i, check in enumerate(getattr(play.checks, phase)):
-            texts = (check.exec, check.expect, check.expect_not)
-            if any(t and _SECRET_CALL_RE.search(t) for t in texts):
+            if any(_SECRET_CALL_RE.search(t) for t in _check_texts(check)):
                 error("secret_in_check", "secret() is not allowed in checks", "checks", phase, i)
+            if phase == "pre" and check.compare is not None:
+                error(
+                    "compare_pre",
+                    "compare is for post-checks: it compares with the state before the change",
+                    "checks", phase, i, "compare",
+                )  # fmt: skip
+
+    _firmware_findings(play, settings, error)
 
     return findings
+
+
+def _check_texts(check: Check) -> list[str]:
+    """Every string a check holds that Jinja renders."""
+    texts = [t for t in (check.exec, check.expect_not) if t]
+    if isinstance(check.expect, str):
+        texts.append(check.expect)
+    for section in (check.where, check.expect if isinstance(check.expect, dict) else None):
+        for matcher in (section or {}).values():
+            texts.extend(m for m in _as_list(matcher) if isinstance(m, str))
+    return texts
+
+
+def _firmware_findings(play: Play, settings: EffectiveSettings, error: Any) -> None:
+    """Rules for upgrade plays (design.md, Firmware upgrades)."""
+    steps = [(i, s) for i, s in enumerate(play.steps) if s.firmware is not None]
+    if play.type != PlayType.UPGRADE:
+        if play.firmware is not None:
+            error("firmware_type", "firmware is only valid in upgrade plays", "firmware")
+        for i, _ in steps:
+            error("firmware_type", "firmware steps are only valid in upgrade plays",
+                  "steps", i, "firmware")  # fmt: skip
+        return
+    if play.firmware is None:
+        error("firmware_missing", "an upgrade play needs a firmware section with its images",
+              "type")  # fmt: skip
+    if not steps:
+        error("firmware_steps", "an upgrade play needs a firmware step (stage, activate)",
+              "steps")  # fmt: skip
+    if settings.method != ConnectionMethod.SSH:
+        error("firmware_ssh", "upgrade plays connect over ssh", "connection", "method")
+    if settings.rollback != RollbackMode.NONE:
+        error(
+            "firmware_rollback",
+            "upgrade plays need rollback: none: a config rollback cannot undo a firmware "
+            "upgrade, and the reload ends the session it would run in",
+            "execution", "rollback",
+        )  # fmt: skip
+    if not settings.gather_facts:
+        error("firmware_facts", "upgrade plays need gather_facts: the running version "
+              "decides what to do", "execution", "gather_facts")  # fmt: skip
+    seen: list[FirmwareAction] = []
+    for i, step in steps:
+        action = step.firmware
+        if action in seen:
+            error("firmware_repeat", f"firmware: {action} appears twice", "steps", i, "firmware")
+        if action == FirmwareAction.STAGE and FirmwareAction.ACTIVATE in seen:
+            error("firmware_order", "stage must come before activate", "steps", i, "firmware")
+        if action == FirmwareAction.ACTIVATE and not step.allow_destructive:
+            error(
+                "firmware_reload",
+                "firmware: activate reloads the device; set allow_destructive: true on "
+                "this step",
+                "steps", i,
+            )  # fmt: skip
+        seen.append(action)

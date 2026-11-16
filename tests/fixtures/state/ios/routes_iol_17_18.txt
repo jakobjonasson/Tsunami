@@ -1,0 +1,13 @@
+IP routing table name is default (0x0)
+IP routing table maximum-paths is 32
+Route Source    Networks    Subnets     Replicates  Overhead    Memory (bytes)
+connected       0           7           0           784         2184
+static          0           0           0           0           0
+application     0           0           0           0           0
+ospf 1          0           3           0           336         948
+  Intra-area: 3 Inter-area: 0 External-1: 0 External-2: 0
+  NSSA External-1: 0 NSSA External-2: 0
+bgp 65010       0           0           0           0           0
+  External: 0 Internal: 0 Local: 0
+internal        1                                               1192
+Total           1           10          0           1120        4324

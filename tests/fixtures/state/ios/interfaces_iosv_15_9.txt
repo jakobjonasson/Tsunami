@@ -1,0 +1,3 @@
+Interface                      Status         Protocol Description
+Gi0/0                          up             up       MGMT - lab access, do not change
+Gi0/1                          admin down     down

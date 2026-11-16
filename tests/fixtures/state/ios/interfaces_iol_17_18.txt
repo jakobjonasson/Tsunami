@@ -1,0 +1,6 @@
+Interface                      Status         Protocol Description
+Et0/0                          up             up       to R1-EDGE1 Et0/0
+Et0/1                          up             up       to R2-EDGE2 Et0/0
+Et0/2                          up             up       to R4-DC Et0/0
+Et0/3                          admin down     down     
+Lo0                            up             up

@@ -11,5 +11,7 @@
 # Device output fixtures are compared byte for byte; never normalize them.
 tests/fixtures/configs/** -text
 tests/fixtures/show/** -text
+tests/fixtures/state/** -text
+tests/fixtures/firmware/** -text
 *.ttf binary
 tests/fixtures/console/** -text

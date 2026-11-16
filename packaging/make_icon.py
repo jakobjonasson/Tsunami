@@ -1,4 +1,5 @@
-"""Generate src/tsunami/gui/assets/tsunami.ico: a wave on a rounded square, in sizes 16 to 256.
+"""Generate src/tsunami/gui/assets/tsunami.ico: four bands of water with wavy edges on a
+rounded square, in sizes 16 to 256.
 
 Run: uv run python packaging/make_icon.py
 Needs PySide6 only. The ICO container (PNG entries) is written here, so Pillow is not needed.
@@ -19,7 +20,6 @@ from PySide6.QtGui import (  # noqa: E402
     QColor,
     QGuiApplication,
     QImage,
-    QLinearGradient,
     QPainter,
     QPainterPath,
 )
@@ -28,17 +28,28 @@ SIZES = (16, 24, 32, 48, 64, 256)
 OUT = Path(__file__).parents[1] / "src" / "tsunami" / "gui" / "assets" / "tsunami.ico"
 
 
-def _wave(left: float, right: float, base: float, amp: float, phase: float) -> QPainterPath:
-    """A closed shape: a sine-like crest along the top, flat bottom at y=1."""
-    path = QPainterPath(QPointF(left, 1.0))
-    steps = 48
+# The tile's four bands, top to bottom, and the three wavy edges between them. Flat
+# colors, no gradient: the bands still read as water at 16 px, where a gradient blurs.
+DEEP, MID, BRIGHT, FOAM = "#12333d", "#1c6678", "#3bb6d0", "#a9e6f0"
+# (color below the edge, height at the left, tilt across the tile, amplitude). An edge is
+# one sine period, so a positive amplitude crests in the left half and dips in the right.
+EDGES = (
+    (MID, 0.437, -0.042, 0.056),
+    (BRIGHT, 0.626, 0.0, -0.070),
+    (FOAM, 0.781, 0.0, 0.041),
+)
+MARGIN = 0.02
+RADIUS = 0.215
+
+
+def _band(base: float, tilt: float, amp: float) -> QPainterPath:
+    """Everything below one wavy edge, in unit coordinates (y grows downward)."""
+    path = QPainterPath(QPointF(0.0, 1.0))
+    steps = 64
     for i in range(steps + 1):
-        x = left + (right - left) * i / steps
-        t = i / steps
-        # one rising swell that curls: sine plus a slow ramp toward the crest
-        y = base - amp * math.sin(2 * math.pi * (t * 1.25 + phase)) - 0.10 * t
-        path.lineTo(x, y)
-    path.lineTo(right, 1.0)
+        x = i / steps
+        path.lineTo(x, base + tilt * x - amp * math.sin(2 * math.pi * x))
+    path.lineTo(1.0, 1.0)
     path.closeSubpath()
     return path
 
@@ -49,25 +60,17 @@ def render(size: int) -> QImage:
     p = QPainter(img)
     p.setRenderHint(QPainter.RenderHint.Antialiasing)
     p.scale(size, size)  # draw in unit coordinates
+    p.translate(MARGIN, MARGIN)
+    p.scale(1 - 2 * MARGIN, 1 - 2 * MARGIN)  # the tile is now the unit square
 
-    margin = 0.04
-    tile = QRectF(margin, margin, 1 - 2 * margin, 1 - 2 * margin)
     clip = QPainterPath()
-    clip.addRoundedRect(tile, 0.22, 0.22)
-
-    bg = QLinearGradient(0, 0, 0, 1)
-    bg.setColorAt(0.0, QColor("#2b7fb8"))
-    bg.setColorAt(1.0, QColor("#0f5a73"))
-    p.fillPath(clip, bg)
-
+    clip.addRoundedRect(QRectF(0, 0, 1, 1), RADIUS, RADIUS)
+    p.fillPath(clip, QColor(DEEP))
     p.setClipPath(clip)
     p.setPen(Qt.PenStyle.NoPen)
-    p.setBrush(QColor(255, 255, 255, 70))
-    p.drawPath(_wave(0.0, 1.0, 0.50, 0.12, 0.10))
-    p.setBrush(QColor("#7fd6d0"))
-    p.drawPath(_wave(0.0, 1.0, 0.62, 0.10, 0.35))
-    p.setBrush(QColor("#e9fbf8"))
-    p.drawPath(_wave(0.0, 1.0, 0.76, 0.07, 0.60))
+    for color, base, tilt, amp in EDGES:
+        p.setBrush(QColor(color))
+        p.drawPath(_band(base, tilt, amp))
     p.end()
     return img
 

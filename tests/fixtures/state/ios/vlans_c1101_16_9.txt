@@ -1,0 +1,11 @@
+
+VLAN Name                             Status    Ports
+---- -------------------------------- --------- -------------------------------
+1    default                          active    Gi0/1/1, Gi0/1/2, Gi0/1/3
+10   Internal                         active    
+20   Guest                            active    
+30   DMZ                              active    
+1002 fddi-default                     act/unsup 
+1003 token-ring-default               act/unsup 
+1004 fddinet-default                  act/unsup 
+1005 trnet-default                    act/unsup 

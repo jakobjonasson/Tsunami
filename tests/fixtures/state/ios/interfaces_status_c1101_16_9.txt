@@ -1,0 +1,6 @@
+
+Port      Name               Status       Vlan       Duplex  Speed Type
+Gi0/1/0                      connected    trunk      a-full a-1000 10/100/1000BaseTX
+Gi0/1/1   SPARE-RC1          disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/1/2   SPARE-RC1          disabled     1            auto   auto 10/100/1000BaseTX
+Gi0/1/3   SPARE-RC1          disabled     1            auto   auto 10/100/1000BaseTX
