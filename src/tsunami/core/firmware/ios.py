@@ -34,6 +34,7 @@ from tsunami.core.firmware.base import (
 from tsunami.core.models.common import PlatformFamily
 from tsunami.core.models.play import TransferMethod
 from tsunami.core.rollback import device_error
+from tsunami.core.state.parsers.ios import stack as parse_stack
 
 INSTALL, BUNDLE = "install", "bundle"
 VERIFY_SECONDS = 900.0  # verify /md5 of a large image on a slow switch takes minutes
@@ -49,13 +50,6 @@ _MODE = re.compile(r"^\*?\s*\d+\s+\d+\s+\S+\s+\S+\s+\S+\s+(?P<mode>INSTALL|BUNDL
 _DIR_ENTRY = re.compile(r"^\s*\d+\s+[-drwx]{4}\s+(?P<size>\d+)\s+.*\s(?P<name>\S+)\s*$")
 _DIR_FREE = re.compile(r"\((?P<free>\d+) bytes free\)")
 _MD5 = re.compile(r"=\s*(?P<md5>[0-9a-fA-F]{32})\b")
-# Switch#   Role    Mac Address     Priority Version  State
-# *1       Active   0011.2233.4455     15     V01     Ready
-_MEMBER = re.compile(
-    r"^\s*\*?\s*(?P<number>\d+)\s+(?P<role>Active|Standby|Member|Master)\s+"
-    r"[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\.[0-9a-fA-F]{4}\s+\d+\s+(?:[Vv]?\d\S*\s+)?(?P<state>\S.*?)\s*$",
-    re.M | re.I,
-)
 _REJECTED = re.compile(r"^\s*% ?(?:Invalid input|Incomplete command|Ambiguous command)", re.M)
 _ERROR = re.compile(r"^\s*%", re.M)
 _COPY_ANSWERS = (
@@ -115,10 +109,8 @@ class IosFirmware:
         output = job.session.send_exec("show switch").output
         if _REJECTED.search(output):
             return []
-        return [
-            (int(m["number"]), m["role"].lower(), m["state"].lower())
-            for m in _MEMBER.finditer(output)
-        ]
+        rows = parse_stack(output.replace("\r\n", "\n"))
+        return [(int(row["member"]), str(row["role"]), str(row["state"])) for row in rows]
 
     def _md5(self, job: FirmwareJob, path: str) -> str:
         job.log(f"verifying {path} (this can take several minutes)")
