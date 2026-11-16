@@ -1,0 +1,30 @@
+switch# show lacp interfaces
+State abbreviations :
+A - Active        P - Passive      F - Aggregable I - Individual
+S - Short-timeout L - Long-timeout N - InSync     O - OutofSync
+C - Collecting    D - Distributing
+X - State m/c expired              E - Default neighbor state
+
+Actor details of all interfaces:
+------------------------------------------------------------------------------------
+Intf    Aggr     Port  Port  State   System-id         System Aggr Forwarding
+        name     id    Pri                             Pri    Key  State
+------------------------------------------------------------------------------------
+1/1/1   lag10    17    1     ALFOE   70:72:cf:37:a3:5c 20     10   lacp-block
+1/1/2   lag128   69    1     ALFNCD  70:72:cf:37:a3:5c 20     128  up
+1/1/3   lag128   14    1     ALFNCD  70:72:cf:37:a3:5c 20     128  up
+1/1/4   lag128                                                     down
+1/1/5   lag20                                                      up
+1/1/6   lag30    9     1     ALINCD  70:72:cf:37:a3:5c 20     30   up
+1/4/14  lag1(mc) 206   1     ALFNCD  f8:60:f0:06:49:00 65534  1    up
+1/5/15  lag2(mc)                                                   down
+
+Partner details of all interfaces:
+------------------------------------------------------------------------------
+Intf    Aggr     Partner Port  State   System-id         System   Aggr
+        name     Port-id Pri                             Priority Key
+------------------------------------------------------------------------------
+1/1/1   lag10    0       65534 PLFOEX  00:00:00:00:00:00 65534    0
+1/1/2   lag128   69      1     PLFNCD  70:72:cf:8c:60:a7 65534    128
+1/1/4   lag128
+1/1/5   lag20

@@ -1,0 +1,11 @@
+switch# show ip ospf neighbor
+
+ OSPF Neighbor Information
+
+                                                         Rxmt          Helper
+  Router ID       Pri IP Address     NbIfState State     QLen  Events  Status
+  --------------- --- -------------- --------- --------- ----- ------  ------
+  10.255.0.34     1   10.3.18.34     DR        FULL      0     6       none
+  10.255.0.38     1   10.3.53.38     BDR       FULL      0     6       none
+  10.255.0.40     1   10.3.54.40               2WAY      0     6       none
+  10.255.0.41     0   10.3.55.41               INIT      0     1       none

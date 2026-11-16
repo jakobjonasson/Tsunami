@@ -1,0 +1,9 @@
+switch(config)# show ip route summary
+
+ IPv4 Route Table Summary
+
+  Protocol  Active Routes
+  --------- -------------
+  Connected 1
+  Static    1
+  OSPF      4

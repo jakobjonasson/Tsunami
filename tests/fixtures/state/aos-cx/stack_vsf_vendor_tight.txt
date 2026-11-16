@@ -1,0 +1,19 @@
+switch# show vsf
+Force Autojoin  : Disabled
+Autojoin Eligibility Status : Not Eligible
+MAC Address  : 38:21:c7:5c:62:40
+Egress Shape  : Enabled
+Egress Shape Rate  : None
+Secondary  : 2
+Topology  : Ring
+Status  : No Split
+Split Detection Method  : None
+
+Mbr  Mac Address  type  Status
+ID
+---  ------------------- --------------  ---------------
+1  38:21:c7:5c:62:40  JL668A  Conductor
+2  18:7a:3b:1b:68:c0  R8S90A  Standby
+3  38:21:c7:5c:57:c0  JL668A  Member
+4  18:7a:3b:1b:66:40  R8S89A  Member Booting
+5  JL662A  Not Present

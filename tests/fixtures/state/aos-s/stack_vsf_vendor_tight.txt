@@ -1,0 +1,18 @@
+switch# show vsf
+
+ VSF Domain ID  : 123
+ MAC Address  : 941882-435589
+ VSF Topology  : Ring
+ VSF Status  : Active
+ Uptime  : 26d 20h 36m
+ VSF MAD  : None
+ VSF Port Speed  : 10G
+ Software Version : WC.16.06.0000x
+
+ Mbr
+ ID  MAC Address  Model  Pri Status
+ --- ----------------- ------------------------------------- --- ---------------
+ 1  f40343-0796b0  Aruba JL258A 2930F-8G-PoE+-2SFP+ S... 128 Member
+ *2  941882-435580  Aruba JL254A 2930F-48G-4SFP+ Switch  128 Member
+ 3  b05ada-9771c0  Aruba JL256A 2930F-48G-PoE+-4SFP+ ... 128 Standby
+ 7  b05ada-9631e0  Aruba JL255A 2930F-24G-PoE+-4SFP+ ... 128 Commander

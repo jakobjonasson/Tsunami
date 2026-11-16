@@ -1,0 +1,14 @@
+                           LACP
+
+   PORT	LACP	TRUNK	PORT	LACP	LACP
+   NUMB	ENABLED	GROUP	STATUS	PARTNER	STATUS
+   ----	-------	-------	-------	-------	-------
+   A1	Active	Trk1	Up	Yes	Success
+   A2	Active	Trk1	Up	Yes	Success
+   A3	Active	Trk1	Down	No	Failure
+   B1	Active	Trk2	Up	No	Failure
+   B2	Passive	Trk2	Blocked	No	Failure
+   C1	Active	C1	Down	No	Failure
+   D1	Active	Dyn1	Up	Yes	Success
+   D2	Active	Dyn1	Standby	Yes	Success
+   D3	Active	Dyn1	Disabled	No	Failure

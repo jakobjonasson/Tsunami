@@ -1,0 +1,36 @@
+switch# show spanning-tree
+Spanning tree status : Enabled Protocol: MSTP
+
+MST0
+  Root ID    Priority   : 0
+             MAC-Address: 02:12:12:00:01:00
+             This bridge is the root
+             Hello time(in seconds):2 Max Age(in seconds):20 Forward Delay(in seconds):15
+
+  Bridge ID  Priority   : 0
+             MAC-Address: 02:12:12:00:01:00
+             Hello time(in seconds):2 Max Age(in seconds):20 Forward Delay(in seconds):15
+
+PORT     ROLE        STATE      COST       PRIORITY  TYPE      BPDU-Tx    BPDU-Rx    TCN-Tx     TCN-Rx
+-------- ----------- ---------- ---------- --------- --------- ---------- ---------- ---------- ----------
+1/1/1    Designated  Forwarding 20000      128       P2P Edge  100        60         20         10
+1/1/3    Designated  Forwarding 20000      128       Shr       100        60         20         10
+1/1/5    Alternate   Loop-Inc   20000      128       Shr Edge  100        60         20         10
+1/1/6    Alternate   Root-Inc   20000      128       Shr Edge  100        60         20         10
+1/1/7    Root        Forwarding 2000       128       P2P       100        60         20         10
+1/1/8    Alternate   Blocking   20000      128       P2P       100        60         20         10
+1/1/9    Disabled    Down       20000      128       P2P       100        60         20         10
+
+Number of topology changes    : 4
+Last topology change occurred : 516 seconds ago
+
+MST1
+  Root ID    Priority   : 4096
+             MAC-Address: 02:12:12:00:01:00
+             Hello time(in seconds):2 Max Age(in seconds):20 Forward Delay(in seconds):15
+
+PORT     ROLE        STATE      COST       PRIORITY  TYPE      BPDU-Tx    BPDU-Rx    TCN-Tx     TCN-Rx
+-------- ----------- ---------- ---------- --------- --------- ---------- ---------- ---------- ----------
+1/1/1    Root        Forwarding 20000      128       P2P Edge  100        60         20         10
+1/1/2    Alternate   Blocking   20000      128       P2P       100        60         20         10
+lag1     Designated  Forwarding 20000      128       P2P       100        60         20         10

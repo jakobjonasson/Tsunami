@@ -1,0 +1,15 @@
+core1# show ip route summary all-vrfs
+IP Route Table Summary
+
+VRF name : default
+Protocol  Active Routes  Protected Routes
+connected  3  -
+local  3  -
+static  2  -
+bgp  12  5
+
+VRF name : red
+Protocol  Active Routes  Protected Routes
+connected  4  -
+local  4  -
+bgp  7  2

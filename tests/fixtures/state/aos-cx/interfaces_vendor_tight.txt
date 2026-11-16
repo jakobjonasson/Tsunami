@@ -1,0 +1,10 @@
+--------------------------------------------------------------------------------------------------------
+Port  Native  Mode  Type  Enabled Status  Reason  Speed  Description
+           VLAN  (Mb/s)
+--------------------------------------------------------------------------------------------------------
+1/1/1  1  access  1GbT  yes  up  1000  --
+1/1/2  1  access  1GbT  yes  down  Waiting for link  --  --
+1/1/3  --  routed  --  no  down  Administratively down  --  --
+1/1/52:1  --  trunk  --  yes  down  No XCVR installed  --  --
+lag1(mc)  1  trunk  --  yes  up  10000  uplink to acme-core
+vlan10  --  --  --  yes  up  --  --

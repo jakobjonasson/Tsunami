@@ -1,0 +1,9 @@
+switch# show vrrp brief
+VRRP is enabled
+
+Interface  Grp  A-F  Pri  Time  Owner  Pre  State  Active addr/Group addr
+1/1/1  1  IPv4  100  0  N  Y  ACTIVE  10.0.0.2(local) 10.0.0.1
+1/1/2  1  IPv4  100  0  N  Y  INIT  AF-UNDEFINED no address
+1/1/2  1  IPv6  100  0  N  Y  INIT  AF-UNDEFINED no address
+vlan20  5  IPv6  100  0  N  Y  INIT  AF-UNDEFINED no address
+vlan20  5  IPv4  90  0  N  Y  STANDBY 10.0.20.2 10.0.20.1

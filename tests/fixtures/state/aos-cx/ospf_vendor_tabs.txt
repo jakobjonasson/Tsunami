@@ -1,0 +1,20 @@
+switch# show ip ospf neighbors all-vrfs
+OSPF Process ID 1 VRF default
+==============================
+
+Total Number of Neighbors: 3
+
+Neighbor ID	Priority	State	Nbr Address	Interface
+-------------------------------------------------------------------------
+10.255.0.2	1	FULL/DR	10.1.1.2	1/1/1
+10.255.0.3	1	2-Way/DROTHER	10.1.2.2	vlan20
+10.255.0.4	0	FULL/-	10.1.3.2	lag1
+
+OSPF Process ID 2 VRF red
+==========================
+
+Total Number of Neighbors: 1
+
+Neighbor ID	Priority	State	Nbr Address	Interface
+-------------------------------------------------------------------------
+10.255.1.5	1	EXSTART/BDR	192.168.9.2	1/1/9

@@ -1,0 +1,15 @@
+ Multiple Spanning Tree (MST) Information
+
+  STP Enabled   : Yes
+  Force Version : MSTP-operation
+  CST Root MAC Address : 0024a8-cd3d00
+  CST Root Priority    : 32768
+  CST Root Path Cost   : 0
+  CST Root Port        : This switch is root
+
+  Port  Type      | Cost      Priority Role       State      Designated Bridge Hello Time PtP Edge
+  ----- --------- + --------- -------- ---------- ---------- ----------------- ---------- --- ----
+  1     100/1000T | 20000     128      Designated Forwarding 0024a8-cd3d00     2          Yes No
+  2     100/1000T | Auto      128      Disabled   Disabled
+  3     100/1000T | 20000     128      Alternate  Blocking   0024a8-cd3d01     2          Yes No
+  Trk1            | 20000     128      Root       Forwarding 0024a8-cd3d02     2          Yes No

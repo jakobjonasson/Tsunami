@@ -1,0 +1,6 @@
+
+  VLAN ID Name                             | Status     Voice Jumbo
+  ------- -------------------------------- + ---------- ----- -----
+  1       DEFAULT_VLAN                     | Port-based No    No
+  10      Router Vlan                      | Port-based No    No
+  50      Voice                            | Port-based Yes   No

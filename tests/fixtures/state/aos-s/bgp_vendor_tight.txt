@@ -1,0 +1,9 @@
+switch(config)# show ip bgp summary
+
+ Peer Information
+
+  Remote Address  Remote-AS Local-AS State  Admin Status
+  --------------  --------- -------- ------------ ------------
+  10.0.8.2  65009  65009  Established  Start
+  10.0.9.2  65008  65009  Active  Start
+  10.0.10.2  65010  65009  Idle  Stop

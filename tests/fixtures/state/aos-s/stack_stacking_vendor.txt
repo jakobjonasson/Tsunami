@@ -1,0 +1,16 @@
+Switch# show stacking
+
+ Stack ID         : 00011cc1-de4d4740
+ MAC Address      : 1cc1de-4d474b
+ Stack Topology   : Unknown
+ Stack Status     : Fragment Active
+ Split Policy     : All-Fragments-Up
+ Uptime           : 0d 8h 6m
+ Software Version : KA.15.11.0000x
+
+ Mbr
+ ID  Mac Address   Model                                  Pri Status
+ --- ------------- -------------------------------------- --- ---------------
+ 1   1cc1de-4d4740 HPE J9574A 3810-48G-PoE+-4SFP+ Switch  128 Missing
+ 2   1cc1de-4d7400 HPE J9576A 3810-48G-4SFP+ Switch       128 Commander
+ 3   1cc1de-4ddc00 HPE J9575A 3810-24G-2SFP+ Switch       128 Missing
