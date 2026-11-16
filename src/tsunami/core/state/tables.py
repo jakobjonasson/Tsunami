@@ -131,7 +131,7 @@ TABLES: dict[str, StateTable] = {
         _table(
             "eigrp_neighbors",
             "EIGRP neighbors",
-            ("address", "interface"),
+            ("address", "interface", "as_number"),
             (),
             Column("address"),
             Column("interface", help="the local interface"),
@@ -188,7 +188,7 @@ TABLES: dict[str, StateTable] = {
             ("state",),
             Column("interface"),
             Column("group", INT),
-            Column("state", help="active, standby, speak, listen, init or disabled"),
+            Column("state", help="active, standby, speak, listen, learn, init or disabled"),
             Column("priority", INT),
         ),
         _table(

@@ -696,12 +696,12 @@ A table has key columns, which identify a row across two readings, and compared 
 |`port_channel_members`|`port_channel`, `member`|`status` (bundled, down, suspended, standalone, hot-standby, other)| |
 |`ospf_neighbors`|`neighbor_id`, `interface`|`state` (full, 2way, exstart, exchange, loading, init, attempt, down)|`address`, `role` (dr, bdr, drother, or empty)|
 |`bgp_neighbors`|`neighbor`|`state` (established, idle, active, connect, opensent, openconfirm, admin-down)|`remote_as`, `prefixes`|
-|`eigrp_neighbors`|`address`, `interface`| |`as_number`|
+|`eigrp_neighbors`|`address`, `interface`, `as_number`| | |
 |`cdp_neighbors`, `lldp_neighbors`|`local_interface`, `neighbor`|`remote_port`| |
 |`stack`|`member`|`state` (ready when up in the stack)|`role` (active, standby, member)|
 |`vlans`|`id`|`status`|`name`|
 |`routes`|`source` (connected, static, ospf 1, ..., total)|`routes`| |
-|`hsrp`|`interface`, `group`|`state` (active, standby, speak, listen, init, disabled)|`priority`|
+|`hsrp`|`interface`, `group`|`state` (active, standby, speak, listen, learn, init, disabled)|`priority`|
 |`vrrp`|`interface`, `group`|`state` (master, backup, init)|`priority`|
 |`spanning_tree`|`instance` (a VLAN or MST instance, and total)|`blocking`, `forwarding`| |
 

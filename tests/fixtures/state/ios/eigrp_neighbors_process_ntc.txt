@@ -1,0 +1,7 @@
+Load for five secs: 4%/0%; one minute: 5%; five minutes: 4%
+Time source is NTP, 10:15:01.123 UTC Mon Mar 4 2024
+
+EIGRP-IPv4:(535) neighbors for process 535
+H   Address                 Interface       Hold Uptime   SRTT   RTO  Q  Seq
+                                            (sec)         (ms)       Cnt Num
+0   10.120.250.1            Vl250             10 1w0d        3   450  0  17091

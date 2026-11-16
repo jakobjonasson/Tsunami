@@ -1,0 +1,9 @@
+Switch/Stack Mac Address : cc98.9114.3580 - Local Mac Address
+Mac persistency wait time: Indefinite
+                                             H/W   Current
+Switch#   Role    Mac Address     Priority Version  State
+-------------------------------------------------------------------------------------
+*1       Active   cc98.9114.3580     15     V01     Ready
+ 2       Member   706b.b9c8.2380     2      V01     Ready
+ 3       Member   a0f8.4911.c080     3      V01     Ready
+ 4       Standby  cc98.911a.0800     8      V01     Ready
