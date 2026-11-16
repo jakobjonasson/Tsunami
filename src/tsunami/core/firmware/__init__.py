@@ -28,6 +28,7 @@ __all__ = [
     "FirmwareJob",
     "ImageFile",
     "ImageState",
+    "available",
     "driver_for",
     "same_version",
     "version_key",
@@ -51,16 +52,33 @@ DEVICE_HASH: dict[PlatformFamily, str | None] = {
 }
 
 
-def driver_for(family: PlatformFamily | Platform | str) -> FirmwareDriver:
-    """The firmware driver for a platform family. Imported on use."""
+def _family(family: PlatformFamily | Platform | str) -> PlatformFamily:
     try:
-        fam = PlatformFamily(family)
+        return PlatformFamily(family)
     except ValueError:
-        fam = PLATFORM_FAMILY[Platform(family)]
-    if fam is PlatformFamily.IOS:
-        from tsunami.core.firmware.ios import DRIVER
-    elif fam is PlatformFamily.AOS_CX:
-        from tsunami.core.firmware.aoscx import DRIVER
-    else:
-        from tsunami.core.firmware.aoss import DRIVER
+        return PLATFORM_FAMILY[Platform(family)]
+
+
+def driver_for(family: PlatformFamily | Platform | str) -> FirmwareDriver:
+    """The firmware driver for a platform family. Imported on use. A family whose driver
+    is not built yet raises FirmwareError; validation refuses such a play first."""
+    fam = _family(family)
+    try:
+        if fam is PlatformFamily.IOS:
+            from tsunami.core.firmware.ios import DRIVER
+        elif fam is PlatformFamily.AOS_CX:
+            from tsunami.core.firmware.aoscx import DRIVER
+        else:
+            from tsunami.core.firmware.aoss import DRIVER
+    except ImportError:
+        raise FirmwareError(f"firmware upgrades are not available for {fam} yet") from None
     return DRIVER
+
+
+def available(family: PlatformFamily | Platform | str) -> bool:
+    """Whether this family has a firmware driver."""
+    try:
+        driver_for(family)
+    except FirmwareError:
+        return False
+    return True

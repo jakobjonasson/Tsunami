@@ -12,7 +12,7 @@ import pytest
 from pydantic import ValidationError
 from tests.unit.test_runner import FIXTURE, LOGIN, make_runner, statuses
 
-from tsunami.core import pipeline
+from tsunami.core import firmware, pipeline
 from tsunami.core.firmware import (
     DEVICE_HASH,
     TRANSFERS,
@@ -70,6 +70,13 @@ steps:
     allow_destructive: true
     tags: [activate]
 """
+
+
+@pytest.fixture(autouse=True)
+def every_family_has_a_driver(monkeypatch):
+    """These tests are about the engine: which families have a driver is not their
+    subject (test_a_family_without_a_driver_is_refused sets it itself)."""
+    monkeypatch.setattr(firmware, "available", lambda family: True)
 
 
 @pytest.fixture
@@ -615,3 +622,21 @@ def test_a_pull_needs_the_hash_the_device_can_check(ws_root, history, secrets, a
     driver.stage = lambda job: driver.calls.append("stage")
     job_id = runner.run(RunRequest(path, RunMode.APPLY, limit=["sa-as01"], tags=["stage"]))
     assert statuses(history, job_id) == {"sa-as01": DeviceStatus.SUCCESS}
+
+
+def test_a_family_without_a_driver_is_refused(ws_root, monkeypatch):
+    monkeypatch.setattr(firmware, "available", lambda family: False)
+    path = write_upgrade(ws_root)
+    issues = [i for i in load_workspace(ws_root).issues_for(Path(path))]
+    found = [i.message for i in issues if i.code == "play.firmware_unsupported"]
+    assert found == ["firmware upgrades are not available for ios yet"]
+
+
+def test_driver_for_says_when_a_driver_is_missing(monkeypatch):
+    import sys
+
+    for name in ("ios", "aoscx", "aoss"):
+        monkeypatch.setitem(sys.modules, f"tsunami.core.firmware.{name}", None)
+    for family in PlatformFamily:
+        with pytest.raises(FirmwareError, match=f"not available for {family} yet"):
+            firmware.driver_for(family)

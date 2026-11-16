@@ -1,0 +1,22 @@
+Flags:  D - down        P - bundled in port-channel
+        I - stand-alone s - suspended
+        H - Hot-standby (LACP only)
+        R - Layer3      S - Layer2
+        U - in use      N - not in use, no aggregation
+        f - failed to allocate aggregator
+
+        M - not in use, no aggregation due to minimum links not met
+        m - not in use, port not aggregated due to minimum links not met
+        u - unsuitable for bundling
+        d - default port
+
+        w - waiting to be aggregated
+Number of channel-groups in use: 6
+Number of aggregators:           6
+
+Group  Port-channel  Protocol    Ports
+------+-------------+-----------+-----------------------------------------------
+1      Po1(SU)         LACP      Te6/4(P)       Te3/5(P)       Te9/4(P)
+                                 Te5/5(P)
+3      Po3(SU)         LACP      Te4/2(P)       Te2/2(P)
+13     Po13(SU)        LACP      Te2/8(P)

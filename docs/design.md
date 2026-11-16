@@ -9,9 +9,11 @@ This document is the build spec. It is written to be handed to Claude Code as th
 ### Goals
 
 - Run plays from a GUI: pick a play, pick targets, fill prompts, preview, push.
-- Three play types on one engine: initial (day-0), push (ad-hoc change), baseline (per-customer standard config).
+- Four play types on one engine: initial (day-0), push (ad-hoc change), baseline (per-customer standard config), upgrade (firmware).
 - Layered variables (global, role, customer, site, device, play, prompt) with typed, validated prompts.
 - Safe fleet pushes: render preview, diff against running config, batches with max-fail, canary device, pre/post checks, automatic rollback.
+- State checks: pre-checks and post-checks that assert on operational state as rows (the same OSPF neighbors, the uplink port channel still up with both members), compared before and after a change, not only on the text a command prints.
+- Firmware upgrades: copy an image to devices, verify it, set it to boot, reload, and confirm the version, with images staged ahead of a maintenance window and reloads done device by device behind health checks.
 - Drift reporting: compare running config to a customer baseline without pushing.
 - An MCP interface that lets Claude read inventory, write draft plays, render, and run read-only checks without ever receiving credentials or secret values. Changes to customer devices require human approval in the GUI.
 
@@ -63,7 +65,7 @@ Claude reaches devices only through the core and sees only redacted results. Its
 |Location|Path|Contents|In git|
 |App|`%LOCALAPPDATA%\Programs\Tsunami`|Binaries|No|
 |Workspace|User-chosen folder|Inventory, snippets, plays, drafts, generated schemas|Yes|
-|Machine data|`%LOCALAPPDATA%\Tsunami`|`history.db`, backups, logs, per-customer `known_hosts`|No|
+|Machine data|`%LOCALAPPDATA%\Tsunami`|`history.db`, backups, logs, per-customer `known_hosts`, firmware images|No|
 |Settings|`%APPDATA%\Tsunami`|`settings.json`, `mcp-policy.yml`|No|
 |Secrets|Windows Credential Manager|Device logins, secret values|No|
 
@@ -104,7 +106,7 @@ Python 3.12 with pure-Python or Windows-wheel dependencies covers everything, so
 - Manage the environment with uv and commit the lockfile. Resolve current versions at build time; do not pin versions from memory.
 - Before relying on a library parameter named in this spec, check it against the installed version and its docs. The Netmiko parameters this design depends on are `sock`, `config_mode_command`, `error_pattern`, `ssh_strict`, `alt_host_keys`, `alt_key_file`, and session-log masking.
 - No Nornir. A custom inventory hierarchy plus batching and max-fail make it a poor fit, and it is one more thing to package.
-- No TextFSM or ntc-templates in v1. Facts come from regex parsing of `show version`. Revisit if structured parsing of more commands is needed.
+- No TextFSM or ntc-templates. Facts come from regex parsing of `show version`, and state tables (State checks) from hand-written parsers per platform family, tested against captured output. ntc-templates ships with Netmiko, but its column names differ by platform and have been renamed between releases, and a state check has to mean the same on Cisco and Aruba.
 
 ## Workspace layout
 
@@ -132,7 +134,8 @@ The workspace is a plain folder, normally a git repo, that the app points at. Ev
 ├─ plays/
 │  ├─ initial/
 │  ├─ push/
-│  └─ baseline/
+│  ├─ baseline/
+│  └─ upgrade/
 ├─ drafts/
 │  ├─ plays/        (mirrors plays/)
 │  └─ snippets/     (mirrors snippets/)
@@ -258,7 +261,7 @@ The resolver returns every value together with the level and file it came from, 
 
 ## Play schema
 
-A play is one YAML file that declares its type, customer, connection, targets, prompts, steps, execution options, and checks. The type only sets defaults; every type runs through the same engine.
+A play is one YAML file that declares its type, customer, connection, targets, prompts, steps, execution options, and checks. The type only sets defaults; every type runs through the same engine. An upgrade play adds a `firmware` section and firmware steps (see Firmware upgrades).
 
 ### Example
 
@@ -313,7 +316,7 @@ on_success:
 
 - `name`: string. Required.
 - `description`: string. Optional.
-- `type`: `initial`, `push`, or `baseline`. Required.
+- `type`: `initial`, `push`, `baseline`, or `upgrade`. Required.
 - `customer`: customer slug. Required for every type. One run touches exactly one customer and one credential set.
 - `customer: global` makes a global play: a generic play that runs for any customer. It is bound to the customer chosen at run time (the GUI asks; MCP tools take a `customer` argument), and the job belongs to that customer. Its secrets are written `secret('name')`, which resolves to the bound customer's secret, so one customer's secret never reaches another's run. At load it is checked for schema and target roles only; targets, snippets and renders are checked against the customer when it runs. `global` is reserved: no customer folder may use it. A play becomes global through Copy… in the Plays view (Global is listed first): the copy gets `customer: global`, its `secret('customer/name')` references become `secret('name')`, and a play that names devices in `targets.devices` is refused, since a global play picks devices by role or site.
 - In any play, `secret('name')` means the play's own customer, the same as `secret('<customer>/name')`.
@@ -323,6 +326,7 @@ on_success:
 - `prompts`: map of variable name to prompt definition.
 - `vars`: fixed play variables (precedence level 7).
 - `steps`: list of steps. At least one.
+- `firmware`: upgrade plays only: the images and how they reach the device (see Firmware upgrades).
 - `execution`: see below.
 - `checks`: `pre` and `post` lists.
 - `on_success`: `add_to_inventory` (initial plays only).
@@ -388,6 +392,7 @@ Each step has exactly one of:
 - `snippet`: snippet name without `.j2`. Rendered and sent in config mode.
 - `config`: list of config-mode lines. Jinja is allowed in each line.
 - `exec`: one exec-mode command. Optional `expect_prompt` (regex) and `answer` handle confirmation prompts. Optional `read_timeout`.
+- `firmware`: `stage` or `activate`. Upgrade plays only (see Firmware upgrades).
 
 Any step may also have:
 
@@ -395,7 +400,7 @@ Any step may also have:
 - `tags`: list of strings. The tag `always` runs regardless of the tag filter.
 - `when`: a Jinja expression without braces, evaluated against resolved variables and `facts`. False skips the step and logs it.
 - `owns`: list of top-level command prefixes this step is authoritative for, such as `ntp server` or `logging host`. Used by compliance to flag extra lines. See Execution engine.
-- `allow_destructive`: default false. Required for exec commands on the destructive list: `reload`, `erase`, `format`, `delete`, `write erase`.
+- `allow_destructive`: default false. Required for exec commands on the destructive list: `reload`, `erase`, `format`, `delete`, `write erase`, and for `firmware: activate`, which reloads the device.
 
 ### execution
 
@@ -416,24 +421,25 @@ Any step may also have:
 
 - `exec` plus `expect` (regex that must match) or `expect_not` (regex that must not match).
 - `reachable: true`: a TCP connect to the device's SSH port from the runner within `connect_timeout`.
+- `state`: a state table, with `where`, `expect`, `count` and `compare` (see State checks).
 
 Optional on each check: `name`, `retries` (default 0), `delay` in seconds (default 5). A failed pre-check skips the device with no changes. A failed post-check triggers the rollback policy.
 
 ### Defaults by type
 
-|   |   |   |   |
-|---|---|---|---|
-|Option|initial|push|baseline|
-|method|serial|ssh|ssh|
-|targets|forbidden|required|required|
-|gather_facts|false|true|true|
-|backup|false|true|true|
-|rollback|none|on_failure|on_failure|
-|batch_size|1|5|5|
-|max_fail_percent|0|10|10|
-|canary|false|true|true|
-|save|true|true|true|
-|compliance mode|no|no|yes|
+|   |   |   |   |   |
+|---|---|---|---|---|
+|Option|initial|push|baseline|upgrade|
+|method|serial|ssh|ssh|ssh|
+|targets|forbidden|required|required|required|
+|gather_facts|false|true|true|true|
+|backup|false|true|true|true|
+|rollback|none|on_failure|on_failure|none|
+|batch_size|1|5|5|1|
+|max_fail_percent|0|10|10|0|
+|canary|false|true|true|true|
+|save|true|true|true|true|
+|compliance mode|no|no|yes|no|
 
 ### Cross-field validation
 
@@ -447,6 +453,8 @@ Optional on each check: `name`, `retries` (default 0), `delay` in seconds (defau
 - The rollback mode must be supported by every target's platform driver (see Platform drivers).
 - Every template must render for every target with `StrictUndefined`. Validation substitutes type-appropriate placeholder values for prompts and treats any `when` that references `facts` as true, so all branches are checked.
 - `secret()` is never allowed in `exec` steps or checks.
+- A state check names a table every target's platform family can read, and `compare` only in a post-check (see State checks).
+- An upgrade play has a `firmware` section and at least one firmware step, connects over ssh, keeps `gather_facts` on and `rollback: none`, and has `allow_destructive: true` on its `firmware: activate` step; `stage` comes before `activate`, each at most once. Every target has an image, and the transfer is one its platform can do. `firmware` and firmware steps are errors in any other play type (see Firmware upgrades).
 
 ### Run-time options
 
@@ -587,10 +595,10 @@ The commands below are the IOS driver's. Each platform driver supplies its own e
 1. **Connect.** SSH (through the jump host if set) or serial. Verify the host key (see Local data). Enter enable mode if the prompt requires it.
 2. **Facts.** If `gather_facts`, run `show version` and regex-parse model, software version, serial, and uptime into `facts`. If the detected platform contradicts inventory, fail the device.
 3. **Final render.** Render again with real facts. This is the config that gets sent and the one stored, masked, in the job record.
-4. **Pre-checks.** On failure, mark `skipped_precheck` and disconnect. No changes are made.
+4. **Pre-checks.** On failure, mark `skipped_precheck` and disconnect. No changes are made. Every state table a post-check reads is then read once, before anything changes: for the comparison, and so a table the device cannot give stops it here (`skipped_precheck`) instead of failing a good change afterwards.
 5. **Backup.** If `backup`, save `show running-config` to machine data. If `rollback: on_failure`, also run `copy running-config <fs>tsunami-<jobid>.cfg`, answering the destination prompt. `<fs>` is the device's default file system: the line marked `*` in `show file systems` (`flash:`, `bootflash:`, `flash-1:` on a stack, `flash0:` on some ISRs, `unix:` on IOL). Its free space must exceed the running config plus 64 KB when the device reports it. Check mode runs the same read-only test, so a device that cannot take the copy fails before anyone approves a change.
 6. **Revert timer.** If `rollback: revert_timer`, first confirm `show archive` reports a configured archive path; if not, fail the device before changing anything. Then enter config mode with `configure terminal revert timer <revert_minutes>` (Netmiko `config_mode_command`).
-7. **Steps.** Run steps in order. Consecutive config lines go through one `send_config_set` with error detection. Exec steps go through `send_command` with expect handling. Stop at the first error.
+7. **Steps.** Run steps in order. Consecutive config lines go through one `send_config_set` with error detection. Exec steps go through `send_command` with expect handling. Firmware steps go to the platform's firmware driver; after an activate the session is a new one, opened when the device came back. Stop at the first error.
 8. **Post-checks.** With retries and delay.
 9. **Success.** If revert timer, `configure confirm`. If `save`, `write memory`. Delete the rollback file. A failed delete is a warning on the device, never a reason to roll back. Mark `success`.
 10. **Failure.** With `on_failure`, run `configure replace <fs>tsunami-<jobid>.cfg force`, then confirm the device is still reachable, then delete the rollback file (a failed delete is a warning). With `revert_timer`, run `configure revert now`. Mark `rolled_back`, or `rollback_failed` if any of that fails. `rollback_failed` is shown in red at the top of the job view and never auto-dismissed.
@@ -617,7 +625,7 @@ Network CLIs return no exit codes, so errors come from output text. Each platfor
 ### Run modes
 
 - **render:** render only.
-- **check:** connect, gather facts, fetch running config, and diff. No changes.
+- **check:** connect, gather facts, fetch running config, and diff. No changes. It also reads every state table the play's checks use, and for an upgrade play what the firmware steps would do, and fails the device on what an apply would stop on (a table it cannot give, an image with no room).
 - **compliance:** check against a baseline, plus a report of extra lines. No changes. Results are stored per customer for trend history.
 - **apply:** the full device pipeline.
 
@@ -636,6 +644,213 @@ Network CLIs return no exit codes, so errors come from output text. Each platfor
 - Connect timeout 15 s and command timeout 60 s by default. Serial commands get twice the command timeout.
 - At most 50 concurrent sessions per run, whatever `batch_size` says.
 - Cancel sets an event. Each worker checks it between steps, never mid-`send_config_set`.
+
+## State checks
+
+A state check asserts on what a device is doing, as rows, not on the text a command prints: the same OSPF neighbors are still full, the uplink port channel still has both members, as many routes as before the change. Tsunami runs a fixed show command per platform family, parses it into a table, and checks the rows (`core/state/`).
+
+### Example
+
+```yaml
+checks:
+  pre:
+    - state: port_channels
+      where: {name: Port-channel1}
+      expect: {status: up, members_up: {min: 2}}
+  post:
+    - state: ospf_neighbors
+      compare: no_loss
+      retries: 6
+      delay: 10
+    - state: interfaces
+      where: {name: "{{ uplink }}"}
+      expect: {status: up, protocol: up}
+    - state: routes
+      where: {source: total}
+      compare: count
+```
+
+### The check
+
+- `state`: the table. Required.
+- `where`: column to matcher. Selects rows; all rows without it.
+- `expect`: column to matcher. Every selected row must match, and at least one row must be selected (unless `count` says otherwise), so a check on an interface that does not exist fails rather than passing on nothing.
+- `count`: how many rows are selected: a number, or `min` and/or `max`.
+- `compare`: post-checks only. The selection against the same selection read before the change:
+    - `count`: as many rows as before.
+    - `no_loss`: every row from before is still there and unchanged in the table's compared columns. New rows are fine.
+    - `same`: `no_loss`, and no new rows.
+- A check needs at least one of `expect`, `count` and `compare`, and may have all three. `name`, `retries` and `delay` work as on any check; each retry reads the table again, which is how a post-check waits for neighbors to come back.
+
+A matcher is a value (`full`; compared as text without case, numbers as numbers), a regular expression between slashes (`/^TenGigabitEthernet1\/1\//`, searched without case), a list of those (any of), or `{min: 1, max: 4}` for a number. String values are Jinja-rendered like an exec check's, so a prompt answer can name the interface. `secret()` is not allowed.
+
+### Tables
+
+A table has key columns, which identify a row across two readings, and compared columns, which `compare` looks at. Counters, timers and addresses that move are not compared, since they differ between any two reads.
+
+|   |   |   |   |
+|---|---|---|---|
+|Table|Key|Compared|Other columns|
+|`interfaces`|`name`|`status` (up, down, admin-down), `protocol` (up, down)| |
+|`port_channels`|`name`|`status` (up, down), `members_up`|`protocol` (lacp, pagp, static), `members`|
+|`port_channel_members`|`port_channel`, `member`|`status` (bundled, down, suspended, standalone, hot-standby, other)| |
+|`ospf_neighbors`|`neighbor_id`, `interface`|`state` (full, 2way, exstart, exchange, loading, init, attempt, down)|`address`, `role` (dr, bdr, drother, or empty)|
+|`bgp_neighbors`|`neighbor`|`state` (established, idle, active, connect, opensent, openconfirm, admin-down)|`remote_as`, `prefixes`|
+|`eigrp_neighbors`|`address`, `interface`| |`as_number`|
+|`cdp_neighbors`, `lldp_neighbors`|`local_interface`, `neighbor`|`remote_port`| |
+|`stack`|`member`|`state` (ready when up in the stack)|`role` (active, standby, member)|
+|`vlans`|`id`|`status`|`name`|
+|`routes`|`source` (connected, static, ospf 1, ..., total)|`routes`| |
+|`hsrp`|`interface`, `group`|`state` (active, standby, speak, listen, init, disabled)|`priority`|
+|`vrrp`|`interface`, `group`|`state` (master, backup, init)|`priority`|
+|`spanning_tree`|`instance` (a VLAN or MST instance, and total)|`blocking`, `forwarding`| |
+
+- Values are the same words on every family: an AOS-CX `Conductor` is `active` in `stack`, an IOS `FULL/DR` is state `full` with role `dr`. That is what lets one check serve a play that spans vendors.
+- Interface names are written as the platform's running config prints them (`GigabitEthernet1/0/1`, never `Gi1/0/1`), as for interface prompts, so `where: {name: "{{ uplink }}"}` works.
+- Text that people configure on devices (descriptions, VLAN names, neighbor names) can be in a row. Descriptions are left out of the tables; everything a check logs passes the redactor.
+- Not every family reads every table yet. A play fails validation when a check names a table that one of its targets' families cannot read, so a check never silently does nothing.
+
+The command behind each table:
+
+|   |   |   |   |
+|---|---|---|---|
+|Table|IOS / IOS-XE|AOS-CX|AOS-S|
+|`interfaces`|`show interfaces description`|not yet|not yet|
+|`port_channels`|`show etherchannel summary`|not yet|not yet|
+|`port_channel_members`|`show etherchannel summary`|not yet|not yet|
+|`ospf_neighbors`|`show ip ospf neighbor`|not yet|not yet|
+|`bgp_neighbors`|not yet|not yet|not yet|
+|`eigrp_neighbors`|not yet|not yet|not yet|
+|`cdp_neighbors`|not yet|not yet|not yet|
+|`lldp_neighbors`|not yet|not yet|not yet|
+|`stack`|not yet|not yet|not yet|
+|`vlans`|`show vlan brief`|not yet|not yet|
+|`routes`|`show ip route summary`|not yet|not yet|
+|`hsrp`|not yet|not yet|not yet|
+|`vrrp`|not yet|not yet|not yet|
+|`spanning_tree`|`show spanning-tree summary`|not yet|not yet|
+
+The IOS parsers for `interfaces`, `port_channels`, `ospf_neighbors`, `vlans`, `routes` and `spanning_tree` are tested against output captured from IOS-XE 16.9 and 17.18 and IOS 15.9, and from the test data of the ntc-templates and genieparser projects. Formats and their variations are collected in `docs/research/state-tables.md`.
+
+### How they run
+
+- **Pre-checks** run with the others. A failed one skips the device with no changes.
+- **Before any change**, every table a post-check reads is read once and kept in memory for the run. A table the device cannot give (an L2 switch asked for OSPF neighbors answers `% Invalid input`) ends the device as `skipped_precheck`, unchanged. Without this, the first time the command ran would be after the change, and a check that could never pass would roll back a good change.
+- **Post-checks** read the table again and evaluate. A failure triggers the rollback policy, like any post-check.
+- **Check mode** reads every table the play's checks use and fails the device if one cannot be read, so an approval request shows it before anyone approves.
+- **Feature off is not an error.** `% BGP not active` or an empty output is an empty table: `count: 0` passes, `expect` fails for want of rows. Only the device not knowing the command at all is a table that cannot be read.
+- **The job log** says what was found (`state ospf_neighbors: 3 rows before the change`, `post-check ...: ok (all 3 rows from before still there)`) and, on a failure, names the rows by key (`1 row gone since before the change: neighbor_id=10.255.0.1 interface=Ethernet0/0 (state=full)`). Rows are not stored: the log line is the record.
+- **Approvals.** A state check is part of the render hash, with its rendered matchers, so a check changed after a request was approved fails the device with `render_changed`. A check without `state` hashes as before, so requests approved by an older version still match.
+
+## Firmware upgrades
+
+An upgrade play copies an OS image to devices, verifies it, makes the device boot it, reloads, and confirms the device came back on the new version. It runs on the same engine as every play, so it gets targets, batches, canary, max-fail, pre-checks and post-checks (state checks above all), history, and approval of MCP requests. What differs is in two firmware steps and a driver per platform family (`core/firmware/`).
+
+### Example
+
+```yaml
+name: Upgrade access switches to 17.9.5
+type: upgrade
+customer: acme
+targets:
+  roles: [access]
+firmware:
+  transfer: scp
+  images:
+    - file: cat9k_lite_iosxe.17.09.05.SPA.bin
+      version: 17.09.05
+      sha256: "<64 hex characters>"
+      platforms: [ios-xe]
+      models: [catalyst-9200]
+    - file: cat9k_iosxe.17.09.05.SPA.bin
+      version: 17.09.05
+      sha256: "<64 hex characters>"
+      platforms: [ios-xe]
+steps:
+  - firmware: stage
+    tags: [stage]
+  - firmware: activate
+    allow_destructive: true
+    tags: [activate]
+checks:
+  post:
+    - state: stack
+      expect: {state: ready}
+    - state: ospf_neighbors
+      compare: no_loss
+      retries: 10
+      delay: 30
+```
+
+### The firmware section
+
+- `transfer`: `scp` (Tsunami uploads the file from its firmware folder; the default), `tftp` or `http` (the device fetches it from `server`).
+- `server`: tftp and http only: `tftp://host[/folder]` or `http(s)://host[:port][/folder]`. The image's file name is appended. No username, password or query: a play is not secret, and it is in git.
+- `vrf`: the VRF the device reaches the server through, on platforms whose copy command takes one (AOS-CX: `vrf mgmt`).
+- `images`: one or more. Each has `file` (a bare file name), `version` (what the device reports once it runs the image), at least one of `sha256`, `sha512` and `md5`, `platforms`, and optionally `models` (hardware catalog ids). A device gets the first image listed for its platform whose `models` is empty or names the device's model, so an image for particular models goes above the general one.
+- `reload_timeout`: seconds to wait for a device to come back, 300 to 7200, default 1800. The first boot of a newer IOS-XE can upgrade the boot loader, which adds minutes; the default allows for it.
+
+A hash is required so the file cannot be swapped after the play is reviewed. The image's name, version and hashes are in the render (`firmware: stage <file> version <v> sha256:<hash> via scp`), so the render hash pins an approved request to that image, and a play or image changed after approval fails the device with `render_changed`. A hash written without quotes that happens to be all digits is refused with a message saying to quote it, since YAML reads it as a number.
+
+### The firmware folder
+
+Images are hundreds of megabytes, so they live in machine data (`%LOCALAPPDATA%\Tsunami\firmware`, or the folder set in Settings), never in the workspace. A play names an image by file name only.
+
+- Before any device is contacted, in every mode but render, the runner checks the folder (`core/firmware/library.py`): an upload needs the file there, and the file must match every hash the play gives. A missing or different file ends the job with the reason and no connection made.
+- When the file is in the folder, Tsunami computes its md5, sha256 and sha512 (once, cached until the file changes), so the play may give any one of them and the device can still be asked for the one it knows.
+- A device that fetches the image itself (tftp, http) needs no local file. Then a platform that verifies by hash (IOS: md5) needs that hash in the play, and the run is refused before connecting if it is not there.
+- A link in the folder that leads outside it is not followed.
+
+### Steps
+
+`firmware: stage` gets the image onto the device and verifies it. Nothing reboots, and what the device boots next is unchanged, so staging can run during the day. `firmware: activate` makes the device boot the staged image and reloads it; it needs `allow_destructive: true`. The usual play has both, tagged, so a run with tag `stage` copies images to the whole fleet and a later run with tag `activate` reloads device by device; a run with no tag filter does both per device. Other steps are allowed beside them (an `exec` step that removes old images before staging, say); steps after an activate run on the session opened after the reload.
+
+For each firmware step the driver first reads the device's state. A device already running the image's version is left alone: the step logs that and does nothing, so a run can be repeated safely.
+
+- **stage** is safe to repeat. An image already on the device and verified is not copied again. A copy that fails verification is removed where the platform allows, and the device fails. Free space is checked first where the platform has a file system.
+- **activate** refuses unless the image is on the device and verifies at that moment, so the device is never told to boot a file that is missing or damaged. It saves the configuration before the reload, so the questions a reload asks about unsaved changes decide nothing. After the reload it waits for the device (below) and confirms the running version; a device that came back on another version fails, with the version named.
+
+### Platforms
+
+|   |   |   |   |
+|---|---|---|---|
+| |IOS / IOS-XE|AOS-CX|AOS-S|
+|Transfers|scp, tftp, http|tftp|scp, tftp|
+|Upload needs|`ip scp server enable` and exec authorization that lands at privilege 15|(no upload: 6000 to 6300 have no documented way to take one)|`ip ssh filetransfer`, which turns the switch's TFTP client off|
+|Where the image goes|the file system the running image is on (`flash:`, `bootflash:`)|the bank not running (primary or secondary)|the bank not running|
+|Verified by|`verify /md5` against the file's md5|the switch's own signature check, then the bank's version read back (`show images`)|the switch's own check, then the bank's version read back (`show flash`), polled while the switch writes flash|
+|Activate|install mode: `install add file ... activate commit prompt-level none`. Bundle mode: `boot system` to the new file with the running image kept as the second entry, the boot variable read back, then `reload`|`boot system <bank>`|`boot system flash <bank>`|
+|Stacks|install mode copies to every member itself; bundle mode copies the file to each member's flash and verifies it there. After the reload every member must be back and ready|VSF: the conductor syncs the image; after the reload every member must be back|the commander installs on the members; the whole stack reboots|
+
+- On Aruba the running image stays in the other bank as the way back. On IOS in bundle mode the running image stays as the second boot entry. Nothing deletes an old image.
+- Tsunami does not turn on `ip scp server enable` or `ip ssh filetransfer` itself: a stage step on a device without it fails with the line to add, which can be a config step in the same play. Changing device configuration that the play does not show was rejected.
+- What the Aruba and IOS classic drivers know comes from vendor documentation (`docs/research/firmware.md`), not yet from hardware; the facts marked UNVERIFIED there are the first things to check on a bench switch. Drivers fail with the device's output quoted when they read something they do not understand, instead of guessing.
+
+### Transfer
+
+- **scp** uses a second SSH connection (IOS takes one session per connection), through the device's jump host if it has one, with the device's own login. The connection is made only to a host whose key is already on file and matches: an upload never records a new key, since the session that asked for it has checked the host already (`SshTransport.upload`). Progress is logged every tenth.
+- **tftp and http** are the device's own `copy`, with its prompts answered. Tsunami runs no file server: the PC would need an inbound firewall rule, and the path from the devices to an engineer's laptop is rarely open.
+- Cancel stops an upload part way; a partly copied file fails verification on the next run and is replaced.
+
+### Reload and return
+
+- The reload command's questions are answered (`Session.send_interactive`: several prompts, and a session that ends while the command runs is a result, not an error).
+- Tsunami then waits a minute, since a device that is shutting down still answers, and tries to connect every 20 seconds until `reload_timeout`. The host key must be the one on file.
+- A device that does not come back in time ends `interrupted`, which raises the same red alarm as a half-configured device: it needs a person. So does a cancel during the wait, since the reload was already sent. A device that comes back on the wrong version ends `failed`.
+- The device's lease is held throughout, so no other job touches it while it reloads.
+
+### Fleets and stacks
+
+- Defaults for the type: `batch_size` 1, `max_fail_percent` 0, `canary` on, `rollback: none`, backup on. One device reloads at a time, the first one alone with a pause for confirmation, and the run stops at the first device that fails. A play can raise `batch_size` for a staging run.
+- Staged reboots are at the fleet level: stage everywhere, then activate in order, each device (or stack) passing its post-checks before the next is touched. Post-checks with `retries` and `delay` are how the run waits for a device's neighbors to return, and `compare: no_loss` against the tables read before the reload is the test that it came back whole.
+- A stack reloads as a whole. Rolling a stack member by member (IOS-XE ISSU on dual-supervisor and StackWise Virtual systems, AOS-CX VSF ISSU on 6300 rings) is not done: the common stacks (Catalyst 9200 and 9300, 2930F VSF) have no such mode.
+- `rollback: none` is required: a configuration rollback cannot undo an upgrade, and the reload ends the session it would run in. Going back is another upgrade play naming the older image.
+
+### Check mode and approvals
+
+- A check connects, reads the device's state and adds to the diff what each firmware step would do: `+ firmware stage: 16.09.04 -> 17.09.05 with <file> (not on the device yet)`. A device already on the version adds nothing, so an approval request for a fleet that is partly upgraded lists only the devices that would change.
+- It fails a device with no room for the image, and one asked to activate an image that was never staged.
+- Over MCP, `request_run` on an upgrade play waits for approval like any change, and `list_firmware` gives Claude the file names and hashes to write a draft with. Lab customers follow the lab rule.
 
 ## Platform drivers
 
@@ -888,6 +1103,9 @@ A play was the other option. It was not chosen because plays render and push tem
 |`compliance(path, targets?, prompts?, customer?)`|1|Job id and the device names. Results hold missing and extra lines. `targets` splits a baseline bigger than `max_check_targets` over several calls|
 |`show(customer, target, command)`|1|Redacted output. Allowlisted commands only|
 |`show_many(customer, command, devices?, site?, role?)`|1|Job id (an operation, mode `show`). One allowlisted command on every chosen device, at most `max_check_targets`, checked for each device's family before anything connects; each device's redacted output is in `get_job`|
+|`list_state_tables(family?)`|0|Every state table: key, columns, compared columns, and the show command that fills it per family, or null where a family cannot read it (State checks)|
+|`state(customer, target, table, where?)`|1|One state table's rows from one device, redacted, in `untrusted_device_output`. The table's show command must be on the show allowlist, as if given to `show`; `where` filters the redacted rows|
+|`list_firmware()`|0|The files in the firmware folder: name, size, md5, sha256, sha512. For writing an upgrade play's `images`|
 |`get_policy()`|0|The policy as it applies to Claude: `max_tier`, apply mode, `inventory_edits`, show allowlist and pipes, limits, and the show-allowlist requests with their status. Never `customers_blocked`, never who decided a request|
 |`request_allowlist_addition(family, command, reason)`|0|Queues a request (`allowlist_requests` in `history.db`). Only plain `show` commands: others, pipes and `;` are refused. Settings, MCP lists pending requests with Approve and Deny; only Approve writes the entry to `mcp-policy.yml`. Claude has no write path to the policy|
 |`get_job(job_id, devices?, detail?, wait_seconds?, since?)`|1|Status, `phase` (`approval check` for a change request nobody has approved: nothing applied; `apply`; else the mode), `counts`, a `state` token and redacted per-device results. `devices` filters the rows; `detail` is `full` (render, output, diff; the default), `diff` or `summary` (status and error). `wait_seconds` (up to 50) waits until `state` differs from `since` (default: the state when the call started) or the job finishes, so one call replaces many polls under the rate limit|
@@ -1016,6 +1234,8 @@ approval_expiry_minutes: 60
 |Running config and show output|Redactor, both layers, on every result.|
 |Claude-written templates|`secret()` sink rule. A `secret()` value changed by a filter or expression (`reverse`, slicing, `tojson`, `list`) is a render error. Drafts never reach customer devices without promotion. Promotion highlights every `secret()` call.|
 |Output filters|Pipes run locally on redacted output, never on the device.|
+|State tables|`state` runs only a table whose show command is allowlisted, redacts every text cell, and filters after redaction, so a table is neither a way around the allowlist nor an oracle.|
+|Firmware|An upgrade play names an image by a bare file name in the firmware folder and pins its hash; Claude cannot name a path, and `list_firmware` lists that folder only.|
 |Redaction as an oracle|Values Claude supplied are not exact-redacted in their echo, so a guess is answered the same whether it is right or wrong. Refusal messages never name a blocked customer.|
 |Exception messages|Redacted before they are returned.|
 |Backups and session logs|No tool exposes them.|
@@ -1048,14 +1268,14 @@ The GUI is one PySide6 window laid out like VS Code. It is the only place a chan
 |View|Purpose|
 |Workspace|Open or init a workspace. Shows schema version, a lint summary of every file, and reload.|
 |Inventory|Tree of customer, site, and device. The device view shows resolved variables colored by precedence level, with the source file on hover. Includes an Open in VS Code button. Context menus edit the inventory, import devices from CSV (Save example CSV writes a file with every column), trust host keys, and on a site run Discover devices (CDP/LLDP) and Check for unlearned neighbors. Back up and check for drift (on a device, a site, or a customer for all its sites) opens a tab that starts at once: it lists each device as first backup, changed, secrets changed, no change, or the reason it was not read. Selecting a changed device shows the redacted diff since its previous backup, and Open job shows the check in the job view (Backups: Drift check). Backups and Export to CSV… on a customer or site open the backups overview and save the device report (Backups: Backup status and CSV export). Customers and sites start collapsed. A reload keeps what was expanded, and expands the parents of anything added since the last reload so it can be seen. Typing a filter expands the branches with matches; clearing it puts back what was expanded before.|
-|Plays|Plays grouped by type and customer, with validation status, a read-only YAML view, and a Run button.|
+|Plays|Plays grouped by type (initial, push, baseline, upgrade) and customer, with validation status, a read-only YAML view, and a Run button.|
 |Run wizard|Target picker with limit checkboxes, a prompt form generated from the prompt schema with inline validation, a per-device prompt grid, mode, tag filter, then a masked per-device preview before Start.|
 |Job view|One row per device with status, elapsed time, and a live redacted log. Includes the canary confirmation dialog and Cancel. Device detail shows the masked render, output, diff, backup path, and rollback result. A Copy summary button produces a ticket-ready Markdown summary. In a check, a device reads `changes to apply` or `no changes`. A finished job offers Apply changes (after a check, on the devices it would change, pinned to the renders it showed), Retry failed, and Run again; a job whose answers history cannot rebuild opens the run wizard filled in instead.|
 |Approvals|Pending MCP requests as cards. Approve or Deny. Badge count on the activity bar and a tray notification.|
 |Drafts|Draft files with a diff against the live file, if one exists. Every `secret()` call and destructive command is highlighted. Promote (with overwrite confirmation) or Delete. Promote checks whether the live file exists when it is pressed, refuses a draft rewritten since its tab showed it (Claude can rewrite a draft at any time), retries a live file another program holds open for a moment, and reports any failure with its reason.|
 |History|Jobs filtered by customer, play, actor, and status, with Show operations for show commands, discovery, drift checks, Trust host keys and connection tests (Local data and audit: Operations in history). Opens any past job view. Per-customer compliance history. Reveals: every press-to-reveal.|
 |Credentials|Names only. Device logins on one side; on the other, Secrets (per customer): values plays push that are not logins (SNMP, TACACS+ and RADIUS keys, pre-shared keys), each a single value or named fields (see Secrets with fields). Create, overwrite, delete, and test. Values are never displayed. A login's Customers… sets which customers' plays may push it (`push_logins`), as New login does. Where a login is used includes those customers; deleting one warns about those plays.|
-|Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, theme, backup retention, log level.|
+|Settings|Workspace path, MCP policy editor (with Edit allowlists in VS Code, which opens `mcp-policy.yml` at the show allowlist), Register with Claude Desktop, extra secret sink patterns and benign error messages per platform, theme, backup retention, the firmware folder (with Open folder), log level.|
 
 ### Behavior rules
 
@@ -1087,6 +1307,7 @@ Machine-local data lives in `%LOCALAPPDATA%\Tsunami` and settings in `%APPDATA%\
 ├─ history.db
 ├─ known_hosts\<customer>
 ├─ backups\<customer>\<device>\<UTC timestamp>_<job id, discovery or drift>.cfg
+├─ firmware\<image files>   (or the folder set in Settings)
 └─ logs\
    ├─ app.log
    ├─ mcp.log
@@ -1210,6 +1431,8 @@ Core logic is unit-tested with no devices. Transports, rollback, and batching ar
 - show allowlist: rejects `sh run`, `| redirect`, `| tee`, `| append`, two pipes, `;`, and newlines.
 - Hardware catalog: every entry validates, ids are unique, and only entries whose platform has a driver are selectable.
 - Heartbeats and leases: a `running` job with a stale heartbeat becomes `interrupted`; a device leased by a live job fails with `device_busy`.
+- State checks: every matcher form; `expect`, `count` and each `compare` mode; each parser against captured output, including the empty table, a feature that is off and a rejected command; through the pipeline, a neighbor lost by the change rolls it back and an unreadable table stops the device before any change.
+- Firmware: the play rules; the firmware folder (a swapped file is refused); each driver against a scripted session, asserting the order of commands where order is the safety property (the image verified before the boot variable is set, the boot variable read back before the reload); the pipeline with a stand-in driver (reconnect after a reload, a device that does not come back ends `interrupted`); the upload refusing a host key that is unknown or changed.
 
 ### Integration tests (CML)
 
@@ -1228,6 +1451,7 @@ For AOS-CX, use HPE's AOS-CX Switch Simulator (an OVA from the HPE Networking Su
 - AOS-CX: checkpoint rollback after a forced post-check failure; auto-checkpoint revert after a dropped session.
 - AOS-S (physical): `cfg-restore` rollback after a forced post-check failure; job-based revert after a dropped session; a play with a reboot-required command is refused when rollback is on.
 - Secret-bearing lines show no false drift on any platform.
+- State tables on each platform against lab output; an upgrade on a virtual IOS-XE node that can boot another image (Catalyst 8000v or 9000v), and on a bench switch per family: every UNVERIFIED item in `docs/research/firmware.md`.
 
 ### Scale
 
@@ -1346,10 +1570,15 @@ The biggest technical risks are day-0 console behavior and diff accuracy. The bi
 |AOS-S `cfg-restore` refuses reboot-required changes, and its job-based revert then does nothing|No rollback on a failed change|Validation refuses reboot-required commands when rollback is on. `rollback_failed` is surfaced loudly.|
 |AOS-S hides credentials from the running config by default|Backups cannot restore credentials; diffs cannot see them|Rollback uses on-device `cfg-backup`, not text backups. Diffs compare secret-bearing lines by prefix only.|
 |No virtual AOS-S image|Rollback and day-0 untested until hardware is on the bench|Physical AOS-S switch for integration tests.|
+|Firmware drivers written from documentation|A prompt or output differs on a real device and a stage or activate fails|Drivers verify before they change what a device boots, and fail with the output quoted instead of guessing. Bench-test each family before production use; canary and `max_fail_percent` 0 stop a fleet run at the first failure.|
+|A device does not return from a reload|The device is down until someone reaches its console|Nothing prevents this. The image is verified first, the previous image is kept as the way back, the device ends `interrupted` with the alarm, and the run stops.|
+|State table parsers miss a layout|A check fails on good state, or a row is not seen|Each parser is tested against captured output; a failure names the rows, and the job log shows row counts, so a wrong reading is visible. Aruba parsers rest on reconstructed documentation until captured on a switch.|
 
 ### Deferred
 
 - Remediation mode that generates `no` commands for compliance extras.
+- Firmware: rolling a stack member by member (ISSU, VSF ISSU); fetching with a login (scp or sftp pull, authenticated https), which needs the server's password to reach the device without being in the play; uploading to AOS-CX over its REST API; removing old images after an upgrade (`install remove inactive`); scheduling an activate for a maintenance window.
+- State checks: keeping the rows of each reading in `history.db` and showing before and after in the job view; a spanning-tree table per port; IPv6 and per-VRF tables.
 - Encrypting backups at rest with DPAPI.
 - More platforms: NX-OS, HPE Comware (FlexNetwork), and Ruckus ICX through Netmiko's `ruckus_fastiron` device type. Each needs a platform driver.
 - Inventory editing in the GUI beyond add to inventory.

@@ -767,6 +767,7 @@ class _Loader:
     def check_firmware(self, play: Play, doc: YamlDoc, devices: list[Device], catalog) -> None:
         """An upgrade play has an image for every target, reachable the way the play says."""
         from tsunami.core.firmware import TRANSFERS
+        from tsunami.core.firmware import available as firmware_available
 
         firmware = play.firmware
         assert firmware is not None
@@ -799,6 +800,15 @@ class _Loader:
                 "images",
             )
         families = sorted({PLATFORM_FAMILY[d.platform] for d in devices})
+        undriven = [f for f in families if not firmware_available(f)]
+        if undriven:
+            self.at(
+                doc,
+                Severity.ERROR,
+                "play.firmware_unsupported",
+                f"firmware upgrades are not available for {', '.join(map(str, undriven))} yet",
+                "targets",
+            )
         cannot = [f for f in families if firmware.transfer not in TRANSFERS[f]]
         if cannot:
             ways = {f: ", ".join(sorted(map(str, TRANSFERS[f]))) for f in cannot}
